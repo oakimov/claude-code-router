@@ -3,13 +3,14 @@ import { Transformer, TransformerContext } from "../types/transformer";
 
 /**
  * Mistral Transformer for Claude Code Router
- * 
+ *
  * Transforms Anthropic-style requests to Mistral's OpenAI-compatible API format.
  * Handles the key differences:
  * - Removes `cache_control` fields (not supported by Mistral)
  * - Removes `$schema` from tool parameters (not supported by Mistral)
  * - Flattens array content to strings where needed
  * - Ensures tool definitions match OpenAI function calling format
+ * - Converts `reasoning` parameter to Mistral's `reasoning_effort` format
  */
 export class MistralTransformer implements Transformer {
   name = "mistral";
@@ -46,6 +47,13 @@ export class MistralTransformer implements Transformer {
           delete tool.function.parameters.$schema;
         }
       });
+    }
+
+    // Handle reasoning parameter conversion for Mistral
+    // Mistral uses "reasoning_effort" instead of "reasoning"
+    if (request.reasoning) {
+      request.reasoning_effort = this.transformReasoning(request.reasoning);
+      delete request.reasoning;
     }
 
     return request;
@@ -115,6 +123,39 @@ export class MistralTransformer implements Transformer {
     }
 
     return toolChoice;
+  }
+
+  /**
+   * Transform reasoning parameter to Mistral's reasoning_effort format
+   * Mistral supports different effort levels for reasoning
+   */
+  private transformReasoning(reasoning: any): string | undefined {
+    // Map reasoning parameters to Mistral's reasoning_effort values
+    // Mistral supports: "low", "medium", "high" or numerical effort levels
+
+    if (reasoning.effort) {
+      // Map effort level to Mistral's format
+      const effort = reasoning.effort.toLowerCase();
+      if (effort === "low" || effort === "medium" || effort === "high") {
+        return effort;
+      }
+    }
+
+    // If max_tokens is specified, map it to an effort level
+    // This is a heuristic mapping - adjust as needed
+    if (reasoning.max_tokens) {
+      const tokens = reasoning.max_tokens;
+      if (tokens < 1000) {
+        return "low";
+      } else if (tokens < 5000) {
+        return "medium";
+      } else {
+        return "high";
+      }
+    }
+
+    // Default to medium if reasoning is requested but no specific parameters
+    return "medium";
   }
 
   /**
