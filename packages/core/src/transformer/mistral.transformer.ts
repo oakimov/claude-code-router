@@ -51,8 +51,20 @@ export class MistralTransformer implements Transformer {
 
     // Handle reasoning parameter conversion for Mistral
     // Mistral uses "reasoning_effort" instead of "reasoning"
-    if (request.reasoning) {
-      request.reasoning_effort = this.transformReasoning(request.reasoning);
+    // Only apply this for models that support reasoning
+    if (request.reasoning && _provider?.model) {
+      const modelId = _provider.model;
+      // Check if model matches patterns for reasoning-supporting models
+      const supportsReasoning =
+        modelId.startsWith("mistral-small-") ||
+        modelId.startsWith("magistral-") ||
+        modelId.startsWith("mistral-medium-") ||
+        modelId === "mistral-vibe-cli-fast" ||
+        modelId.startsWith("labs-leanstral-");
+
+      if (supportsReasoning) {
+        request.reasoning_effort = this.transformReasoning(request.reasoning);
+      }
       delete request.reasoning;
     }
 
