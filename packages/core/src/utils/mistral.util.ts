@@ -236,7 +236,6 @@ export async function transformResponseOut(
               try {
                 const rawDataStr = line.slice(5).trim();
                 const data = JSON.parse(rawDataStr);
-                logger?.debug({ data }, `${providerName} chunk:`);
 
                 const choice = data.choices?.[0];
                 if (choice?.delta) {

@@ -13,6 +13,7 @@ import {
  */
 export class MistralTransformer implements Transformer {
   name = "mistral";
+  logger?: any;
 
   /**
    * Transform incoming request to Mistral-compatible format
@@ -36,13 +37,18 @@ export class MistralTransformer implements Transformer {
   /**
    * Transform Mistral-specific request back to UnifiedChatRequest
    */
-  transformRequestOut = transformRequestOut;
+  transformRequestOut!: typeof transformRequestOut;
 
   /**
    * Transform response back — convert Mistral's content-array thinking format
    * to the delta.thinking / delta.content shape expected by @musistudio/llms.
    */
   async transformResponseOut(response: Response, _context: TransformerContext): Promise<Response> {
-    return transformResponseOut(response, this.name, this.logger);
+    try {
+      return await transformResponseOut(response, this.name, this.logger);
+    } catch (error: any) {
+      this.logger?.error({ error: error.message, response }, `Mistral transformResponseOut error:`);
+      throw error;
+    }
   }
 }

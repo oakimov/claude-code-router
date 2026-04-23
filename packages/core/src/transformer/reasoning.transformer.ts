@@ -93,7 +93,6 @@ export class ReasoningTransformer implements Transformer {
             if (line.startsWith("data: ") && line.trim() !== "data: [DONE]") {
               try {
                 const data = JSON.parse(line.slice(6));
-                console.log(JSON.stringify(data))
 
                 // Extract reasoning_content from delta
                 if (data.choices?.[0]?.delta?.reasoning_content) {
