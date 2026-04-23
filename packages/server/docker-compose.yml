@@ -1,0 +1,26 @@
+services:
+  ccr:
+    build:
+      context: ../../
+      dockerfile: packages/server/Dockerfile
+    image: claude-code-router
+    pull_policy: build
+    container_name: claude-code-router
+    ports:
+      - "3456:3456"
+    volumes:
+      - ./ccr-config:/root/.claude-code-router
+    restart: always
+    environment:
+      - NODE_ENV=production
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3456/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

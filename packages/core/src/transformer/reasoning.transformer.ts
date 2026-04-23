@@ -79,7 +79,7 @@ export class ReasoningTransformer implements Transformer {
             line: string,
             context: {
               controller: ReadableStreamDefaultController;
-              encoder: typeof TextEncoder;
+              encoder: TextEncoder;
               reasoningContent: () => string;
               appendReasoningContent: (content: string) => void;
               isReasoningComplete: () => boolean;
@@ -209,7 +209,7 @@ export class ReasoningTransformer implements Transformer {
                     encoder: encoder,
                     reasoningContent: () => reasoningContent,
                     appendReasoningContent: (content) =>
-                      (reasoningContent += content),
+                      (reasoningContent += typeof content === "string" ? content : JSON.stringify(content)),
                     isReasoningComplete: () => isReasoningComplete,
                     setReasoningComplete: (val) => (isReasoningComplete = val),
                   });
