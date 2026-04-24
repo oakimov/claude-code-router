@@ -1,9 +1,19 @@
-import { UnifiedChatRequest, UnifiedMessage, MessageContent, TextContent } from "../types/llm";
+import { UnifiedChatRequest, MessageContent, TextContent } from "../types/llm";
+import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "./stream";
+import { stripMessagesCacheControl } from "./cacheControl";
+import {
+  createReasoningAccumulator,
+  accumulateReasoning,
+  finalizeReasoning,
+  buildThinkingChunk,
+  extractReasoningText,
+  cleanReasoningFields,
+} from "./thinking";
 
 /**
  * Helper to flatten array content to strings and remove cache_control
  */
-function transformMessage(msg: UnifiedMessage): UnifiedMessage {
+function transformMessage(msg: any): any {
   const clonedMsg = { ...msg };
   if (Array.isArray(clonedMsg.content)) {
     const contentArray = clonedMsg.content as MessageContent[];
@@ -84,7 +94,6 @@ function transformReasoning(reasoning: any): string | undefined {
  * Transform incoming request to Mistral-compatible format
  */
 export function buildRequestBody(request: UnifiedChatRequest): Record<string, any> {
-  // Create a shallow copy to avoid mutating the original request
   const req = { ...request };
 
   // 1. Process messages
@@ -143,8 +152,6 @@ export function buildRequestBody(request: UnifiedChatRequest): Record<string, an
  * Transform a Mistral provider request back into a UnifiedChatRequest
  */
 export async function transformRequestOut(request: any): Promise<UnifiedChatRequest> {
-  // Mistral is OpenAI-compatible, so the request is already in a unified-like format.
-  // We return it as a UnifiedChatRequest.
   return request as UnifiedChatRequest;
 }
 
@@ -167,7 +174,6 @@ export async function transformResponseOut(
     if (choice?.message) {
       const message = choice.message;
       let thinkingText = "";
-      let plainText = "";
 
       if (message.reasoning_content) {
         const rc = message.reasoning_content;
@@ -176,6 +182,7 @@ export async function transformResponseOut(
       }
 
       if (Array.isArray(message.content)) {
+        let plainText = "";
         for (const block of message.content) {
           if (block.type === "thinking") {
             const parts = Array.isArray(block.thinking) ? block.thinking : [block.thinking];
@@ -204,92 +211,92 @@ export async function transformResponseOut(
   } else if (contentType.includes("stream")) {
     if (!response.body) return response;
 
-    const decoder = new TextDecoder();
-    const encoder = new TextEncoder();
-    let buffer = "";
+    return createSSEStreamReader(response, (line: string, ctx: StreamContext) => {
+      if (!line.trim()) {
+        ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
+        return;
+      }
 
-    return new Response(new ReadableStream({
-      async start(controller) {
-        const reader = response.body!.getReader();
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              if (buffer.trim()) controller.enqueue(encoder.encode(buffer));
-              break;
+      if (!line.startsWith("data:") || line.trim() === "data: [DONE]") {
+        ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
+        return;
+      }
+
+      try {
+        const rawDataStr = line.slice(5).trim();
+        const data = JSON.parse(rawDataStr);
+
+        const delta = data.choices?.[0]?.delta;
+        if (!delta) {
+          ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
+          return;
+        }
+
+        const reasoningText = extractReasoningText(delta);
+
+        if (reasoningText) {
+          const thinkingChunk = buildThinkingChunk(data, { content: reasoningText });
+          cleanReasoningFields(thinkingChunk.choices[0].delta);
+
+          // Handle content array thinking format
+          const deltaContent = delta.content;
+          if (Array.isArray(deltaContent)) {
+            let arrThinkingText = "";
+            const plainText = deltaContent
+              .filter((b: any) => b.type === "text")
+              .map((b: any) => typeof b.text === "string" ? b.text : JSON.stringify(b.text ?? ""))
+              .join("");
+
+            for (const block of deltaContent) {
+              if (block.type === "thinking") {
+                const parts = Array.isArray(block.thinking) ? block.thinking : [block.thinking];
+                arrThinkingText += parts.map((p: any) => {
+                  if (typeof p === "string") return p;
+                  if (p && typeof p.text === "string") return p.text;
+                  return JSON.stringify(p);
+                }).join("");
+              }
             }
 
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() ?? "";
+            delete thinkingChunk.choices[0].delta.content;
+            if (arrThinkingText || reasoningText) {
+              thinkingChunk.choices[0].delta.thinking = { content: arrThinkingText || reasoningText };
+            }
+            if (plainText) thinkingChunk.choices[0].delta.content = plainText;
+          }
 
-            for (const line of lines) {
-              if (!line.trim()) {
-                controller.enqueue(encoder.encode(line + "\n"));
-                continue;
-              }
-              if (!line.startsWith("data:") || line.trim() === "data: [DONE]") {
-                controller.enqueue(encoder.encode(line + "\n"));
-                continue;
-              }
+          ctx.controller.enqueue(encodeSSEData(JSON.stringify(thinkingChunk), ctx.encoder));
+          return;
+        }
 
-              try {
-                const rawDataStr = line.slice(5).trim();
-                const data = JSON.parse(rawDataStr);
+        // Handle content array thinking format without reasoning_content
+        if (Array.isArray(delta.content)) {
+          let thinkingFromArr = "";
+          const plainText = delta.content
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => typeof b.text === "string" ? b.text : JSON.stringify(b.text ?? ""))
+            .join("");
 
-                const choice = data.choices?.[0];
-                if (choice?.delta) {
-                  const delta = choice.delta;
-                  let thinkingText = "";
-                  const deltaContent = delta.content;
-
-                  if (delta.reasoning_content) {
-                    const rc = delta.reasoning_content;
-                    thinkingText += typeof rc === "string" ? rc : (typeof rc?.text === "string" ? rc.text : JSON.stringify(rc));
-                    delete delta.reasoning_content;
-                  }
-
-                  if (Array.isArray(deltaContent)) {
-                    for (const block of deltaContent) {
-                      if (block.type === "thinking") {
-                        const parts = Array.isArray(block.thinking) ? block.thinking : [block.thinking];
-                        thinkingText += parts.map((p: any) => {
-                          if (typeof p === "string") return p;
-                          if (p && typeof p.text === "string") return p.text;
-                          return JSON.stringify(p);
-                        }).join("");
-                      }
-                    }
-                    const plainText = deltaContent
-                      .filter((b: any) => b.type === "text")
-                      .map((b: any) => typeof b.text === "string" ? b.text : JSON.stringify(b.text ?? ""))
-                      .join("");
-
-                    delete delta.content;
-                    if (thinkingText) delta.thinking = { content: thinkingText };
-                    if (plainText) delta.content = plainText;
-                  }
-
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n`));
-                } else {
-                  controller.enqueue(encoder.encode(line + "\n"));
-                }
-              } catch {
-                controller.enqueue(encoder.encode(line + "\n"));
-              }
+          for (const block of delta.content) {
+            if (block.type === "thinking") {
+              const parts = Array.isArray(block.thinking) ? block.thinking : [block.thinking];
+              thinkingFromArr += parts.map((p: any) => {
+                if (typeof p === "string") return p;
+                if (p && typeof p.text === "string") return p.text;
+                return JSON.stringify(p);
+              }).join("");
             }
           }
-        } catch (error) {
-          controller.error(error);
-        } finally {
-          try { reader.releaseLock(); } catch { }
-          controller.close();
+
+          delete delta.content;
+          if (thinkingFromArr) delta.thinking = { content: thinkingFromArr };
+          if (plainText) delta.content = plainText;
         }
+
+        ctx.controller.enqueue(encodeSSEData(JSON.stringify(data), ctx.encoder));
+      } catch {
+        ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
       }
-    }), {
-      status: response.status,
-      statusText: response.statusText,
-      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
     });
   }
 

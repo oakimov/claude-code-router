@@ -1,6 +1,8 @@
 import { UnifiedChatRequest, MessageContent } from "@/types/llm";
 import { Transformer } from "@/types/transformer";
 import { validateOpenAIToolCalls, injectPromptCaching } from "../utils/openai.util";
+import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
+import { stripCacheControl } from "../utils/cacheControl";
 
 interface ResponsesAPIOutputItem {
   type: string;
@@ -51,9 +53,8 @@ interface ResponsesStreamEvent {
       type: string;
       text?: string;
       image_url?: string;
-      mime_type?: string;
     }>;
-    reasoning?: string; // Add reasoning field support
+    reasoning?: string;
   };
   response?: {
     id?: string;
@@ -62,7 +63,14 @@ interface ResponsesStreamEvent {
       type: string;
     }>;
   };
-  reasoning_summary?: string; // Add reasoning summary support
+  reasoning_summary?: string;
+  annotation?: {
+    url?: string;
+    title?: string;
+    start_index?: number;
+    end_index?: number;
+  };
+  part?: any;
 }
 
 export class OpenAIResponsesTransformer implements Transformer {
@@ -75,7 +83,6 @@ export class OpenAIResponsesTransformer implements Transformer {
     delete request.temperature;
     delete request.max_tokens;
 
-    // Handle reasoning parameters
     if (request.reasoning) {
       (request as any).reasoning = {
         effort: request.reasoning.effort,
@@ -83,7 +90,6 @@ export class OpenAIResponsesTransformer implements Transformer {
       };
     }
 
-    // Validate tool call sequencing and inject prompt caching
     const model = request.model || "";
     let messages = validateOpenAIToolCalls(request.messages);
     messages = injectPromptCaching(messages, model);
@@ -145,10 +151,9 @@ export class OpenAIResponsesTransformer implements Transformer {
       }
 
       if (message.role === "assistant" && Array.isArray(message.tool_calls)) {
-        // OpenAI requires content to be null when only tool_calls are present
         const hasContent = message.content &&
           (typeof message.content === "string" ||
-           (Array.isArray(message.content) && message.content.length > 0));
+            (Array.isArray(message.content) && message.content.length > 0));
 
         message.tool_calls.forEach((tool) => {
           input.push({
@@ -159,7 +164,6 @@ export class OpenAIResponsesTransformer implements Transformer {
           });
         });
 
-        // Only push content separately if it exists
         if (hasContent) {
           // Keep the message content in the message object for the Responses API
         }
@@ -226,9 +230,7 @@ export class OpenAIResponsesTransformer implements Transformer {
     if (contentType.includes("application/json")) {
       const jsonResponse: any = await response.json();
 
-      // Check if it's a JSON response in responses API format
       if (jsonResponse.object === "response" && jsonResponse.output) {
-        // Convert responses format to chat format
         const chatResponse = this.convertResponseToChat(jsonResponse);
         return new Response(JSON.stringify(chatResponse), {
           status: response.status,
@@ -237,7 +239,6 @@ export class OpenAIResponsesTransformer implements Transformer {
         });
       }
 
-      // Not in responses API format, keep as is
       return new Response(JSON.stringify(jsonResponse), {
         status: response.status,
         statusText: response.statusText,
@@ -248,386 +249,258 @@ export class OpenAIResponsesTransformer implements Transformer {
         return response;
       }
 
-      const decoder = new TextDecoder();
-      const encoder = new TextEncoder();
-      let buffer = ""; // used to buffer incomplete data
       let isStreamEnded = false;
+      let currentIndex = -1;
+      let lastEventType = "";
+
+      const getCurrentIndex = (eventType: string) => {
+        if (eventType !== lastEventType) {
+          currentIndex++;
+          lastEventType = eventType;
+        }
+        return currentIndex;
+      };
 
       const transformer = this;
-      const stream = new ReadableStream({
-        async start(controller) {
-          const reader = response.body!.getReader();
 
-          // Index tracking variable; only increment index when event type changes
-          let currentIndex = -1;
-          let lastEventType = "";
+      return createSSEStreamReader(
+        response,
+        (line: string, ctx: StreamContext) => {
+          if (!line.trim()) return;
 
-          // Function to get the index that should be used currently
-          const getCurrentIndex = (eventType: string) => {
-            if (eventType !== lastEventType) {
-              currentIndex++;
-              lastEventType = eventType;
-            }
-            return currentIndex;
-          };
+          if (line.startsWith("event: ")) return;
 
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) {
-                if (!isStreamEnded) {
-                  // Send end marker
-                  const doneChunk = `data: [DONE]\n\n`;
-                  controller.enqueue(encoder.encode(doneChunk));
-                }
-                break;
-              }
-
-              const chunk = decoder.decode(value, { stream: true });
-              buffer += chunk;
-
-              // Process complete data lines in the buffer
-              let lines = buffer.split(/\r?\n/);
-              buffer = lines.pop() || ""; // The last line might be incomplete; keep it in the buffer
-
-              for (const line of lines) {
-                if (!line.trim()) continue;
-
-                try {
-                  if (line.startsWith("event: ")) {
-                    // Process event lines, store temporarily to pair with next data line
-                    continue;
-                  } else if (line.startsWith("data: ")) {
-                    const dataStr = line.slice(5).trim(); // Remove "data: " prefix
-                    if (dataStr === "[DONE]") {
-                      isStreamEnded = true;
-                      controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
-                      continue;
-                    }
-
-                    try {
-                      const data: ResponsesStreamEvent = JSON.parse(dataStr);
-
-                      // Convert to chat format based on different event types
-                      if (data.type === "response.output_text.delta") {
-                        // Convert output_text.delta to chat format
-                        const chatChunk = {
-                          id: data.item_id || "chatcmpl-" + Date.now(),
-                          object: "chat.completion.chunk",
-                          created: Math.floor(Date.now() / 1000),
-                          model: data.response?.model,
-                          choices: [
-                            {
-                              index: getCurrentIndex(data.type),
-                              delta: {
-                                content: data.delta || "",
-                              },
-                              finish_reason: null,
-                            },
-                          ],
-                        };
-
-                        controller.enqueue(
-                          encoder.encode(
-                            `data: ${JSON.stringify(chatChunk)}\n\n`
-                          )
-                        );
-                      } else if (
-                        data.type === "response.output_item.added" &&
-                        data.item?.type === "function_call"
-                      ) {
-                        // Handle function call start - create initial tool call chunk
-                        const functionCallChunk = {
-                          id:
-                            data.item.call_id ||
-                            data.item.id ||
-                            "chatcmpl-" + Date.now(),
-                          object: "chat.completion.chunk",
-                          created: Math.floor(Date.now() / 1000),
-                          model: data.response?.model || "gpt-5-codex-",
-                          choices: [
-                            {
-                              index: getCurrentIndex(data.type),
-                              delta: {
-                                role: "assistant",
-                                tool_calls: [
-                                  {
-                                    index: 0,
-                                    id: data.item.call_id || data.item.id,
-                                    function: {
-                                      name: data.item.name || "",
-                                      arguments: "",
-                                    },
-                                    type: "function",
-                                  },
-                                ],
-                              },
-                              finish_reason: null,
-                            },
-                          ],
-                        };
-
-                        controller.enqueue(
-                          encoder.encode(
-                            `data: ${JSON.stringify(functionCallChunk)}\n\n`
-                          )
-                        );
-                      } else if (
-                        data.type === "response.output_item.added" &&
-                        data.item?.type === "message"
-                      ) {
-                        // Handle message item added event
-                        const contentItems: MessageContent[] = [];
-                        (data.item.content || []).forEach((item: any) => {
-                          if (item.type === "output_text") {
-                            contentItems.push({
-                              type: "text",
-                              text: item.text || "",
-                            });
-                          }
-                        });
-
-                        const delta: any = { role: "assistant" };
-                        if (
-                          contentItems.length === 1 &&
-                          contentItems[0].type === "text"
-                        ) {
-                          delta.content = contentItems[0].text;
-                        } else if (contentItems.length > 0) {
-                          delta.content = contentItems;
-                        }
-                        if (delta.content) {
-                          const messageChunk = {
-                            id: data.item.id || "chatcmpl-" + Date.now(),
-                            object: "chat.completion.chunk",
-                            created: Math.floor(Date.now() / 1000),
-                            model: data.response?.model,
-                            choices: [
-                              {
-                                index: getCurrentIndex(data.type),
-                                delta,
-                                finish_reason: null,
-                              },
-                            ],
-                          };
-
-                          controller.enqueue(
-                            encoder.encode(
-                              `data: ${JSON.stringify(messageChunk)}\n\n`
-                            )
-                          );
-                        }
-                      } else if (
-                        data.type === "response.output_text.annotation.added"
-                      ) {
-                        const annotationChunk = {
-                          id: data.item_id || "chatcmpl-" + Date.now(),
-                          object: "chat.completion.chunk",
-                          created: Math.floor(Date.now() / 1000),
-                          model: data.response?.model || "gpt-5-codex",
-                          choices: [
-                            {
-                              index: getCurrentIndex(data.type),
-                              delta: {
-                                annotations: [
-                                  {
-                                    type: "url_citation",
-                                    url_citation: {
-                                      url: data.annotation?.url || "",
-                                      title: data.annotation?.title || "",
-                                      content: "",
-                                      start_index:
-                                        data.annotation?.start_index || 0,
-                                      end_index:
-                                        data.annotation?.end_index || 0,
-                                    },
-                                  },
-                                ],
-                              },
-                              finish_reason: null,
-                            },
-                          ],
-                        };
-
-                        controller.enqueue(
-                          encoder.encode(
-                            `data: ${JSON.stringify(annotationChunk)}\n\n`
-                          )
-                        );
-                      } else if (
-                        data.type === "response.function_call_arguments.delta"
-                      ) {
-                        // Handle function call argument increments
-                        const functionCallChunk = {
-                          id: data.item_id || "chatcmpl-" + Date.now(),
-                          object: "chat.completion.chunk",
-                          created: Math.floor(Date.now() / 1000),
-                          model: data.response?.model || "gpt-5-codex-",
-                          choices: [
-                            {
-                              index: getCurrentIndex(data.type),
-                              delta: {
-                                tool_calls: [
-                                  {
-                                    index: 0,
-                                    function: {
-                                      arguments: data.delta || "",
-                                    },
-                                  },
-                                ],
-                              },
-                              finish_reason: null,
-                            },
-                          ],
-                        };
-
-                        controller.enqueue(
-                          encoder.encode(
-                            `data: ${JSON.stringify(functionCallChunk)}\n\n`
-                          )
-                        );
-                      } else if (data.type === "response.completed") {
-                        // Send end marker - check if tool_calls are complete
-                        const finishReason = data.response?.output?.some(
-                          (item: any) => item.type === "function_call"
-                        )
-                          ? "tool_calls"
-                          : "stop";
-
-                        const endChunk = {
-                          id: data.response?.id || "chatcmpl-" + Date.now(),
-                          object: "chat.completion.chunk",
-                          created: Math.floor(Date.now() / 1000),
-                          model: data.response?.model || "gpt-5-codex-",
-                          choices: [
-                            {
-                              index: 0,
-                              delta: {},
-                              finish_reason: finishReason,
-                            },
-                          ],
-                        };
-
-                        controller.enqueue(
-                          encoder.encode(
-                            `data: ${JSON.stringify(endChunk)}\n\n`
-                          )
-                        );
-                        isStreamEnded = true;
-                      } else if (
-                        data.type === "response.reasoning_summary_text.delta"
-                      ) {
-                        // Handle reasoning text, convert it to thinking delta format
-                        const thinkingChunk = {
-                          id: data.item_id || "chatcmpl-" + Date.now(),
-                          object: "chat.completion.chunk",
-                          created: Math.floor(Date.now() / 1000),
-                          model: data.response?.model,
-                          choices: [
-                            {
-                              index: getCurrentIndex(data.type),
-                              delta: {
-                                thinking: {
-                                  content: data.delta || "",
-                                },
-                              },
-                              finish_reason: null,
-                            },
-                          ],
-                        };
-
-                        controller.enqueue(
-                          encoder.encode(
-                            `data: ${JSON.stringify(thinkingChunk)}\n\n`
-                          )
-                        );
-                      } else if (
-                        data.type === "response.reasoning_summary_part.done" &&
-                        data.part
-                      ) {
-                        const thinkingChunk = {
-                          id: data.item_id || "chatcmpl-" + Date.now(),
-                          object: "chat.completion.chunk",
-                          created: Math.floor(Date.now() / 1000),
-                          model: data.response?.model,
-                          choices: [
-                            {
-                              index: currentIndex,
-                              delta: {
-                                thinking: {
-                                  signature: data.item_id,
-                                },
-                              },
-                              finish_reason: null,
-                            },
-                          ],
-                        };
-
-                        controller.enqueue(
-                          encoder.encode(
-                            `data: ${JSON.stringify(thinkingChunk)}\n\n`
-                          )
-                        );
-                      }
-                    } catch (e) {
-                      // If JSON parsing fails, pass the original line
-                      controller.enqueue(encoder.encode(line + "\n"));
-                    }
-                  } else {
-                    // Pass through other lines
-                    controller.enqueue(encoder.encode(line + "\n"));
-                  }
-                } catch (error) {
-                  console.error("Error processing line:", line, error);
-                  // If parsing fails, pass the original line through
-                  controller.enqueue(encoder.encode(line + "\n"));
-                }
-              }
+          if (line.startsWith("data: ")) {
+            const dataStr = line.slice(5).trim();
+            if (dataStr === "[DONE]") {
+              isStreamEnded = true;
+              ctx.controller.enqueue(encodeSSEData("[DONE]", ctx.encoder));
+              return;
             }
 
-            // Process remaining data in the buffer
-            if (buffer.trim()) {
-              controller.enqueue(encoder.encode(buffer + "\n"));
-            }
-
-            // Ensure end marker is sent when stream ends
-            if (!isStreamEnded) {
-              const doneChunk = `data: [DONE]\n\n`;
-              controller.enqueue(encoder.encode(doneChunk));
-            }
-          } catch (error) {
-            console.error("Stream error:", error);
-            controller.error(error);
-          } finally {
             try {
-              reader.releaseLock();
-            } catch (e) {
-              console.error("Error releasing reader lock:", e);
+              const data: ResponsesStreamEvent = JSON.parse(dataStr);
+              const chunk = transformer.convertStreamEvent(data, getCurrentIndex);
+              if (chunk) {
+                ctx.controller.enqueue(encodeSSEData(JSON.stringify(chunk), ctx.encoder));
+              }
+            } catch {
+              ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
             }
-            controller.close();
+          } else {
+            ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
           }
-        },
-      });
-
-      return new Response(stream, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-          "Access-Control-Allow-Origin": "*",
-        },
-      });
+        }
+      );
     }
 
     return response;
   }
 
+  private convertStreamEvent(data: ResponsesStreamEvent, getCurrentIndex: (type: string) => number): any | null {
+    if (data.type === "response.output_text.delta") {
+      return {
+        id: data.item_id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model,
+        choices: [
+          {
+            index: getCurrentIndex(data.type),
+            delta: {
+              content: data.delta || "",
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    if (data.type === "response.output_item.added" && data.item?.type === "function_call") {
+      return {
+        id: data.item.call_id || data.item.id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model || "gpt-5-codex-",
+        choices: [
+          {
+            index: getCurrentIndex(data.type),
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: data.item.call_id || data.item.id,
+                  function: {
+                    name: data.item.name || "",
+                    arguments: "",
+                  },
+                  type: "function",
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    if (data.type === "response.output_item.added" && data.item?.type === "message") {
+      const contentItems: MessageContent[] = [];
+      (data.item.content || []).forEach((item: any) => {
+        if (item.type === "output_text") {
+          contentItems.push({
+            type: "text",
+            text: item.text || "",
+          });
+        }
+      });
+
+      const delta: any = { role: "assistant" };
+      if (contentItems.length === 1 && contentItems[0].type === "text") {
+        delta.content = contentItems[0].text;
+      } else if (contentItems.length > 0) {
+        delta.content = contentItems;
+      }
+      if (delta.content) {
+        return {
+          id: data.item.id || "chatcmpl-" + Date.now(),
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model: data.response?.model,
+          choices: [
+            {
+              index: getCurrentIndex(data.type),
+              delta,
+              finish_reason: null,
+            },
+          ],
+        };
+      }
+      return null;
+    }
+
+    if (data.type === "response.output_text.annotation.added") {
+      return {
+        id: data.item_id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model || "gpt-5-codex",
+        choices: [
+          {
+            index: getCurrentIndex(data.type),
+            delta: {
+              annotations: [
+                {
+                  type: "url_citation",
+                  url_citation: {
+                    url: data.annotation?.url || "",
+                    title: data.annotation?.title || "",
+                    content: "",
+                    start_index: data.annotation?.start_index || 0,
+                    end_index: data.annotation?.end_index || 0,
+                  },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    if (data.type === "response.function_call_arguments.delta") {
+      return {
+        id: data.item_id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model || "gpt-5-codex-",
+        choices: [
+          {
+            index: getCurrentIndex(data.type),
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  function: {
+                    arguments: data.delta || "",
+                  },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    if (data.type === "response.completed") {
+      const finishReason = data.response?.output?.some(
+        (item: any) => item.type === "function_call"
+      )
+        ? "tool_calls"
+        : "stop";
+
+      return {
+        id: data.response?.id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model || "gpt-5-codex-",
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: finishReason,
+          },
+        ],
+      };
+    }
+
+    if (data.type === "response.reasoning_summary_text.delta") {
+      return {
+        id: data.item_id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model,
+        choices: [
+          {
+            index: getCurrentIndex(data.type),
+            delta: {
+              thinking: {
+                content: data.delta || "",
+              },
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    if (data.type === "response.reasoning_summary_part.done" && data.part) {
+      return {
+        id: data.item_id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model,
+        choices: [
+          {
+            index: getCurrentIndex(data.type),
+            delta: {
+              thinking: {
+                signature: data.item_id,
+              },
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    return null;
+  }
+
   private normalizeRequestContent(content: any, role: string | undefined) {
-    // Clone content object and delete cache control field
-    const clone = { ...content };
-    delete clone.cache_control;
+    const clone = stripCacheControl(content);
 
     if (content.type === "text") {
       return {
@@ -653,7 +526,6 @@ export class OpenAIResponsesTransformer implements Transformer {
   }
 
   private convertResponseToChat(responseData: ResponsesAPIPayload): any {
-    // Extract different types of output from the output array
     const messageOutput = responseData.output?.find(
       (item) => item.type === "message"
     );
@@ -688,7 +560,6 @@ export class OpenAIResponsesTransformer implements Transformer {
     let toolCalls = null;
     let thinking = null;
 
-    // Handle reasoning content
     if (messageOutput && messageOutput.reasoning) {
       thinking = {
         content: messageOutput.reasoning,
@@ -696,7 +567,6 @@ export class OpenAIResponsesTransformer implements Transformer {
     }
 
     if (messageOutput && messageOutput.content) {
-      // Separate text and image content
       const textParts: string[] = [];
       const imageParts: MessageContent[] = [];
 
@@ -722,9 +592,7 @@ export class OpenAIResponsesTransformer implements Transformer {
         }
       });
 
-      // Build final content
       if (imageParts.length > 0) {
-        // If there are images, combine all content into an array
         const contentArray: MessageContent[] = [];
         if (textParts.length > 0) {
           contentArray.push({
@@ -735,13 +603,11 @@ export class OpenAIResponsesTransformer implements Transformer {
         contentArray.push(...imageParts);
         messageContent = contentArray;
       } else {
-        // If there is only text, return a string
         messageContent = textParts.join("");
       }
     }
 
     if (functionCallOutput) {
-      // Handle function_call type output
       toolCalls = [
         {
           id: functionCallOutput.call_id || functionCallOutput.id,
@@ -754,8 +620,7 @@ export class OpenAIResponsesTransformer implements Transformer {
       ];
     }
 
-    // Build response in chat format
-    const chatResponse = {
+    return {
       id: responseData.id || "chatcmpl-" + Date.now(),
       object: "chat.completion",
       created: responseData.created_at,
@@ -782,8 +647,6 @@ export class OpenAIResponsesTransformer implements Transformer {
           }
         : null,
     };
-
-    return chatResponse;
   }
 
   private buildImageContent(source: {

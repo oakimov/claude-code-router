@@ -1,5 +1,15 @@
 import { UnifiedChatRequest } from "@/types/llm";
 import { Transformer, TransformerOptions } from "../types/transformer";
+import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
+import { stripMessagesCacheControl } from "../utils/cacheControl";
+import {
+  createReasoningAccumulator,
+  accumulateReasoning,
+  finalizeReasoning,
+  buildThinkingChunk,
+  extractReasoningText,
+  cleanReasoningFields,
+} from "../utils/thinking";
 import { v4 as uuidv4 } from "uuid";
 
 export class OpenrouterTransformer implements Transformer {
@@ -11,12 +21,12 @@ export class OpenrouterTransformer implements Transformer {
     request: UnifiedChatRequest
   ): Promise<UnifiedChatRequest> {
     if (!request.model.includes("claude")) {
+      request.messages = stripMessagesCacheControl(request.messages);
+
+      // Handle non-HTTP image URLs for non-Claude models
       request.messages.forEach((msg) => {
         if (Array.isArray(msg.content)) {
           msg.content.forEach((item: any) => {
-            if (item.cache_control) {
-              delete item.cache_control;
-            }
             if (item.type === "image_url") {
               if (!item.image_url.url.startsWith("http")) {
                 item.image_url.url = `${item.image_url.url}`;
@@ -24,8 +34,6 @@ export class OpenrouterTransformer implements Transformer {
               delete item.media_type;
             }
           });
-        } else if (msg.cache_control) {
-          delete msg.cache_control;
         }
       });
     } else {
@@ -55,300 +63,107 @@ export class OpenrouterTransformer implements Transformer {
         headers: response.headers,
       });
     } else if (response.headers.get("Content-Type")?.includes("stream")) {
-      if (!response.body) {
-        return response;
-      }
+      if (!response.body) return response;
 
-      const decoder = new TextDecoder();
-      const encoder = new TextEncoder();
-
+      const accumulator = createReasoningAccumulator();
       let hasTextContent = false;
-      let reasoningContent = "";
-      let isReasoningComplete = false;
       let hasToolCall = false;
-      let buffer = ""; // used to buffer incomplete data
 
-      const stream = new ReadableStream({
-        async start(controller) {
-          const reader = response.body!.getReader();
-          const processBuffer = (
-            buffer: string,
-            controller: ReadableStreamDefaultController,
-            encoder: TextEncoder
-          ) => {
-            const lines = buffer.split("\n");
-            for (const line of lines) {
-              if (line.trim()) {
-                controller.enqueue(encoder.encode(line + "\n"));
-              }
-            }
-          };
+      return createSSEStreamReader(response, (line: string, ctx: StreamContext) => {
+        if (!line.trim()) {
+          ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
+          return;
+        }
 
-          const processLine = (
-            line: string,
-            context: {
-              controller: ReadableStreamDefaultController;
-              encoder: TextEncoder;
-              hasTextContent: () => boolean;
-              setHasTextContent: (val: boolean) => void;
-              reasoningContent: () => string;
-              appendReasoningContent: (content: string) => void;
-              isReasoningComplete: () => boolean;
-              setReasoningComplete: (val: boolean) => void;
-            }
-          ) => {
-            const { controller, encoder } = context;
+        if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") {
+          ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
+          return;
+        }
 
-            if (line.startsWith("data: ") && line.trim() !== "data: [DONE]") {
-              const jsonStr = line.slice(6);
-              try {
-                const data = JSON.parse(jsonStr);
-                if (data.usage) {
-                  this.logger?.debug(
-                    { usage: data.usage, hasToolCall },
-                    "usage"
-                  );
-                  data.choices[0].finish_reason = hasToolCall
-                    ? "tool_calls"
-                    : "stop";
-                }
+        try {
+          const jsonStr = line.slice(6);
+          const data = JSON.parse(jsonStr);
 
-                if (data.choices?.[0]?.finish_reason === "error") {
-                  controller.enqueue(
-                    encoder.encode(
-                      `data: ${JSON.stringify({
-                        error: data.choices?.[0].error,
-                      })}\n\n`
-                    )
-                  );
-                }
-
-                if (
-                  data.choices?.[0]?.delta?.content &&
-                  !context.hasTextContent()
-                ) {
-                  context.setHasTextContent(true);
-                }
-
-                // Extract reasoning_content from delta
-                if (data.choices?.[0]?.delta?.reasoning) {
-                  context.appendReasoningContent(
-                    data.choices[0].delta.reasoning
-                  );
-                  const thinkingChunk = {
-                    ...data,
-                    choices: [
-                      {
-                        ...data.choices?.[0],
-                        delta: {
-                          ...data.choices[0].delta,
-                          thinking: {
-                            content: data.choices[0].delta.reasoning,
-                          },
-                        },
-                      },
-                    ],
-                  };
-                  if (thinkingChunk.choices?.[0]?.delta) {
-                    delete thinkingChunk.choices[0].delta.reasoning;
-                  }
-                  const thinkingLine = `data: ${JSON.stringify(
-                    thinkingChunk
-                  )}\n\n`;
-                  controller.enqueue(encoder.encode(thinkingLine));
-                  return;
-                }
-
-                // Check if reasoning is complete
-                if (
-                  data.choices?.[0]?.delta?.content &&
-                  context.reasoningContent() &&
-                  !context.isReasoningComplete()
-                ) {
-                  context.setReasoningComplete(true);
-                  const signature = Date.now().toString();
-
-                  const thinkingChunk = {
-                    ...data,
-                    choices: [
-                      {
-                        ...data.choices?.[0],
-                        delta: {
-                          ...data.choices[0].delta,
-                          content: null,
-                          thinking: {
-                            content: context.reasoningContent(),
-                            signature: signature,
-                          },
-                        },
-                      },
-                    ],
-                  };
-                  if (thinkingChunk.choices?.[0]?.delta) {
-                    delete thinkingChunk.choices[0].delta.reasoning;
-                  }
-                  const thinkingLine = `data: ${JSON.stringify(
-                    thinkingChunk
-                  )}\n\n`;
-                  controller.enqueue(encoder.encode(thinkingLine));
-                }
-
-                if (data.choices?.[0]?.delta?.reasoning) {
-                  delete data.choices[0].delta.reasoning;
-                }
-                if (
-                  data.choices?.[0]?.delta?.tool_calls?.length &&
-                  !Number.isNaN(
-                    parseInt(data.choices?.[0]?.delta?.tool_calls[0].id, 10)
-                  )
-                ) {
-                  data.choices?.[0]?.delta?.tool_calls.forEach((tool: any) => {
-                    tool.id = `call_${uuidv4()}`;
-                  });
-                }
-
-                if (
-                  data.choices?.[0]?.delta?.tool_calls?.length &&
-                  !hasToolCall
-                ) {
-                  hasToolCall = true;
-                }
-
-                if (
-                  data.choices?.[0]?.delta?.tool_calls?.length &&
-                  context.hasTextContent()
-                ) {
-                  if (typeof data.choices[0].index === "number") {
-                    data.choices[0].index += 1;
-                  } else {
-                    data.choices[0].index = 1;
-                  }
-                }
-
-                const modifiedLine = `data: ${JSON.stringify(data)}\n\n`;
-                controller.enqueue(encoder.encode(modifiedLine));
-              } catch (e) {
-                // If JSON parsing fails, it might be because the data is incomplete; pass the original line through
-                controller.enqueue(encoder.encode(line + "\n"));
-              }
-            } else {
-              // Pass through non-data lines (like [DONE])
-              controller.enqueue(encoder.encode(line + "\n"));
-            }
-          };
-
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) {
-                // Process remaining data in the buffer
-                if (buffer.trim()) {
-                  processBuffer(buffer, controller, encoder);
-                }
-                break;
-              }
-
-              // Check if value is valid
-              if (!value || value.length === 0) {
-                continue;
-              }
-
-              let chunk;
-              try {
-                chunk = decoder.decode(value, { stream: true });
-              } catch (decodeError) {
-                console.warn("Failed to decode chunk", decodeError);
-                continue;
-              }
-
-              if (chunk.length === 0) {
-                continue;
-              }
-
-              buffer += chunk;
-
-              // If the buffer is too large, process it to avoid memory leaks
-              if (buffer.length > 1000000) {
-                // 1MB limit
-                console.warn(
-                  "Buffer size exceeds limit, processing partial data"
-                );
-                const lines = buffer.split("\n");
-                buffer = lines.pop() || "";
-
-                for (const line of lines) {
-                  if (line.trim()) {
-                    try {
-                      processLine(line, {
-                        controller,
-                        encoder,
-                        hasTextContent: () => hasTextContent,
-                        setHasTextContent: (val) => (hasTextContent = val),
-                        reasoningContent: () => reasoningContent,
-                        appendReasoningContent: (content) =>
-                          (reasoningContent += content),
-                        isReasoningComplete: () => isReasoningComplete,
-                        setReasoningComplete: (val) =>
-                          (isReasoningComplete = val),
-                      });
-                    } catch (error) {
-                      console.error("Error processing line:", line, error);
-                      // If parsing fails, pass the original line through
-                      controller.enqueue(encoder.encode(line + "\n"));
-                    }
-                  }
-                }
-                continue;
-              }
-
-              // Process complete data lines in the buffer
-              const lines = buffer.split("\n");
-              buffer = lines.pop() || ""; // The last line might be incomplete; keep it in the buffer
-
-              for (const line of lines) {
-                if (!line.trim()) continue;
-
-                try {
-                  processLine(line, {
-                    controller,
-                    encoder,
-                    hasTextContent: () => hasTextContent,
-                    setHasTextContent: (val) => (hasTextContent = val),
-                    reasoningContent: () => reasoningContent,
-                    appendReasoningContent: (content) =>
-                      (reasoningContent += content),
-                    isReasoningComplete: () => isReasoningComplete,
-                    setReasoningComplete: (val) => (isReasoningComplete = val),
-                  });
-                } catch (error) {
-                  console.error("Error processing line:", line, error);
-                  // If parsing fails, pass the original line through
-                  controller.enqueue(encoder.encode(line + "\n"));
-                }
-              }
-            }
-          } catch (error) {
-            console.error("Stream error:", error);
-            controller.error(error);
-          } finally {
-            try {
-              reader.releaseLock();
-            } catch (e) {
-              console.error("Error releasing reader lock:", e);
-            }
-            controller.close();
+          if (data.usage) {
+            this.logger?.debug(
+              { usage: data.usage, hasToolCall },
+              "usage"
+            );
+            data.choices[0].finish_reason = hasToolCall
+              ? "tool_calls"
+              : "stop";
           }
-        },
-      });
 
-      return new Response(stream, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        },
+          if (data.choices?.[0]?.finish_reason === "error") {
+            ctx.controller.enqueue(
+              encodeSSEData(
+                JSON.stringify({ error: data.choices?.[0]?.error }),
+                ctx.encoder
+              )
+            );
+          }
+
+          if (data.choices?.[0]?.delta?.content && !hasTextContent) {
+            hasTextContent = true;
+          }
+
+          const delta = data.choices?.[0]?.delta;
+          const reasoningText = delta ? extractReasoningText(delta) : null;
+
+          if (reasoningText) {
+            accumulateReasoning(accumulator, reasoningText);
+            const thinkingChunk = buildThinkingChunk(data, {
+              content: reasoningText,
+            });
+            cleanReasoningFields(thinkingChunk.choices[0].delta);
+            ctx.controller.enqueue(encodeSSEData(JSON.stringify(thinkingChunk), ctx.encoder));
+            return;
+          }
+
+          if (
+            delta?.content &&
+            accumulator.hasContent &&
+            !accumulator.isComplete
+          ) {
+            const { content, signature } = finalizeReasoning(accumulator);
+            const thinkingChunk = buildThinkingChunk(data, {
+              content,
+              signature,
+            });
+            cleanReasoningFields(thinkingChunk.choices[0].delta);
+            thinkingChunk.choices[0].delta.content = null;
+            ctx.controller.enqueue(encodeSSEData(JSON.stringify(thinkingChunk), ctx.encoder));
+          }
+
+          if (delta?.reasoning) {
+            delete delta.reasoning;
+          }
+
+          if (
+            delta?.tool_calls?.length &&
+            !Number.isNaN(parseInt(delta.tool_calls[0].id, 10))
+          ) {
+            delta.tool_calls.forEach((tool: any) => {
+              tool.id = `call_${uuidv4()}`;
+            });
+          }
+
+          if (delta?.tool_calls?.length && !hasToolCall) {
+            hasToolCall = true;
+          }
+
+          if (delta?.tool_calls?.length && hasTextContent) {
+            if (typeof data.choices[0].index === "number") {
+              data.choices[0].index += 1;
+            } else {
+              data.choices[0].index = 1;
+            }
+          }
+
+          ctx.controller.enqueue(encodeSSEData(JSON.stringify(data), ctx.encoder));
+        } catch {
+          ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
+        }
       });
     }
 
