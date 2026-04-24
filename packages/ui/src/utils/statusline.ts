@@ -1,59 +1,59 @@
 import type { StatusLineConfig, StatusLineModuleConfig } from "@/types";
 
-// 验证结果（保留接口但不使用）
+// Validation results (keep interface but not used)
 export interface ValidationResult {
   isValid: boolean;
   errors: any[];
 }
 
 /**
- * 验证StatusLine配置 - 已移除所有验证
- * @param config 要验证的配置对象
- * @returns 始终返回验证通过
+ * Validate StatusLine configuration - all validation removed
+ * @param config the configuration object to validate
+ * @returns always returns validation success
  */
 export function validateStatusLineConfig(config: unknown): ValidationResult {
-  // 不再执行任何验证
+  // No longer performing any validation
   return { isValid: true, errors: [] };
 }
 
 
 /**
- * 格式化错误信息（支持国际化）- 不再使用
+ * Format error message (supports i18n) - no longer used
  */
 export function formatValidationError(error: unknown, t: (key: string, options?: Record<string, unknown>) => string): string {
   return t("statusline.validation.unknown_error");
 }
 
 /**
- * 解析颜色值，支持十六进制和内置颜色名称
- * @param color 颜色值（可以是颜色名称或十六进制值）
- * @param defaultColor 默认颜色（十六进制）
- * @returns 十六进制颜色值
+ * Parse color value, supports hexadecimal and built-in color names
+ * @param color color value (can be color name or hex value)
+ * @param defaultColor default color (hexadecimal)
+ * @returns hexadecimal color value
  */
 export function parseColorValue(color: string | undefined, defaultColor: string = "#ffffff"): string {
   if (!color) {
     return defaultColor;
   }
   
-  // 如果是十六进制颜色值（以#开头）
+  // If it's a hex color value (starts with #)
   if (color.startsWith('#')) {
     return color;
   }
   
-  // 如果是已知的颜色名称，返回对应的十六进制值
+  // If it's a known color name, return corresponding hex value
   return COLOR_HEX_MAP[color] || defaultColor;
 }
 
 /**
- * 判断是否为有效的十六进制颜色值
- * @param color 要检查的颜色值
- * @returns 是否为有效的十六进制颜色值
+ * Check if it's a valid hexadecimal color value
+ * @param color color value to check
+ * @returns whether it's a valid hexadecimal color value
  */
 export function isHexColor(color: string): boolean {
   return /^#([0-9A-F]{3}){1,2}$/i.test(color);
 }
 
-// 颜色枚举到十六进制的映射
+// Mapping from color enum to hex
 export const COLOR_HEX_MAP: Record<string, string> = {
   black: "#000000",
   red: "#cd0000",
@@ -90,7 +90,7 @@ export const COLOR_HEX_MAP: Record<string, string> = {
 };
 
 /**
- * 创建默认的StatusLine配置
+ * Create default StatusLine configuration
  */
 export function createDefaultStatusLineConfig(): StatusLineConfig {
   return {
@@ -118,7 +118,7 @@ export function createDefaultStatusLineConfig(): StatusLineConfig {
 }
 
 /**
- * 创建配置备份
+ * Create configuration backup
  */
 export function backupConfig(config: StatusLineConfig): string {
   const backup = {
@@ -130,7 +130,7 @@ export function backupConfig(config: StatusLineConfig): string {
 }
 
 /**
- * 从备份恢复配置
+ * Restore configuration from backup
  */
 export function restoreConfig(backupStr: string): StatusLineConfig | null {
   try {

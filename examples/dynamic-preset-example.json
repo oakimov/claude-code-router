@@ -2,7 +2,7 @@
   "metadata": {
     "name": "multi-provider-preset",
     "version": "1.0.0",
-    "description": "示例预设：支持多provider选择和动态配置",
+    "description": "Example preset: supports multi-provider selection and dynamic configuration",
     "author": "CCR Team",
     "keywords": ["example", "multi-provider", "dynamic"],
     "ccrVersion": "2.0.0"
@@ -11,25 +11,25 @@
     {
       "id": "providerChoice",
       "type": "select",
-      "label": "选择Provider",
-      "prompt": "请选择要使用的LLM提供商",
+      "label": "Select Provider",
+      "prompt": "Please select the LLM provider to use",
       "options": {
         "type": "static",
         "options": [
           {
             "label": "OpenAI",
             "value": "openai",
-            "description": "使用OpenAI的GPT模型"
+            "description": "Use OpenAI's GPT models"
           },
           {
             "label": "DeepSeek",
             "value": "deepseek",
-            "description": "使用DeepSeek的高性价比模型"
+            "description": "Use DeepSeek's cost-effective models"
           },
           {
             "label": "Gemini",
             "value": "gemini",
-            "description": "使用Google的Gemini模型"
+            "description": "Use Google's Gemini models"
           }
         ]
       },
@@ -40,7 +40,7 @@
       "id": "apiKey",
       "type": "password",
       "label": "API Key",
-      "prompt": "请输入您的API Key",
+      "prompt": "Please enter your API Key",
       "placeholder": "sk-...",
       "required": true,
       "when": {
@@ -51,8 +51,8 @@
     {
       "id": "baseUrl",
       "type": "input",
-      "label": "Base URL（可选）",
-      "prompt": "自定义API Base URL，留空使用默认值",
+      "label": "Base URL (Optional)",
+      "prompt": "Custom API Base URL, leave blank to use default",
       "required": false,
       "when": {
         "field": "providerChoice",
@@ -62,8 +62,8 @@
     {
       "id": "modelChoice",
       "type": "select",
-      "label": "选择模型",
-      "prompt": "请选择要使用的模型",
+      "label": "Select Model",
+      "prompt": "Please select the model to use",
       "options": {
         "type": "static",
         "options": [
@@ -92,8 +92,8 @@
     {
       "id": "deepseekModelChoice",
       "type": "select",
-      "label": "选择模型",
-      "prompt": "请选择要使用的DeepSeek模型",
+      "label": "Select Model",
+      "prompt": "Please select the DeepSeek model to use",
       "options": {
         "type": "static",
         "options": [
@@ -118,15 +118,15 @@
     {
       "id": "useProxy",
       "type": "confirm",
-      "label": "使用代理",
-      "prompt": "是否通过代理访问API？",
+      "label": "Use Proxy",
+      "prompt": "Do you want to access the API via proxy?",
       "defaultValue": false
     },
     {
       "id": "proxyUrl",
       "type": "input",
-      "label": "代理URL",
-      "prompt": "请输入代理地址（如：http://127.0.0.1:7890）",
+      "label": "Proxy URL",
+      "prompt": "Please enter the proxy address (e.g., http://127.0.0.1:7890)",
       "placeholder": "http://127.0.0.1:7890",
       "required": true,
       "when": {
@@ -138,8 +138,8 @@
     {
       "id": "maxTokens",
       "type": "number",
-      "label": "最大Token数",
-      "prompt": "设置单次请求的最大token数量",
+      "label": "Max Tokens",
+      "prompt": "Set the maximum token count for a single request",
       "min": 100,
       "max": 128000,
       "defaultValue": 4096,
@@ -148,15 +148,15 @@
     {
       "id": "advancedSettings",
       "type": "confirm",
-      "label": "高级设置",
-      "prompt": "是否配置高级选项？",
+      "label": "Advanced Settings",
+      "prompt": "Do you want to configure advanced options?",
       "defaultValue": false
     },
     {
       "id": "temperature",
       "type": "number",
       "label": "Temperature",
-      "prompt": "控制生成随机性（0-2）",
+      "prompt": "Control generation randomness (0-2)",
       "min": 0,
       "max": 2,
       "defaultValue": 0.7,
@@ -170,21 +170,21 @@
     {
       "id": "features",
       "type": "multiselect",
-      "label": "启用功能",
-      "prompt": "选择要启用的功能",
+      "label": "Enable Features",
+      "prompt": "Select features to enable",
       "options": {
         "type": "static",
         "options": [
           {
-            "label": "流式输出",
+            "label": "Streaming Output",
             "value": "stream"
           },
           {
-            "label": "工具调用",
+            "label": "Tool Calls",
             "value": "tools"
           },
           {
-            "label": "长上下文支持",
+            "label": "Long Context Support",
             "value": "longContext"
           }
         ]

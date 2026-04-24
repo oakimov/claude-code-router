@@ -157,7 +157,7 @@ async function mergeOtherConfig(
       } else if (strategy === MergeStrategy.OVERWRITE) {
         result[key] = value;
       }
-      // merge and skip strategies: keep existing值
+      // merge and skip strategies: keep existing value
     }
   }
 

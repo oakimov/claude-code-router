@@ -15,14 +15,14 @@ interface ColorPickerProps {
   showPreview?: boolean;
 }
 
-// 获取颜色值的函数
+// Function to get color value
 const getColorValue = (color: string): string => {
-  // 如果是十六进制颜色
+  // If it's a hex color
   if (color.startsWith("#")) {
     return color
   }
   
-  // 默认返回黑色
+  // Default to black
   return "#000000"
 }
 
@@ -36,7 +36,7 @@ export function ColorPicker({
   const [open, setOpen] = React.useState(false)
   const [customColor, setCustomColor] = React.useState("")
   
-  // 当value变化时更新customColor
+  // Update customColor when value changes
   React.useEffect(() => {
     if (value.startsWith("#")) {
       setCustomColor(value)
@@ -52,7 +52,7 @@ export function ColorPicker({
   const handleCustomColorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const color = e.target.value
     setCustomColor(color)
-    // 验证十六进制颜色格式
+    // Validate hex color format
     if (/^#[0-9A-F]{6}$/i.test(color)) {
       handleColorChange(color)
     }
@@ -91,7 +91,7 @@ export function ColorPicker({
         </PopoverTrigger>
         <PopoverContent className="w-72 p-3" align="start">
           <div className="space-y-4">
-            {/* 颜色选择器标题 */}
+            {/* Color picker title */}
             <div className="flex items-center justify-between">
               <h4 className="text-sm font-semibold">{t('color_picker.title')}</h4>
               <Button
@@ -104,7 +104,7 @@ export function ColorPicker({
               </Button>
             </div>
             
-            {/* 颜色预览 */}
+            {/* Color preview */}
             <div className="flex items-center gap-2 p-2 rounded-md bg-secondary">
               <div 
                 className="h-8 w-8 rounded border shadow-sm" 
@@ -122,7 +122,7 @@ export function ColorPicker({
               </div>
             </div>
             
-            {/* 颜色选择器 */}
+            {/* Color picker */}
             <div className="rounded-md overflow-hidden border">
               <HexColorPicker 
                 color={selectedColorValue} 
@@ -131,7 +131,7 @@ export function ColorPicker({
               />
             </div>
             
-            {/* 自定义颜色输入 */}
+            {/* Custom color input */}
             <div className="space-y-2">
               <label className="text-sm font-medium">{t('color_picker.custom_color')}</label>
               <div className="flex gap-2">

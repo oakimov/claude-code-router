@@ -276,7 +276,7 @@ export class AnthropicTransformer implements Transformer {
         let contentIndex = 0;
         let currentContentBlockIndex = -1; // Track the current content block index
 
-        // 原子性的content block index分配函数
+        // Atomic content block index assignment function
         const assignContentBlockIndex = (): number => {
           const currentIndex = contentIndex;
           contentIndex++;

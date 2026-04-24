@@ -29,9 +29,9 @@ export type Transformer = {
   ) => Promise<Record<string, any>>;
   transformResponseIn?: (response: Response, context?: TransformerContext) => Promise<Response>;
 
-  // 将请求格式转换为通用的格式
+  // Convert request format to generic format
   transformRequestOut?: (request: any, context: TransformerContext) => Promise<UnifiedChatRequest>;
-  // 将相应格式转换为通用的格式
+  // Convert response format to generic format
   transformResponseOut?: (response: Response, context: TransformerContext) => Promise<Response>;
 
   endPoint?: string;

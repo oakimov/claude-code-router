@@ -1,12 +1,12 @@
 /**
- * 预设功能 CLI 层
- * 导出所有预设相关的功能和类型
+ * Preset functionality CLI layer
+ * Exports all preset-related functions and types
  */
 
-// 从 shared 包重新导出类型和核心功能
+// Re-export types and core functions from shared package
 export * from '@CCR/shared';
 
-// 导出 CLI 特定的功能（带交互）
+// Export CLI specific functions (with interaction)
 export { exportPresetCli } from './export';
 export { installPresetCli, applyPresetCli } from './install';
 export { handlePresetCommand } from './commands';

@@ -17,7 +17,7 @@ export function parseToolArguments(argsString: string, logger?: any): string {
   try {
     // First attempt: Standard JSON parsing
     JSON.parse(argsString);
-    logger?.debug(`工具调用参数标准JSON解析成功 / Tool arguments standard JSON parsing successful`);
+    logger?.debug(`Tool arguments standard JSON parsing successful`);
     return argsString;
   } catch (jsonError: any) {
     try {

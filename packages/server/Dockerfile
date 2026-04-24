@@ -9,7 +9,7 @@ WORKDIR /app
 RUN npm install -g pnpm@latest && \
     rm -rf /root/.npm
 
-# Copy workspace configuration files
+# Copy workspace configuration and package files first for caching
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
 COPY scripts ./scripts
 COPY packages/shared/package.json ./packages/shared/
@@ -17,15 +17,15 @@ COPY packages/core/package.json ./packages/core/
 COPY packages/server/package.json ./packages/server/
 COPY packages/ui/package.json ./packages/ui/
 
-# Install all dependencies (including dev dependencies) and clean up
-RUN pnpm install --frozen-lockfile && \
-    pnpm store prune
-
-# Copy source code and build
+# Copy all source code before installing dependencies to avoid symlink conflicts
 COPY packages/shared ./packages/shared
 COPY packages/core ./packages/core
 COPY packages/server ./packages/server
 COPY packages/ui ./packages/ui
+
+# Install all dependencies
+RUN pnpm install --frozen-lockfile && \
+    pnpm store prune
 
 # Build all packages
 WORKDIR /app/packages/core

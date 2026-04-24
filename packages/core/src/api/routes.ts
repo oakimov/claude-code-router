@@ -88,7 +88,7 @@ async function handleTransformerEndpoint(
     );
 
     // Format and return response
-    return formatResponse(finalResponse, reply, body);
+    return await formatResponse(finalResponse, reply, body);
   } catch (error: any) {
     // Handle fallback if error occurs
     if (error.code === 'provider_response_error') {
@@ -182,7 +182,7 @@ async function handleFallback(
       req.log.info(`Fallback model ${fallbackModel} succeeded`);
 
       // Format and return response
-      return formatResponse(finalResponse, reply, newBody);
+      return await formatResponse(finalResponse, reply, newBody);
     } catch (fallbackError: any) {
       req.log.warn(`Fallback model ${fallbackModel} failed: ${fallbackError.message}`);
       continue;
@@ -444,7 +444,7 @@ async function processResponseTransformers(
  * Format and return response
  * Handle HTTP status codes, format streaming and regular responses
  */
-function formatResponse(response: any, reply: FastifyReply, body: any) {
+async function formatResponse(response: any, reply: FastifyReply, body: any) {
   // Set HTTP status code
   if (!response.ok) {
     reply.code(response.status);
@@ -459,7 +459,8 @@ function formatResponse(response: any, reply: FastifyReply, body: any) {
     return reply.send(response.body);
   } else {
     // Handle regular JSON response
-    return response.json();
+    const json = await response.json();
+    return reply.send(json);
   }
 }
 

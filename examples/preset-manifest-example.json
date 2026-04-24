@@ -1,7 +1,7 @@
 {
   "name": "multi-provider-example",
   "version": "1.0.0",
-  "description": "多Provider配置示例 - 支持OpenAI和DeepSeek切换",
+  "description": "Multi-provider configuration example - supports switching between OpenAI and DeepSeek",
   "author": "CCR Team",
   "keywords": ["openai", "deepseek", "multi-provider"],
   "ccrVersion": "2.0.0",
@@ -21,8 +21,8 @@
     {
       "id": "primaryProvider",
       "type": "select",
-      "label": "主要Provider",
-      "prompt": "选择您主要使用的LLM提供商",
+      "label": "Primary Provider",
+      "prompt": "Select your primary LLM provider",
       "options": {
         "type": "providers"
       },
@@ -33,7 +33,7 @@
       "id": "apiKey",
       "type": "password",
       "label": "API Key",
-      "prompt": "请输入您的API Key（将从环境变量或安全存储中读取）",
+      "prompt": "Please enter your API Key (will be read from environment variables or secure storage)",
       "placeholder": "sk-...",
       "required": true,
       "when": {
@@ -44,8 +44,8 @@
     {
       "id": "customBaseUrl",
       "type": "input",
-      "label": "自定义Base URL",
-      "prompt": "如果使用代理或自定义端点，请输入Base URL（留空使用默认值）",
+      "label": "Custom Base URL",
+      "prompt": "If using a proxy or custom endpoint, enter the Base URL (leave blank to use default)",
       "placeholder": "https://api.openai.com/v1",
       "required": false,
       "when": {
@@ -56,8 +56,8 @@
     {
       "id": "defaultModel",
       "type": "select",
-      "label": "默认模型",
-      "prompt": "选择默认使用的模型",
+      "label": "Default Model",
+      "prompt": "Select the default model to use",
       "options": {
         "type": "models",
         "providerField": "{{primaryProvider}}"
@@ -73,8 +73,8 @@
     {
       "id": "backgroundModel",
       "type": "select",
-      "label": "后台任务模型",
-      "prompt": "用于后台任务的轻量级模型",
+      "label": "Background Task Model",
+      "prompt": "Lightweight model for background tasks",
       "options": {
         "type": "models",
         "providerField": "{{primaryProvider}}"
@@ -88,15 +88,15 @@
     {
       "id": "enableProxy",
       "type": "confirm",
-      "label": "启用代理",
-      "prompt": "是否通过代理访问API？",
+      "label": "Enable Proxy",
+      "prompt": "Do you want to access the API via proxy?",
       "defaultValue": false
     },
     {
       "id": "proxyUrl",
       "type": "input",
-      "label": "代理地址",
-      "prompt": "输入代理服务器地址",
+      "label": "Proxy Address",
+      "prompt": "Enter proxy server address",
       "placeholder": "http://127.0.0.1:7890",
       "required": true,
       "when": {
@@ -108,8 +108,8 @@
     {
       "id": "maxTokens",
       "type": "number",
-      "label": "最大Token数",
-      "prompt": "设置单次请求的最大token数量",
+      "label": "Max Tokens",
+      "prompt": "Set the maximum token count for a single request",
       "min": 100,
       "max": 128000,
       "defaultValue": 4096,
@@ -118,8 +118,8 @@
     {
       "id": "timeout",
       "type": "number",
-      "label": "请求超时（秒）",
-      "prompt": "API请求超时时间",
+      "label": "Request Timeout (seconds)",
+      "prompt": "API request timeout",
       "min": 10,
       "max": 300,
       "defaultValue": 60,
@@ -128,30 +128,30 @@
     {
       "id": "enableFeatures",
       "type": "multiselect",
-      "label": "启用功能",
-      "prompt": "选择要启用的功能",
+      "label": "Enable Features",
+      "prompt": "Select features to enable",
       "options": {
         "type": "static",
         "options": [
           {
-            "label": "流式输出",
+            "label": "Streaming Output",
             "value": "stream",
-            "description": "实时显示AI响应"
+            "description": "Real-time display of AI responses"
           },
           {
-            "label": "工具调用",
+            "label": "Tool Calls",
             "value": "tools",
-            "description": "启用Function Calling功能"
+            "description": "Enable Function Calling"
           },
           {
-            "label": "长上下文",
+            "label": "Long Context",
             "value": "longContext",
-            "description": "支持长文本处理"
+            "description": "Support for long text processing"
           },
           {
-            "label": "思维链",
+            "label": "Chain of Thought",
             "value": "think",
-            "description": "在思考模式中使用"
+            "description": "Use in thinking mode"
           }
         ]
       },
@@ -161,15 +161,15 @@
     {
       "id": "advancedMode",
       "type": "confirm",
-      "label": "高级模式",
-      "prompt": "启用高级配置选项？",
+      "label": "Advanced Mode",
+      "prompt": "Enable advanced configuration options?",
       "defaultValue": false
     },
     {
       "id": "temperature",
       "type": "number",
       "label": "Temperature",
-      "prompt": "控制生成随机性（0-2，值越高越随机）",
+      "prompt": "Control generation randomness (0-2, higher values are more random)",
       "min": 0,
       "max": 2,
       "defaultValue": 0.7,
@@ -183,25 +183,25 @@
     {
       "id": "logLevel",
       "type": "select",
-      "label": "日志级别",
-      "prompt": "设置详细的日志级别",
+      "label": "Log Level",
+      "prompt": "Set a detailed log level",
       "options": {
         "type": "static",
         "options": [
           {
-            "label": "错误",
+            "label": "Error",
             "value": "error"
           },
           {
-            "label": "警告",
+            "label": "Warning",
             "value": "warn"
           },
           {
-            "label": "信息",
+            "label": "Info",
             "value": "info"
           },
           {
-            "label": "调试",
+            "label": "Debug",
             "value": "debug"
           }
         ]

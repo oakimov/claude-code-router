@@ -110,7 +110,7 @@ export function Providers() {
     const actualIndex = validProviders.indexOf(filteredProviders[index]);
     const provider = config.Providers[actualIndex];
     setEditingProviderIndex(actualIndex);
-    setEditingProviderData(JSON.parse(JSON.stringify(provider))); // 深拷贝
+    setEditingProviderData(JSON.parse(JSON.stringify(provider))); // Deep copy
     setIsNewProvider(false);
     // Reset API key visibility and error when opening edit dialog
     setShowApiKey(prev => ({
@@ -645,7 +645,7 @@ export function Providers() {
                           options={(editingProvider.models || []).map((model: string) => ({ label: model, value: model }))}
                           value=""
                           onChange={() => {
-                            // 只更新输入值，不添加模型
+                            // Only update input values, do not add models
                           }}
                           onEnter={(value) => {
                             if (editingProviderIndex !== null) {
@@ -670,16 +670,16 @@ export function Providers() {
                     <Button 
                       onClick={() => {
                         if (hasFetchedModels[editingProviderIndex] && comboInputRef.current) {
-                          // 使用ComboInput的逻辑
+                          // Use ComboInput logic
                           const comboInput = comboInputRef.current as unknown as { getCurrentValue(): string; clearInput(): void };
                           const currentValue = comboInput.getCurrentValue();
                           if (currentValue && currentValue.trim() && editingProviderIndex !== null) {
                             handleAddModel(editingProviderIndex, currentValue.trim());
-                            // 清空ComboInput
+                            // Clear ComboInput
                             comboInput.clearInput();
                           }
                         } else {
-                          // 使用普通Input的逻辑
+                          // Use regular Input logic
                           const input = document.getElementById('models') as HTMLInputElement;
                           if (input && input.value.trim() && editingProviderIndex !== null) {
                             handleAddModel(editingProviderIndex, input.value);

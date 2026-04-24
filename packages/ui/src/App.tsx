@@ -37,7 +37,7 @@ function App() {
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' } | null>(null);
-  // 版本检查状态
+  // Version check state
   const [isNewVersionAvailable, setIsNewVersionAvailable] = useState(false);
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [newVersionInfo, setNewVersionInfo] = useState<{ version: string; changelog: string } | null>(null);
@@ -59,7 +59,7 @@ function App() {
       // Show success message or handle as needed
       console.log('Config saved successfully');
       
-      // 根据响应信息进行提示
+      // Provide a prompt based on the response information
       if (response && typeof response === 'object' && 'success' in response) {
         const apiResponse = response as { success: boolean; message?: string };
         if (apiResponse.success) {
@@ -68,7 +68,7 @@ function App() {
           setToast({ message: apiResponse.message || t('app.config_saved_failed'), type: 'error' });
         }
       } else {
-        // 默认成功提示
+        // Default success prompt
         setToast({ message: t('app.config_saved_success'), type: 'success' });
       }
     } catch (error) {
@@ -107,14 +107,14 @@ function App() {
         // Show success message or handle as needed
         console.log('Config saved and service restarted successfully');
         
-        // 根据响应信息进行提示
+        // Provide a prompt based on the response information
         if (response && typeof response === 'object' && 'success' in response) {
           const apiResponse = response as { success: boolean; message?: string };
           if (apiResponse.success) {
             setToast({ message: apiResponse.message || t('app.config_saved_restart_success'), type: 'success' });
           }
         } else {
-          // 默认成功提示
+          // Default success prompt
           setToast({ message: t('app.config_saved_restart_success'), type: 'success' });
         }
       }
@@ -125,9 +125,9 @@ function App() {
     }
   };
   
-  // 检查更新函数
+  // Check for updates function
   const checkForUpdates = useCallback(async (showDialog: boolean = true) => {
-    // 如果已经检查过且有新版本，根据参数决定是否显示对话框
+    // If already checked and a new version is available, decide whether to show dialog based on parameter
     if (hasCheckedUpdate && isNewVersionAvailable) {
       if (showDialog) {
         setIsUpdateDialogOpen(true);
@@ -145,12 +145,12 @@ function App() {
           version: updateInfo.latestVersion,
           changelog: updateInfo.changelog
         });
-        // 只有在showDialog为true时才显示对话框
+        // Only show dialog when showDialog is true
         if (showDialog) {
           setIsUpdateDialogOpen(true);
         }
       } else if (showDialog) {
-        // 只有在showDialog为true时才显示没有更新的提示
+        // Only show "no updates available" prompt when showDialog is true
         setToast({ message: t('app.no_updates_available'), type: 'success' });
       }
       
@@ -171,7 +171,7 @@ function App() {
       // If we already have a config, we're authenticated
       if (config) {
         setIsCheckingAuth(false);
-        // 自动检查更新，但不显示对话框
+        // Automatically check for updates, but do not show dialog
         if (!hasCheckedUpdate && !hasAutoCheckedUpdate.current) {
           hasAutoCheckedUpdate.current = true;
           checkForUpdates(false);
@@ -201,7 +201,7 @@ function App() {
         }
       } finally {
         setIsCheckingAuth(false);
-        // 在获取配置完成后检查更新，但不显示对话框
+        // Check for updates after fetching configuration, but do not show dialog
         if (!hasCheckedUpdate && !hasAutoCheckedUpdate.current) {
           hasAutoCheckedUpdate.current = true;
           checkForUpdates(false);
@@ -223,7 +223,7 @@ function App() {
     };
   }, [config, navigate, hasCheckedUpdate, checkForUpdates]);
   
-  // 执行更新函数
+  // Execute update function
   const performUpdate = async () => {
     if (!newVersionInfo) return;
     
@@ -234,7 +234,7 @@ function App() {
         setToast({ message: t('app.update_successful'), type: 'success' });
         setIsNewVersionAvailable(false);
         setIsUpdateDialogOpen(false);
-        setHasCheckedUpdate(false); // 重置检查状态，以便下次重新检查
+        setHasCheckedUpdate(false); // Reset check state to allow re-checking next time
       } else {
         setToast({ message: t('app.update_failed') + ': ' + result.message, type: 'error' });
       }
@@ -336,12 +336,12 @@ function App() {
                   className="w-full justify-start transition-all-ease hover:scale-[1.02]"
                   onClick={() => i18n.changeLanguage('zh')}
                 >
-                  中文
+                  Chinese
                 </Button>
               </div>
             </PopoverContent>
           </Popover>
-          {/* 更新版本按钮 - 仅当更新功能可用时显示 */}
+          {/* Version update button - only show when update feature is available */}
           {isUpdateFeatureAvailable && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -404,7 +404,7 @@ function App() {
         onOpenChange={setIsLogViewerOpen} 
         showToast={(message, type) => setToast({ message, type })} 
       />
-      {/* 版本更新对话框 */}
+      {/* Version update dialog */}
       <Dialog open={isUpdateDialogOpen} onOpenChange={setIsUpdateDialogOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>

@@ -42,7 +42,7 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
   };
 
   const handleClearAll = async () => {
-    if (window.confirm('确定要清空所有请求历史吗？')) {
+    if (window.confirm('Are you sure you want to clear all request history?')) {
       try {
         await requestHistoryDB.clearAllRequests();
         setRequests([]);
@@ -58,9 +58,9 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
     const diff = now.getTime() - date.getTime();
     const minutes = Math.floor(diff / 60000);
     
-    if (minutes < 1) return '刚刚';
-    if (minutes < 60) return `${minutes}分钟前`;
-    if (minutes < 1440) return `${Math.floor(minutes / 60)}小时前`;
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return `${minutes} minutes ago`;
+    if (minutes < 1440) return `${Math.floor(minutes / 60)} hours ago`;
     return date.toLocaleDateString();
   };
 
@@ -68,19 +68,19 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
 
   return (
     <div className="fixed inset-0 z-50">
-      {/* 遮罩层 */}
+      {/* Overlay */}
       <div 
         className="absolute inset-0 bg-black bg-opacity-50"
         onClick={onClose}
       />
       
-      {/* 抽屉 */}
+      {/* Drawer */}
       <div className="absolute right-0 top-0 h-full w-96 bg-white shadow-xl flex flex-col">
-        {/* 头部 */}
+        {/* Header */}
         <div className="flex items-center justify-between p-4 border-b">
           <div className="flex items-center gap-2">
             <History className="h-5 w-5" />
-            <h2 className="text-lg font-semibold">请求历史</h2>
+            <h2 className="text-lg font-semibold">Request History</h2>
           </div>
           <div className="flex items-center gap-2">
             <Button 
@@ -90,7 +90,7 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
               disabled={requests.length === 0}
             >
               <Trash2 className="h-4 w-4 mr-1" />
-              清空
+              Clear
             </Button>
             <Button variant="ghost" size="sm" onClick={onClose}>
               <X className="h-4 w-4" />
@@ -98,11 +98,11 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
           </div>
         </div>
 
-        {/* 内容 */}
+        {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
           {loading ? (
             <div className="flex items-center justify-center h-32 text-gray-500">
-              加载中...
+              Loading...
             </div>
           ) : requests.length > 0 ? (
             <div className="space-y-2">
@@ -158,8 +158,8 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
           ) : (
             <div className="text-center text-gray-500 py-8">
               <History className="h-12 w-12 mx-auto mb-4 text-gray-300" />
-              <p>暂无请求历史</p>
-              <p className="text-sm mt-2">发送请求后会在此显示历史记录</p>
+              <p>No request history</p>
+              <p className="text-sm mt-2">History will be shown here after sending requests</p>
             </div>
           )}
         </div>

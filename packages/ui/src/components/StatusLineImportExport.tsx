@@ -16,10 +16,10 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isImporting, setIsImporting] = useState(false);
 
-  // 导出配置为JSON文件
+  // Export configuration as JSON file
   const handleExport = () => {
     try {
-      // 在导出前验证配置
+      // Validate configuration before exporting
       const validationResult = validateStatusLineConfig(config);
       
       if (!validationResult.isValid) {
@@ -44,7 +44,7 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
     }
   };
 
-  // 导入配置从JSON文件
+  // Import configuration from JSON file
   const handleImport = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -57,11 +57,11 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
         const content = e.target?.result as string;
         const importedConfig = JSON.parse(content) as StatusLineConfig;
         
-        // 验证导入的配置
+        // Validate imported configuration
         const validationResult = validateStatusLineConfig(importedConfig);
         
         if (!validationResult.isValid) {
-          // 格式化错误信息
+          // Format error message
           const errorMessages = validationResult.errors.map(error => 
             error.message
           ).join('; ');
@@ -75,7 +75,7 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
         onShowToast(t("statusline.import_failed") + (error instanceof Error ? `: ${error.message}` : ""), 'error');
       } finally {
         setIsImporting(false);
-        // 重置文件输入，以便可以再次选择同一个文件
+        // Reset file input to allow selecting the same file again
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
         }
@@ -93,10 +93,10 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
     reader.readAsText(file);
   };
 
-  // 下载配置模板
+  // Download configuration template
   const handleDownloadTemplate = () => {
     try {
-      // 使用新的默认配置函数
+      // Use the new default configuration function
       const templateConfig = createDefaultStatusLineConfig();
       
       const dataStr = JSON.stringify(templateConfig, null, 2);
@@ -116,7 +116,7 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
     }
   };
 
-  // 配置备份功能
+  // Configuration backup functionality
   const handleBackup = () => {
     try {
       const backupStr = backupConfig(config);
@@ -136,7 +136,7 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
     }
   };
 
-  // 配置恢复功能
+  // Configuration restore functionality
   const handleRestore = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -151,11 +151,11 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
           throw new Error(t("statusline.invalid_backup_file"));
         }
         
-        // 验证恢复的配置
+        // Validate restored configuration
         const validationResult = validateStatusLineConfig(restoredConfig);
         
         if (!validationResult.isValid) {
-          // 格式化错误信息
+          // Format error message
           const errorMessages = validationResult.errors.map(error => 
             error.message
           ).join('; ');
@@ -168,7 +168,7 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
         console.error("Restore failed:", error);
         onShowToast(t("statusline.restore_failed") + (error instanceof Error ? `: ${error.message}` : ""), 'error');
       } finally {
-        // 重置文件输入
+        // Reset file input
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
         }
@@ -185,7 +185,7 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
     reader.readAsText(file);
   };
 
-  // 移除本地验证函数，因为我们现在使用utils中的验证函数
+  // Remove local validation function, as we now use the validation function in utils
 
   return (
     <Card className="transition-all hover:shadow-md">
@@ -248,7 +248,7 @@ export function StatusLineImportExport({ config, onImport, onShowToast }: Status
             
             <Button 
               onClick={() => {
-                // 创建一个隐藏的文件输入用于恢复
+                // Create a hidden file input for restoration
                 const restoreInput = document.createElement('input');
                 restoreInput.type = 'file';
                 restoreInput.accept = '.json';

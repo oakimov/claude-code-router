@@ -25,7 +25,7 @@ export interface Annotation {
   url_citation?: UrlCitation;
 }
 
-// 内容类型定义
+// Content type definitions
 export interface TextContent {
   type: "text";
   text: string;
@@ -44,7 +44,7 @@ export interface ImageContent {
 
 export type MessageContent = TextContent | ImageContent;
 
-// 统一的消息接口
+// Unified message interface
 export interface UnifiedMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string | null | MessageContent[];
@@ -66,7 +66,7 @@ export interface UnifiedMessage {
   };
 }
 
-// 统一的工具定义接口
+// Unified tool definition interface
 export interface UnifiedTool {
   type: "function";
   function: {
@@ -84,7 +84,7 @@ export interface UnifiedTool {
 
 export type ThinkLevel = "none" | "low" | "medium" | "high";
 
-// 统一的请求接口
+// Unified request interface
 export interface UnifiedChatRequest {
   messages: UnifiedMessage[];
   model: string;
@@ -109,7 +109,7 @@ export interface UnifiedChatRequest {
   };
 }
 
-// 统一的响应接口
+// Unified response interface
 export interface UnifiedChatResponse {
   id: string;
   model: string;
@@ -130,7 +130,7 @@ export interface UnifiedChatResponse {
   annotations?: Annotation[];
 }
 
-// 流式响应相关类型
+// Streaming response related types
 export interface StreamChunk {
   id: string;
   object: string;
@@ -159,13 +159,13 @@ export interface StreamChunk {
   }>;
 }
 
-// Anthropic 流式事件类型
+// Anthropic streaming event types
 export type AnthropicStreamEvent = MessageStreamEvent;
 
-// OpenAI 流式块类型
+// OpenAI stream chunk types
 export type OpenAIStreamChunk = ChatCompletionChunk;
 
-// OpenAI 特定类型
+// OpenAI specific types
 export interface OpenAIChatRequest {
   messages: OpenAIMessage[];
   model: string;
@@ -179,7 +179,7 @@ export interface OpenAIChatRequest {
     | { type: "function"; function: { name: string } };
 }
 
-// Anthropic 特定类型
+// Anthropic specific types
 export interface AnthropicChatRequest {
   messages: AnthropicMessage[];
   model: string;
@@ -191,7 +191,7 @@ export interface AnthropicChatRequest {
   tool_choice?: { type: "auto" } | { type: "tool"; name: string };
 }
 
-// 转换选项
+// Conversion options
 export interface ConversionOptions {
   targetProvider: "openai" | "anthropic";
   sourceProvider: "openai" | "anthropic";

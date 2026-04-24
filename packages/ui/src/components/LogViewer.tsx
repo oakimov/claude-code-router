@@ -15,10 +15,10 @@ interface LogViewerProps {
 interface LogEntry {
   timestamp: string;
   level: 'info' | 'warn' | 'error' | 'debug';
-  message: string; // 现在这个字段直接包含原始JSON字符串
+  message: string; // Now this field directly contains the raw JSON string
   source?: string;
   reqId?: string;
-  [key: string]: any; // 允许动态属性，如msg、url、body等
+  [key: string]: any; // Allow dynamic properties like msg, url, body, etc.
 }
 
 interface LogFile {
@@ -74,10 +74,10 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     }
   }, [open]);
 
-  // 创建内联 Web Worker
+  // Create inline Web Worker
   const createInlineWorker = (): Worker => {
     const workerCode = `
-      // 日志聚合Web Worker
+      // Log aggregation Web Worker
       self.onmessage = function(event) {
         const { type, data } = event.data;
         
@@ -85,7 +85,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
           try {
             const { logs } = data;
             
-            // 按reqId聚合日志
+            // Aggregate logs by reqId
             const groupedLogs = {};
             
             logs.forEach((log, index) => {
@@ -98,28 +98,28 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
               groupedLogs[reqId].push(log);
             });
 
-            // 按时间戳排序每个组的日志
+            // Sort logs in each group by timestamp
             Object.keys(groupedLogs).forEach(reqId => {
               groupedLogs[reqId].sort((a, b) => a.time - b.time);
             });
 
-            // 提取model信息
+            // Extract model information
             const extractModelInfo = (reqId) => {
               const logGroup = groupedLogs[reqId];
               for (const log of logGroup) {
                 try {
-                  // 尝试从message字段解析JSON
+                  // Try to parse JSON from message field
                   if (log.type === 'request body' && log.data && log.data.model) {
                     return log.data.model;
                   }
                 } catch (e) {
-                  // 解析失败，继续尝试下一条日志
+                  // Parsing failed, continue to next log line
                 }
               }
               return undefined;
             };
 
-            // 生成摘要信息
+            // Generate summary information
             const summary = {
               totalRequests: Object.keys(groupedLogs).length,
               totalLogs: logs.length,
@@ -138,13 +138,13 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
               summary
             };
 
-            // 发送结果回主线程
+            // Send results back to main thread
             self.postMessage({
               type: 'groupLogsResult',
               data: response
             });
           } catch (error) {
-            // 发送错误回主线程
+            // Send error back to main thread
             self.postMessage({
               type: 'error',
               error: error instanceof Error ? error.message : 'Unknown error occurred'
@@ -159,14 +159,14 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     return new Worker(workerUrl);
   };
 
-  // 初始化Web Worker
+  // Initialize Web Worker
   useEffect(() => {
     if (typeof Worker !== 'undefined') {
       try {
-        // 创建内联Web Worker
+        // Create inline Web Worker
         workerRef.current = createInlineWorker();
 
-        // 监听Worker消息
+        // Listen to Worker messages
         workerRef.current.onmessage = (event) => {
           const { type, data, error } = event.data;
 
@@ -180,7 +180,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
           }
         };
 
-        // 监听Worker错误
+        // Listen to Worker errors
         workerRef.current.onerror = (error) => {
           console.error('Worker error:', error);
           if (showToast) {
@@ -195,7 +195,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
       }
     }
 
-    // 清理Worker
+    // Cleanup Worker
     return () => {
       if (workerRef.current) {
         workerRef.current.terminate();
@@ -279,14 +279,14 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
       setGroupedLogs(null);
       setSelectedReqId(null);
 
-      // 始终加载原始日志数据
+      // Always load raw log data
       const response = await api.getLogs(selectedFile.path);
 
       if (response && Array.isArray(response)) {
-        // 现在接口返回的是原始日志字符串数组，直接存储
+        // Now the interface returns an array of raw log strings, store directly
         setLogs(response);
 
-        // 如果启用了分组，使用Web Worker进行聚合（需要转换为LogEntry格式供Worker使用）
+        // If grouping enabled, use Web Worker for aggregation (needs conversion to LogEntry format for Worker)
         if (groupByReqId && workerRef.current) {
           // const workerLogs: LogEntry[] = response.map((logLine, index) => ({
           //   timestamp: new Date().toISOString(),
@@ -348,7 +348,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     setGroupByReqId(newValue);
 
     if (newValue && selectedFile && logs.length > 0) {
-      // 启用聚合时，如果已有日志，则使用Worker进行聚合
+      // When grouping enabled and logs already exist, use Worker for aggregation
       if (workerRef.current) {
         workerRef.current.postMessage({
           type: 'groupLogsByReqId',
@@ -356,7 +356,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
         });
       }
     } else if (!newValue) {
-      // 禁用聚合时，清除聚合结果
+      // When grouping disabled, clear aggregation results
       setGroupedLogs(null);
       setSelectedReqId(null);
     }
@@ -372,7 +372,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
       if (selectedReqId && groupedLogs.groups[selectedReqId]) {
         return groupedLogs.groups[selectedReqId];
       }
-      // 当在分组模式但没有选中具体请求时，显示原始日志字符串数组
+      // When in grouping mode but no specific request selected, show raw log string array
       return logs.map(logLine => ({
         timestamp: new Date().toISOString(),
         level: 'info',
@@ -381,7 +381,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
         reqId: undefined
       }));
     }
-    // 当不在分组模式时，显示原始日志字符串数组
+    // When not in grouping mode, show raw log string array
     return logs.map(logLine => ({
       timestamp: new Date().toISOString(),
       level: 'info',
@@ -394,7 +394,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
   const downloadLogs = () => {
     if (!selectedFile || logs.length === 0) return;
 
-    // 直接下载原始日志字符串，每行一个日志
+    // Directly download raw log strings, one log per line
     const logText = logs.join('\n');
 
     const blob = new Blob([logText], { type: 'text/plain' });
@@ -424,14 +424,14 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     return new Date(dateString).toLocaleString();
   };
 
-  // 面包屑导航项类型
+  // Breadcrumb navigation item type
   interface BreadcrumbItem {
     id: string;
     label: string;
     onClick: () => void;
   }
 
-  // 获取面包屑导航项
+  // Get breadcrumb navigation items
   const getBreadcrumbs = (): BreadcrumbItem[] => {
     const breadcrumbs: BreadcrumbItem[] = [
       {
@@ -454,10 +454,10 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
         label: selectedFile.name,
         onClick: () => {
           if (groupByReqId) {
-            // 如果在分组模式下，点击文件层级应该返回到分组列表
+            // If in grouping mode, clicking file level should return to group list
             setSelectedReqId(null);
           } else {
-            // 如果不在分组模式下，点击文件层级关闭分组功能
+            // If not in grouping mode, clicking file level closes grouping feature
             setSelectedReqId(null);
             setGroupedLogs(null);
             setGroupByReqId(false);
@@ -471,7 +471,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
         id: 'req',
         label: `${t('log_viewer.request')} ${selectedReqId}`,
         onClick: () => {
-          // 点击当前层级时不做任何操作
+          // Do nothing when clicking current level
         }
       });
     }
@@ -479,7 +479,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     return breadcrumbs;
   };
 
-  // 获取返回按钮的处理函数
+  // Get handler for back button
   const getBackAction = (): (() => void) | null => {
     if (selectedReqId) {
       return () => {
@@ -499,47 +499,47 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
   };
 
   const formatLogsForEditor = () => {
-    // 如果在分组模式且选中了具体请求，显示该请求的日志
+    // If in grouping mode and specific request selected, show logs for that request
     if (groupByReqId && groupedLogs && selectedReqId && groupedLogs.groups[selectedReqId]) {
       const requestLogs = groupedLogs.groups[selectedReqId];
-      // 提取原始JSON字符串并每行一个
+      // Extract raw JSON string and one per line
       return requestLogs.map(log => JSON.stringify(log)).join('\n');
     }
 
-    // 其他情况，直接显示原始日志字符串数组，每行一个
+    // Otherwise, directly show raw log string array, one per line
     return logs.join('\n');
   };
 
-  // 解析日志行，获取final request的行号
+  // Parse log line to get line number of final request
   const getFinalRequestLines = () => {
     const lines: number[] = [];
 
     if (groupByReqId && groupedLogs && selectedReqId && groupedLogs.groups[selectedReqId]) {
-      // 分组模式下，检查选中的请求日志
+      // In grouping mode, check logs of selected request
       const requestLogs = groupedLogs.groups[selectedReqId];
       requestLogs.forEach((log, index) => {
         try {
           // @ts-ignore
           log = JSON.parse(log)
-          // 检查日志的msg字段是否等于"final request"
+          // Check if the log's msg field equals "final request"
           if (log.msg === "final request") {
-            lines.push(index + 1); // 行号从1开始
+            lines.push(index + 1); // Line numbers start from 1
           }
         } catch (e) {
-          // 解析失败，跳过
+          // Parsing failed, skip
         }
       });
     } else {
-      // 非分组模式下，检查原始日志
+      // In non-grouping mode, check raw logs
       logs.forEach((logLine, index) => {
         try {
           const log = JSON.parse(logLine);
-          // 检查日志的msg字段是否等于"final request"
+          // Check if the log's msg field equals "final request"
           if (log.msg === "final request") {
-            lines.push(index + 1); // 行号从1开始
+            lines.push(index + 1); // Line numbers start from 1
           }
         } catch (e) {
-          // 解析失败，跳过
+          // Parsing failed, skip
         }
       });
     }
@@ -547,7 +547,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     return lines;
   };
 
-  // 处理调试按钮点击
+  // Handle debug button click
   const handleDebugClick = (lineNumber: number) => {
     console.log('handleDebugClick called with lineNumber:', lineNumber);
     console.log('Current state:', { groupByReqId, selectedReqId, logsLength: logs.length });
@@ -555,13 +555,13 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     let logData = null;
 
     if (groupByReqId && groupedLogs && selectedReqId && groupedLogs.groups[selectedReqId]) {
-      // 分组模式下获取日志数据
+      // Get log data in grouping mode
       const requestLogs = groupedLogs.groups[selectedReqId];
       console.log('Group mode - requestLogs length:', requestLogs.length);
-      logData = requestLogs[lineNumber - 1]; // 行号转换为数组索引
+      logData = requestLogs[lineNumber - 1]; // Convert line number to array index
       console.log('Group mode - logData:', logData);
     } else {
-      // 非分组模式下获取日志数据
+      // Get log data in non-grouping mode
       console.log('Non-group mode - logs length:', logs.length);
       try {
         const logLine = logs[lineNumber - 1];
@@ -575,7 +575,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
 
     if (logData) {
       console.log('Navigating to debug page with logData:', logData);
-      // 导航到调试页面，并传递日志数据作为URL参数
+      // Navigate to debug page and pass log data as URL parameter
       const logDataParam = encodeURIComponent(JSON.stringify(logData));
       console.log('Encoded logDataParam length:', logDataParam.length);
       navigate(`/debug?logData=${logDataParam}`);
@@ -584,19 +584,19 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     }
   };
 
-  // 配置Monaco Editor
+  // Configure Monaco Editor
   const configureEditor = (editor: any) => {
     editorRef.current = editor;
 
-    // 启用glyph margin
+    // Enable glyph margin
     editor.updateOptions({
       glyphMargin: true,
     });
 
-    // 存储当前的装饰ID
+    // Store current decoration IDs
     let currentDecorations: string[] = [];
 
-    // 添加glyph margin装饰
+    // Add glyph margin decorations
     const updateDecorations = () => {
       const finalRequestLines = getFinalRequestLines();
       const decorations = finalRequestLines.map(lineNumber => ({
@@ -608,18 +608,18 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
         },
         options: {
           glyphMarginClassName: 'debug-button-glyph',
-          glyphMarginHoverMessage: { value: '点击调试此请求' }
+          glyphMarginHoverMessage: { value: 'Click to debug this request' }
         }
       }));
 
-      // 使用deltaDecorations正确更新装饰，清理旧的装饰
+      // Use deltaDecorations to correctly update decorations and clean up old ones
       currentDecorations = editor.deltaDecorations(currentDecorations, decorations);
     };
 
-    // 初始更新装饰
+    // Initial decorations update
     updateDecorations();
 
-    // 监听glyph margin点击 - 使用正确的事件监听方式
+    // Listen to glyph margin clicks - use correct event listener
     editor.onMouseDown((e: any) => {
       console.log('Mouse down event:', e.target);
       console.log('Event details:', {
@@ -631,7 +631,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
         glyphMarginWidth: e.target.detail?.glyphMarginWidth
       });
 
-      // 检查是否点击在glyph margin区域
+      // Check if click is in glyph margin area
       const isGlyphMarginClick = e.target.detail &&
         e.target.detail.glyphMarginLane !== undefined &&
         e.target.detail.offsetX !== undefined &&
@@ -650,7 +650,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
       }
     });
 
-    // 尝试使用 onGlyphMarginClick 如果可用
+    // Try using onGlyphMarginClick if available
     if (typeof editor.onGlyphMarginClick === 'function') {
       editor.onGlyphMarginClick((e: any) => {
         console.log('Glyph margin click event:', e);
@@ -662,12 +662,12 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
       });
     }
 
-    // 添加鼠标移动事件来检测悬停在调试按钮上
+    // Add mouse move event to detect hover over debug button
     editor.onMouseMove((e: any) => {
       if (e.target.position && (e.target.type === 4 || e.target.type === 'glyph-margin')) {
         const finalRequestLines = getFinalRequestLines();
         if (finalRequestLines.includes(e.target.position.lineNumber)) {
-          // 可以在这里添加悬停效果
+          // Can add hover effect here
           editor.updateOptions({
             glyphMargin: true,
           });
@@ -675,12 +675,12 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
       }
     });
 
-    // 当日志变化时更新装饰
+    // Update decorations when logs change
     const interval = setInterval(updateDecorations, 1000);
 
     return () => {
       clearInterval(interval);
-      // 清理装饰
+      // Cleanup decorations
       if (editorRef.current) {
         editorRef.current.deltaDecorations(currentDecorations, []);
       }
@@ -725,7 +725,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
               </Button>
             )}
 
-            {/* 面包屑导航 */}
+            {/* Breadcrumb navigation */}
             <nav className="flex items-center space-x-1 text-sm">
               {getBreadcrumbs().map((breadcrumb, index) => (
                 <React.Fragment key={breadcrumb.id}>
@@ -808,7 +808,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
           ) : selectedFile ? (
             <>
               {groupByReqId && groupedLogs && !selectedReqId ? (
-                // 显示日志组列表
+                // Show log group list
                 <div className="flex flex-col h-full p-6">
                   <div className="mb-4 flex-shrink-0">
                     <h3 className="text-lg font-medium mb-2">{t('log_viewer.request_groups')}</h3>
@@ -847,7 +847,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
                   </div>
                 </div>
               ) : (
-                // 显示日志内容
+                // Show log content
                 <div className="relative h-full">
                   <Editor
                     height="100%"
