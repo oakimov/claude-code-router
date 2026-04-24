@@ -15,6 +15,7 @@ COPY scripts ./scripts
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/core/package.json ./packages/core/
 COPY packages/server/package.json ./packages/server/
+COPY packages/ui/package.json ./packages/ui/
 
 # Install all dependencies (including dev dependencies) and clean up
 RUN pnpm install --frozen-lockfile && \
@@ -24,6 +25,7 @@ RUN pnpm install --frozen-lockfile && \
 COPY packages/shared ./packages/shared
 COPY packages/core ./packages/core
 COPY packages/server ./packages/server
+COPY packages/ui ./packages/ui
 
 # Build all packages
 WORKDIR /app/packages/core
@@ -35,6 +37,9 @@ RUN pnpm build
 WORKDIR /app/packages/server
 RUN pnpm build && \
     rm -rf node_modules/.cache
+
+WORKDIR /app/packages/ui
+RUN pnpm build
 
 # ===========================
 # Production Stage
@@ -61,7 +66,7 @@ COPY --from=builder /app/packages/server/node_modules ./packages/server/node_mod
 # Copy server bundle from build stage
 COPY --from=builder /app/packages/server/dist ./packages/server/dist
 # Copy locally pre-built UI assets to the same directory
-COPY packages/ui/dist/. ./packages/server/dist/
+COPY --from=builder /app/packages/ui/dist/. ./packages/server/dist/
 
 # Copy PM2 configuration file
 COPY packages/server/ecosystem.config.cjs /app/
