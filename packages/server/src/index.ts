@@ -405,17 +405,9 @@ async function getServer(options: RunOptions = {}) {
         read(clonedStream);
         return done(null, originalStream)
       }
-      sessionUsageCache.put(req.sessionId, payload.usage);
-      if (typeof payload ==='object') {
-        if (payload.error) {
-          return done(payload.error, null)
-        } else {
-          return done(payload, null)
-        }
+      if (typeof payload === 'object' && payload !== null) {
+        sessionUsageCache.put(req.sessionId, payload.usage);
       }
-    }
-    if (typeof payload ==='object' && payload.error) {
-      return done(payload.error, null)
     }
     done(null, payload)
   });

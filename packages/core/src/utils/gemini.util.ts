@@ -275,14 +275,23 @@ export function buildRequestBody(
       role = "user";
     }
     const parts = [];
-    if (typeof message.content === "string") {
-        const part: any = {
-          text: message.content,
-        };
-        if (message?.thinking?.signature) {
-          part.thoughtSignature = message.thinking.signature;
-        }
-        parts.push(part);
+
+      const realSignature =
+        message.thinking?.signature &&
+        !message.thinking.signature.startsWith("ccr_")
+          ? message.thinking.signature
+          : undefined;
+
+      if (realSignature && role === "model") {
+        parts.push({
+          thought: true,
+          text: message.thinking?.content || "",
+          thoughtSignature: realSignature,
+        });
+      }
+
+      if (typeof message.content === "string") {
+        parts.push({ text: message.content });
       } else if (Array.isArray(message.content)) {
         parts.push(
           ...message.content.map((content) => {
@@ -314,9 +323,8 @@ export function buildRequestBody(
           }).filter(Boolean)
         );
       } else if (message.content && typeof message.content === "object") {
-        // Object like { text: "..." }
-        if (message.content.text) {
-          parts.push({ text: message.content.text });
+        if ((message.content as any).text) {
+          parts.push({ text: (message.content as any).text });
         } else {
           parts.push({ text: JSON.stringify(message.content) });
         }
@@ -324,7 +332,7 @@ export function buildRequestBody(
 
       if (Array.isArray(message.tool_calls)) {
         parts.push(
-          ...message.tool_calls.map((toolCall, index) => {
+          ...message.tool_calls.map((toolCall) => {
             return {
               functionCall: {
                 id:
@@ -333,10 +341,6 @@ export function buildRequestBody(
                 name: toolCall.function.name,
                 args: JSON.parse(toolCall.function.arguments || "{}"),
               },
-              thoughtSignature:
-                index === 0 && message.thinking?.signature
-                  ? message.thinking?.signature
-                  : undefined,
             };
           })
         );

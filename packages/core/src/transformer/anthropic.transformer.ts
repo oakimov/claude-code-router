@@ -94,6 +94,11 @@ export class AnthropicTransformer implements Transformer {
                   content:
                     typeof tool.content === "string"
                       ? tool.content
+                      : Array.isArray(tool.content)
+                      ? tool.content
+                          .filter((c: any) => c.type === "text" && c.text)
+                          .map((c: any) => c.text)
+                          .join("\n") || JSON.stringify(tool.content)
                       : JSON.stringify(tool.content),
                   tool_call_id: tool.tool_use_id,
                   cache_control: tool.cache_control,

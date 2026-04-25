@@ -452,13 +452,13 @@ async function formatResponse(response: any, reply: FastifyReply, body: any) {
 
   // Handle streaming response
   const isStream = body.stream === true;
-  if (isStream) {
+  if (isStream && response.ok) {
     reply.header("Content-Type", "text/event-stream");
     reply.header("Cache-Control", "no-cache");
     reply.header("Connection", "keep-alive");
     return reply.send(response.body);
   } else {
-    // Handle regular JSON response
+    // Handle regular JSON response (including error responses)
     const json = await response.json();
     return reply.send(json);
   }
