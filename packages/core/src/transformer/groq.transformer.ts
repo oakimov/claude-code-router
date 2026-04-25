@@ -2,6 +2,7 @@ import { UnifiedChatRequest } from "@/types/llm";
 import { Transformer } from "../types/transformer";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
 import { stripMessagesCacheControl } from "../utils/cacheControl";
+import { normalizeToolParameters } from "../utils/schema";
 import { v4 as uuidv4 } from "uuid";
 
 export class GroqTransformer implements Transformer {
@@ -12,7 +13,9 @@ export class GroqTransformer implements Transformer {
 
     if (Array.isArray(request.tools)) {
       request.tools.forEach(tool => {
-        delete tool.function.parameters.$schema;
+        if (tool?.function?.parameters) {
+          tool.function.parameters = normalizeToolParameters(tool.function.parameters);
+        }
       });
     }
     return request;

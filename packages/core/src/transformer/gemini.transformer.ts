@@ -13,14 +13,15 @@ export class GeminiTransformer implements Transformer {
 
   async transformRequestIn(
     request: UnifiedChatRequest,
-    provider: LLMProvider
+    provider: LLMProvider,
+    context: any
   ): Promise<Record<string, any>> {
+    const model = context?.req?.model || request.model || provider.model || "";
     return {
       body: buildRequestBody(request),
       config: {
         url: new URL(
-          `./${request.model}:${
-            request.stream ? "streamGenerateContent?alt=sse" : "generateContent"
+          `./${model}:${request.stream ? "streamGenerateContent?alt=sse" : "generateContent"
           }`,
           provider.baseUrl
         ),

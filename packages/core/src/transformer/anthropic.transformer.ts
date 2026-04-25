@@ -884,6 +884,8 @@ export class AnthropicTransformer implements Transformer {
                       length: "max_tokens",
                       tool_calls: "tool_use",
                       content_filter: "stop_sequence",
+                      model_context_window_exceeded:
+                        "model_context_window_exceeded",
                     };
 
                     const anthropicStopReason =
@@ -1039,6 +1041,8 @@ export class AnthropicTransformer implements Transformer {
             ? "tool_use"
             : choice.finish_reason === "content_filter"
             ? "stop_sequence"
+            : choice.finish_reason === "model_context_window_exceeded"
+            ? "model_context_window_exceeded"
             : "end_turn",
         stop_sequence: null,
         usage: {

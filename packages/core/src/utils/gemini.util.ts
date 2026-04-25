@@ -1,67 +1,6 @@
 import { UnifiedChatRequest, UnifiedMessage } from "../types/llm";
 import { Content, ContentListUnion, Part, ToolListUnion } from "@google/genai";
-
-export function cleanupParameters(obj: any, keyName?: string): void {
-  if (!obj || typeof obj !== "object") {
-    return;
-  }
-
-  if (Array.isArray(obj)) {
-    obj.forEach((item) => {
-      cleanupParameters(item);
-    });
-    return;
-  }
-
-  const validFields = new Set([
-    "type",
-    "format",
-    "title",
-    "description",
-    "nullable",
-    "enum",
-    "maxItems",
-    "minItems",
-    "properties",
-    "required",
-    "minProperties",
-    "maxProperties",
-    "minLength",
-    "maxLength",
-    "pattern",
-    "example",
-    "anyOf",
-    "propertyOrdering",
-    "default",
-    "items",
-    "minimum",
-    "maximum",
-  ]);
-
-  if (keyName !== "properties") {
-    Object.keys(obj).forEach((key) => {
-      if (!validFields.has(key)) {
-        delete obj[key];
-      }
-    });
-  }
-
-  if (obj.enum && obj.type !== "string") {
-    delete obj.enum;
-  }
-
-  if (
-    obj.type === "string" &&
-    obj.format &&
-    !["enum", "date-time"].includes(obj.format)
-  ) {
-    delete obj.format;
-  }
-
-  Object.keys(obj).forEach((key) => {
-    cleanupParameters(obj[key], key);
-  });
-}
+import { sanitizeJsonSchema } from "./schema";
 
 // Type enum equivalent in JavaScript
 const Type = {
@@ -209,48 +148,47 @@ export function tTool(tool: any): any {
   if (tool.functionDeclarations) {
     for (const functionDeclaration of tool.functionDeclarations) {
       if (functionDeclaration.parameters) {
-        if (!Object.keys(functionDeclaration.parameters).includes("$schema")) {
-          functionDeclaration.parameters = processJsonSchema(
-            functionDeclaration.parameters
-          );
-        } else {
-          if (!functionDeclaration.parametersJsonSchema) {
-            functionDeclaration.parametersJsonSchema =
-              functionDeclaration.parameters;
-            delete functionDeclaration.parameters;
-          }
-        }
+        const sanitized = sanitizeJsonSchema(functionDeclaration.parameters);
+        functionDeclaration.parameters = processJsonSchema(sanitized);
       }
       if (functionDeclaration.response) {
-        if (!Object.keys(functionDeclaration.response).includes("$schema")) {
-          functionDeclaration.response = processJsonSchema(
-            functionDeclaration.response
-          );
-        } else {
-          if (!functionDeclaration.responseJsonSchema) {
-            functionDeclaration.responseJsonSchema =
-              functionDeclaration.response;
-            delete functionDeclaration.response;
-          }
-        }
+        const sanitized = sanitizeJsonSchema(functionDeclaration.response);
+        functionDeclaration.response = processJsonSchema(sanitized);
       }
     }
   }
   return tool;
 }
 
+/** Normalize a tool to unified format (handles both OpenAI and Anthropic tool shapes) */
+function normalizeTool(tool: any): { name: string; description: string; parameters: any } {
+  if (tool.function?.name) {
+    return { name: tool.function.name, description: tool.function.description, parameters: tool.function.parameters };
+  }
+  return { name: tool.name, description: tool.description, parameters: tool.input_schema };
+}
+
+/** Sanitize a function name for Gemini's naming rules:
+ * Must start with a letter or underscore, contain only [a-zA-Z0-9_.:\-], max 128 chars */
+function sanitizeGeminiFunctionName(name: string): string {
+  if (!name) return "unnamed_function";
+  let sanitized = name.replace(/[^a-zA-Z0-9_.:\-]/g, "_");
+  if (/^[^a-zA-Z_]/.test(sanitized)) {
+    sanitized = "_" + sanitized;
+  }
+  return sanitized.substring(0, 128);
+}
+
 export function buildRequestBody(
   request: UnifiedChatRequest
 ): Record<string, any> {
   const tools = [];
-  const functionDeclarations = request.tools
-    ?.filter((tool) => tool.function.name !== "web_search")
-    ?.map((tool) => {
-      return {
-        name: tool.function.name,
-        description: tool.function.description,
-        parametersJsonSchema: tool.function.parameters,
-      };
+  const requestTools = request.tools || [];
+  const functionDeclarations = requestTools
+    .filter((tool) => normalizeTool(tool).name !== "web_search")
+    .map((tool) => {
+      const { name, description, parameters } = normalizeTool(tool);
+      return { name: sanitizeGeminiFunctionName(name), description, parameters };
     });
   if (functionDeclarations?.length) {
     tools.push(
@@ -259,8 +197,8 @@ export function buildRequestBody(
       })
     );
   }
-  const webSearch = request.tools?.find(
-    (tool) => tool.function.name === "web_search"
+  const webSearch = requestTools.find(
+    (tool) => normalizeTool(tool).name === "web_search"
   );
   if (webSearch) {
     tools.push({
@@ -269,20 +207,75 @@ export function buildRequestBody(
   }
 
   const contents: any[] = [];
-  const toolResponses = request.messages.filter((item) => item.role === "tool");
-  request.messages
-    .filter((item) => item.role !== "tool")
-    .forEach((message: UnifiedMessage) => {
-      let role: "user" | "model";
-      if (message.role === "assistant") {
-        role = "model";
-      } else if (["user", "system"].includes(message.role)) {
-        role = "user";
-      } else {
-        role = "user"; // Default to user if role is not recognized
+  const rawMessages = request.messages || [];
+
+
+
+  // Collect system instructions from request.system and system role messages
+  const systemTexts: string[] = [];
+  const extractText = (content: any): void => {
+    if (typeof content === "string") {
+      if (content) systemTexts.push(content);
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part?.type === "text" && part.text) systemTexts.push(part.text);
+        else if (typeof part === "string" && part) systemTexts.push(part);
       }
-      const parts = [];
-      if (typeof message.content === "string") {
+    }
+  };
+  if (request.system) extractText(request.system);
+  for (const msg of rawMessages) {
+    if (msg.role === "system") extractText(msg.content);
+  }
+
+  const messages: UnifiedMessage[] = [];
+
+  for (const msg of rawMessages) {
+    if (msg.role === "tool" || msg.role === "system") continue;
+
+    const role = msg.role === "assistant" ? "assistant" : "user";
+    const lastMsg = messages[messages.length - 1];
+
+    if (lastMsg && lastMsg.role === role) {
+      const lastContent = lastMsg.content;
+      const currentContent = msg.content;
+
+      if (typeof lastContent === "string" && typeof currentContent === "string") {
+        lastMsg.content = lastContent + "\n" + currentContent;
+      } else if (Array.isArray(lastContent) && Array.isArray(currentContent)) {
+        lastMsg.content = [...lastContent, ...currentContent];
+      } else if (typeof lastContent === "string" && Array.isArray(currentContent)) {
+        lastMsg.content = [
+          { type: "text", text: lastContent },
+          ...currentContent,
+        ];
+      } else if (Array.isArray(lastContent) && typeof currentContent === "string") {
+        lastMsg.content = [
+          ...lastContent,
+          { type: "text", text: currentContent },
+        ];
+      } else {
+        // Fallback: just push as a new message and hope for the best,
+        // or force a role change. For Gemini, we MUST alternate.
+        // To force alternation, we can insert a dummy model message if needed,
+        // but merging is preferred.
+        messages.push({ ...msg, role });
+      }
+    } else {
+      messages.push({ ...msg, role });
+    }
+  }
+
+  const toolResponses = rawMessages.filter((item) => item.role === "tool");
+  messages.forEach((message: UnifiedMessage) => {
+    let role: "user" | "model";
+    if (message.role === "assistant") {
+      role = "model";
+    } else {
+      role = "user";
+    }
+    const parts = [];
+    if (typeof message.content === "string") {
         const part: any = {
           text: message.content,
         };
@@ -317,7 +310,8 @@ export function buildRequestBody(
                 };
               }
             }
-          })
+            return null;
+          }).filter(Boolean)
         );
       } else if (message.content && typeof message.content === "object") {
         // Object like { text: "..." }
@@ -410,11 +404,16 @@ export function buildRequestBody(
     }
   }
 
-  const body = {
-    contents,
+  const body: Record<string, any> = {
+    contents: contents.length ? contents : [{ role: "user", parts: [{ text: "" }] }],
     tools: tools.length ? tools : undefined,
     generationConfig,
   };
+  if (systemTexts.length) {
+    body.systemInstruction = {
+      parts: [{ text: systemTexts.join("\n\n") }],
+    };
+  }
 
   if (request.tool_choice) {
     const toolConfig = {
@@ -522,6 +521,54 @@ export async function transformResponseOut(
     const jsonResponse: any = await response.json();
     logger?.debug({ response: jsonResponse }, `${providerName} response:`);
 
+    if (response.status >= 400) {
+      const errorMessage: string = jsonResponse.error?.message || "";
+      const lowerMessage = errorMessage.toLowerCase();
+      const isContextExceeded = [
+        "user input too long",
+        "input too long",
+        "prompt is too long",
+        "exceeds the token limit",
+        "request payload size exceeds",
+        "context_length_exceeded",
+      ].some((phrase) => lowerMessage.includes(phrase));
+
+      if (isContextExceeded) {
+        const res = {
+          id: `ctxexceeded_${Date.now()}`,
+          choices: [
+            {
+              finish_reason: "model_context_window_exceeded",
+              index: 0,
+              message: { content: "", role: "assistant" },
+            },
+          ],
+          created: Math.floor(Date.now() / 1000),
+          model: "",
+          object: "chat.completion",
+          usage: { completion_tokens: 0, prompt_tokens: 0, total_tokens: 0 },
+        };
+        return new Response(JSON.stringify(res), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify(jsonResponse), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
+
+    if (!jsonResponse.candidates || jsonResponse.candidates.length === 0) {
+      return new Response(JSON.stringify(jsonResponse), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
+
     // Extract thinking content from parts with thought: true
     let thinkingContent = "";
     let thinkingSignature = "";
@@ -568,7 +615,7 @@ export async function transformResponseOut(
         {
           finish_reason:
             (
-              jsonResponse.candidates[0].finishReason as string
+              jsonResponse.candidates[0]?.finishReason as string
             )?.toLowerCase() || null,
           index: 0,
           message: {
@@ -994,6 +1041,75 @@ export async function transformResponseOut(
                   if (!contentSent && textContent) {
                     contentSent = true;
                   }
+                }
+
+                // Flush buffered text on stream end (e.g. Gemma models with thinking but no thoughtSignature)
+                if (candidate.finishReason && pendingContent) {
+                  if (!signatureSent && hasThinkingContent) {
+                    const signatureChunk = {
+                      choices: [
+                        {
+                          delta: {
+                            role: "assistant",
+                            content: null,
+                            thinking: { signature: `ccr_${+new Date()}` },
+                          },
+                          finish_reason: null,
+                          index: contentIndex,
+                          logprobs: null,
+                        },
+                      ],
+                      created: parseInt(new Date().getTime() / 1000 + "", 10),
+                      id: chunk.responseId || "",
+                      model: chunk.modelVersion || "",
+                      object: "chat.completion.chunk",
+                      system_fingerprint: "fp_a49d71b8a1",
+                    };
+                    controller.enqueue(
+                      encoder.encode(
+                        `data: ${JSON.stringify(signatureChunk)}\n\n`
+                      )
+                    );
+                    signatureSent = true;
+                    contentIndex++;
+                  }
+                  const flushRes = {
+                    choices: [
+                      {
+                        delta: {
+                          role: "assistant",
+                          content: pendingContent,
+                        },
+                        finish_reason: candidate.finishReason.toLowerCase(),
+                        index: contentIndex,
+                        logprobs: null,
+                      },
+                    ],
+                    created: parseInt(new Date().getTime() / 1000 + "", 10),
+                    id: chunk.responseId || "",
+                    model: chunk.modelVersion || "",
+                    object: "chat.completion.chunk",
+                    system_fingerprint: "fp_a49d71b8a1",
+                    usage: {
+                      completion_tokens:
+                        chunk.usageMetadata?.candidatesTokenCount || 0,
+                      prompt_tokens: chunk.usageMetadata?.promptTokenCount || 0,
+                      prompt_tokens_details: {
+                        cached_tokens:
+                          chunk.usageMetadata?.cachedContentTokenCount || 0,
+                      },
+                      total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
+                      output_tokens_details: {
+                        reasoning_tokens:
+                          chunk.usageMetadata?.thoughtsTokenCount || 0,
+                      },
+                    },
+                  };
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify(flushRes)}\n\n`)
+                  );
+                  pendingContent = "";
+                  contentSent = true;
                 }
               } catch (error: any) {
                 logger?.error(

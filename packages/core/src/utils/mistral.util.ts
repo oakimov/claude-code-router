@@ -9,6 +9,41 @@ import {
   extractReasoningText,
   cleanReasoningFields,
 } from "./thinking";
+import { normalizeToolParameters } from "./schema";
+
+// Type definitions for Mistral API responses
+interface MistralStreamChunk {
+  id: string;
+  object: "chat.completion.chunk";
+  created: number;
+  model: string;
+  choices: Array<{
+    index: number;
+    delta: {
+      role?: string;
+      content?: string | null;
+      reasoning_content?: string;
+      thinking?: { content?: string; signature?: string };
+      tool_calls?: Array<{
+        index: number;
+        id: string;
+        function: { name: string; arguments: string };
+      }>;
+    };
+    finish_reason: string | null;
+  }>;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+interface MistralMessageContent {
+  type: "thinking" | "text";
+  text?: string;
+  thinking?: any;
+}
 
 /**
  * Helper to flatten array content to strings and remove cache_control
@@ -111,17 +146,15 @@ export function buildRequestBody(request: UnifiedChatRequest): Record<string, an
     req.tool_choice = transformToolChoice(req.tool_choice);
   }
 
-  // 4. Tool Cleanup
+  // 4. Tool Cleanup - normalize schemas and remove $schema
   if (Array.isArray(req.tools)) {
     req.tools = req.tools.map((tool) => {
-      if (tool?.function?.parameters?.$schema) {
-        const params = { ...tool.function.parameters };
-        delete params.$schema;
+      if (tool?.function?.parameters) {
         return {
           ...tool,
           function: {
             ...tool.function,
-            parameters: params,
+            parameters: normalizeToolParameters(tool.function.parameters),
           },
         };
       }
