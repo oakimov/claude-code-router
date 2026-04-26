@@ -366,6 +366,30 @@ async function sendRequestToProvider(
   // Handle request errors
   if (!response.ok) {
     const errorText = await response.text();
+    
+    let headers: Record<string, string> | undefined = undefined;
+    const retryAfter = response.headers.get("retry-after");
+    
+    if (retryAfter) {
+      headers = { 'Retry-After': retryAfter };
+    } else if (response.status === 429) {
+      try {
+        const errorJson = JSON.parse(errorText);
+        const details = errorJson?.error?.details || errorJson?.details;
+        if (Array.isArray(details)) {
+          const retryInfo = details.find((d: any) => d['@type'] === 'type.googleapis.com/google.rpc.RetryInfo');
+          if (retryInfo?.retryDelay) {
+            const seconds = parseInt(retryInfo.retryDelay, 10);
+            if (!isNaN(seconds)) {
+              headers = { 'Retry-After': seconds.toString() };
+            }
+          }
+        }
+      } catch (e) {
+        // Ignore JSON parse errors
+      }
+    }
+
     fastify.log.error(
       `[provider_response_error] Error from provider(${provider.name},${requestBody.model}: ${response.status}): ${errorText}`,
     );
@@ -373,7 +397,9 @@ async function sendRequestToProvider(
     throw createApiError(
       `Error from provider(${provider.name},${requestBody.model}: ${response.status}): ${errorText}`,
       response.status,
-      "provider_response_error"
+      "provider_response_error",
+      "api_error",
+      headers
     );
   }
 

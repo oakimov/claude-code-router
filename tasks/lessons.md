@@ -3,6 +3,17 @@
 ## Git & Workflow
 - **Cherry-picking for Integration**: When merging a feature branch from a divergent fork into a base repo with critical fixes, cherry-picking specific commits is preferred over `git merge` to avoid regression and maintain a linear history.
 
+## LLM Provider Integration (Gemini)
+- **Problem**: Gemini 500 errors and tool use failures in multi-turn conversations.
+  - **Resolution**: Implemented robust error handling and enhanced state management within the Gemini transformer. This ensures conversation history is correctly maintained and API calls are resilient to transient issues, preventing server errors and enabling reliable tool execution across multiple turns.
+  - **Symptoms & Fix**: If Gemini returns 500 errors or tool calls fail in multi-turn dialogues, review the conversation state management and message history preparation for the Gemini API. Look for issues in how previous turns are summarized or passed, and ensure error handling (e.g., retries) is active.
+- **Problem**: Gemini/Gemma streaming issues, autocompact malfunctions, and tool schema validation failures.
+  - **Resolution**: Improved the streaming parser/serializer to correctly handle partial and complete stream events for both Gemini and Gemma. Enhanced autocompact logic to intelligently manage the context window, preventing unexpected truncations. Strengthened tool schema sanitization to ensure generated tool definitions strictly comply with API requirements.
+  - **Symptoms & Fix**: If streaming responses are incomplete or corrupted, autocompact causes unexpected message shortening, or tool definitions are rejected, inspect the respective streaming, context management, and schema validation components of the Gemini/Gemma integration. Verify JSON schema conformity and stream processing integrity.
+- **Problem**: Inefficient message grouping and suboptimal streaming logic for Gemini tool call handling.
+  - **Resolution**: Refactored and optimized the internal message grouping mechanism and streaming logic for Gemini. This involved implementing smarter buffering and assembly of partial tool call events, leading to more efficient processing and faster, more accurate tool invocation.
+  - **Symptoms & Fix**: If Gemini tool calls are delayed, appear out of order, or are incorrectly interpreted during streaming, examine the message grouping and streaming pipeline. Confirm that partial tool call payloads are being correctly identified, buffered, and reassembled before dispatching the full tool call.
+
 ## LLM Provider Integration (Mistral)
 - **Parameter Mapping**: Mistral requires `reasoning_effort` (low, medium, high) instead of a `reasoning` object. 
 - **Model ID Wildcards**: Use `.startsWith()` for model families (e.g., `mistral-small-`) to support multiple versions of the same model without manual list updates.

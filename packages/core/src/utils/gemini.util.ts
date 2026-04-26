@@ -257,7 +257,7 @@ export function buildRequestBody(
       parts.push({
         thought: true,
         text: message.thinking?.content || "",
-        thoughtSignature: realSignature,
+        thought_signature: realSignature,
       });
     }
 
@@ -304,6 +304,7 @@ export function buildRequestBody(
     if (Array.isArray(message.tool_calls)) {
       parts.push(
         ...message.tool_calls.map((toolCall) => {
+          const signature = (toolCall as any).thought_signature || realSignature;
           return {
             functionCall: {
               id:
@@ -312,6 +313,7 @@ export function buildRequestBody(
               name: toolCall.function.name,
               args: JSON.parse(toolCall.function.arguments || "{}"),
             },
+            ...(signature && { thought_signature: signature }),
           };
         })
       );
@@ -601,6 +603,7 @@ export async function transformResponseOut(
             name: part.functionCall?.name,
             arguments: JSON.stringify(part.functionCall?.args || {}),
           },
+          thought_signature: (part as any).thoughtSignature || (part as any).thought_signature,
         })) || [];
 
     const textContent =
@@ -826,6 +829,7 @@ export async function transformResponseOut(
                       name: part.functionCall?.name,
                       arguments: JSON.stringify(part.functionCall?.args || {}),
                     },
+                    thought_signature: (part as any).thoughtSignature || (part as any).thought_signature,
                   }));
 
                 const textContent = parts
