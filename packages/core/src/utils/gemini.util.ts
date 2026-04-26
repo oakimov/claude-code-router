@@ -1,6 +1,14 @@
 import { UnifiedChatRequest, UnifiedMessage } from "../types/llm";
 import { Content, ContentListUnion, Part, ToolListUnion } from "@google/genai";
 import { sanitizeJsonSchema } from "./schema";
+import { createSSEStreamReader } from "./stream";
+
+declare module 'latex-to-unicode' {
+  function latexToUnicode(str: string): string;
+  export default latexToUnicode;
+}
+
+import latexToUnicode from "latex-to-unicode";
 
 // Type enum equivalent in JavaScript
 const Type = {
@@ -177,6 +185,27 @@ function sanitizeGeminiFunctionName(name: string): string {
     sanitized = "_" + sanitized;
   }
   return sanitized.substring(0, 128);
+}
+
+/** Replace LaTeX math symbols that some models generate with standard unicode using latex-to-unicode library */
+function replaceLatexSymbols(text: string): string {
+  if (!text) return text;
+  try {
+    // The library only replaces the first occurrence of each symbol (str.replace(key, val))
+    // So we loop until the string stops changing to ensure all occurrences are handled
+    let converted = text;
+    let prev;
+    do {
+      prev = converted;
+      converted = latexToUnicode(converted);
+    } while (converted !== prev);
+
+    // Some models wrap symbols in $, e.g. $\rightarrow$. 
+    // The library converts it to $→$, so we clean up the $ signs if they surround a single unicode char
+    return converted.replace(/\$([^\$])\$/g, '$1');
+  } catch (e) {
+    return text;
+  }
 }
 
 export function buildRequestBody(
@@ -609,7 +638,7 @@ export async function transformResponseOut(
     const textContent =
       nonThinkingParts
         ?.filter((part: Part) => part.text)
-        ?.map((part: Part) => part.text)
+        ?.map((part: Part) => replaceLatexSymbols(part.text))
         ?.join("\n") || "";
 
     const res = {
@@ -671,103 +700,422 @@ export async function transformResponseOut(
     let contentIndex = 0;
     let toolCallIndex = -1;
 
-    const stream = new ReadableStream({
-      async start(controller) {
-        const processLine = async (
-          line: string,
-          controller: ReadableStreamDefaultController
-        ) => {
-          if (line.startsWith("data: ")) {
-            const chunkStr = line.slice(6).trim();
-            if (chunkStr) {
-              logger?.debug({ chunkStr }, `${providerName} chunk:`);
-              try {
-                const chunk = JSON.parse(chunkStr);
+    const processLine = (
+      line: string,
+      ctx: { controller: ReadableStreamDefaultController, encoder: TextEncoder }
+    ) => {
+      const { controller, encoder } = ctx;
+      if (line.startsWith("data: ")) {
+        const chunkStr = line.slice(6).trim();
+        if (chunkStr) {
+          logger?.debug({ chunkStr }, `${providerName} chunk:`);
+          try {
+            const chunk = JSON.parse(chunkStr);
 
-                // Check if chunk has valid structure
-                if (!chunk.candidates || !chunk.candidates[0]) {
-                  logger?.debug({ chunkStr }, `Invalid chunk structure`);
-                  return;
+            // Check if chunk has valid structure
+            if (!chunk.candidates || !chunk.candidates[0]) {
+              logger?.debug({ chunkStr }, `Invalid chunk structure`);
+              return;
+            }
+
+            const candidate = chunk.candidates[0];
+            const parts = candidate.content?.parts || [];
+
+            parts
+              .filter((part: any) => part.text && part.thought === true)
+              .forEach((part: any) => {
+                if (!hasThinkingContent) {
+                  hasThinkingContent = true;
                 }
+                const thinkingChunk = {
+                  choices: [
+                    {
+                      delta: {
+                        role: "assistant",
+                        content: null,
+                        thinking: {
+                          content: part.text,
+                        },
+                      },
+                      finish_reason: null,
+                      index: contentIndex,
+                      logprobs: null,
+                    },
+                  ],
+                  created: parseInt(new Date().getTime() / 1000 + "", 10),
+                  id: chunk.responseId || "",
+                  model: chunk.modelVersion || "",
+                  object: "chat.completion.chunk",
+                  system_fingerprint: "fp_a49d71b8a1",
+                };
+                controller.enqueue(
+                  encoder.encode(
+                    `data: ${JSON.stringify(thinkingChunk)}\n\n`
+                  )
+                );
+              });
 
-                const candidate = chunk.candidates[0];
-                const parts = candidate.content?.parts || [];
+            let signature = parts.find(
+              (part: Part) => part.thoughtSignature
+            )?.thoughtSignature;
+            if (signature && !signatureSent) {
+              if (!hasThinkingContent) {
+                const thinkingChunk = {
+                  choices: [
+                    {
+                      delta: {
+                        role: "assistant",
+                        content: null,
+                        thinking: {
+                          content: "(no content)",
+                        },
+                      },
+                      finish_reason: null,
+                      index: contentIndex,
+                      logprobs: null,
+                    },
+                  ],
+                  created: parseInt(new Date().getTime() / 1000 + "", 10),
+                  id: chunk.responseId || "",
+                  model: chunk.modelVersion || "",
+                  object: "chat.completion.chunk",
+                  system_fingerprint: "fp_a49d71b8a1",
+                };
+                controller.enqueue(
+                  encoder.encode(
+                    `data: ${JSON.stringify(thinkingChunk)}\n\n`
+                  )
+                );
+              }
+              const signatureChunk = {
+                choices: [
+                  {
+                    delta: {
+                      role: "assistant",
+                      content: null,
+                      thinking: {
+                        signature,
+                      },
+                    },
+                    finish_reason: null,
+                    index: contentIndex,
+                    logprobs: null,
+                  },
+                ],
+                created: parseInt(new Date().getTime() / 1000 + "", 10),
+                id: chunk.responseId || "",
+                model: chunk.modelVersion || "",
+                object: "chat.completion.chunk",
+                system_fingerprint: "fp_a49d71b8a1",
+              };
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify(signatureChunk)}\n\n`
+                )
+              );
+              signatureSent = true;
+              contentIndex++;
+              if (pendingContent) {
+                const res = {
+                  choices: [
+                    {
+                      delta: {
+                        role: "assistant",
+                        content: pendingContent,
+                      },
+                      finish_reason: null,
+                      index: contentIndex,
+                      logprobs: null,
+                    },
+                  ],
+                  created: parseInt(new Date().getTime() / 1000 + "", 10),
+                  id: chunk.responseId || "",
+                  model: chunk.modelVersion || "",
+                  object: "chat.completion.chunk",
+                  system_fingerprint: "fp_a49d71b8a1",
+                };
 
-                parts
-                  .filter((part: any) => part.text && part.thought === true)
-                  .forEach((part: any) => {
-                    if (!hasThinkingContent) {
-                      hasThinkingContent = true;
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
+                );
+
+                pendingContent = "";
+                if (!contentSent) {
+                  contentSent = true;
+                }
+              }
+            }
+
+            const tool_calls = parts
+              .filter((part: Part) => part.functionCall)
+              .map((part: Part) => ({
+                id:
+                  part.functionCall?.id ||
+                  `ccr_tool_${Math.random().toString(36).substring(2, 15)}`,
+                type: "function",
+                function: {
+                  name: part.functionCall?.name,
+                  arguments: JSON.stringify(part.functionCall?.args || {}),
+                },
+                thought_signature: (part as any).thoughtSignature || (part as any).thought_signature,
+              }));
+
+            const textContent = parts
+              .filter((part: Part) => part.text && part.thought !== true)
+              .map((part: Part) => replaceLatexSymbols(part.text))
+              .join("\n");
+
+            if (!textContent && signatureSent && !contentSent) {
+              const emptyContentChunk = {
+                choices: [
+                  {
+                    delta: {
+                      role: "assistant",
+                      content: "(no content)",
+                    },
+                    index: contentIndex,
+                    finish_reason: null,
+                    logprobs: null,
+                  },
+                ],
+                created: parseInt(new Date().getTime() / 1000 + "", 10),
+                id: chunk.responseId || "",
+                model: chunk.modelVersion || "",
+                object: "chat.completion.chunk",
+                system_fingerprint: "fp_a49d71b8a1",
+              };
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify(emptyContentChunk)}\n\n`
+                )
+              );
+
+              if (!contentSent) {
+                contentSent = true;
+              }
+            }
+
+            const hasFinalEvent = textContent || tool_calls.length > 0 || candidate.finishReason;
+            if (hasThinkingContent && !signatureSent && hasFinalEvent) {
+              if (chunk.modelVersion.includes("3") && !candidate.finishReason && tool_calls.length === 0) {
+                if (textContent) {
+                  pendingContent += textContent;
+                }
+                return;
+              } else {
+                const signatureChunk = {
+                  choices: [
+                    {
+                      delta: {
+                        role: "assistant",
+                        content: null,
+                        thinking: {
+                          signature: `ccr_${+new Date()}`,
+                        },
+                      },
+                      finish_reason: null,
+                      index: contentIndex,
+                      logprobs: null,
+                    },
+                  ],
+                  created: parseInt(new Date().getTime() / 1000 + "", 10),
+                  id: chunk.responseId || "",
+                  model: chunk.modelVersion || "",
+                  object: "chat.completion.chunk",
+                  system_fingerprint: "fp_a49d71b8a1",
+                };
+                controller.enqueue(
+                  encoder.encode(
+                    `data: ${JSON.stringify(signatureChunk)}\n\n`
+                  )
+                );
+                signatureSent = true;
+
+                if (pendingContent) {
+                  contentIndex++;
+                  const res = {
+                    choices: [
+                      {
+                        delta: {
+                          role: "assistant",
+                          content: pendingContent,
+                        },
+                        finish_reason: null,
+                        index: contentIndex,
+                        logprobs: null,
+                      },
+                    ],
+                    created: parseInt(new Date().getTime() / 1000 + "", 10),
+                    id: chunk.responseId || "",
+                    model: chunk.modelVersion || "",
+                    object: "chat.completion.chunk",
+                    system_fingerprint: "fp_a49d71b8a1",
+                  };
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
+                  );
+                  pendingContent = "";
+                  contentSent = true;
+                }
+              }
+            }
+
+            if (textContent) {
+              if (!pendingContent) contentIndex++;
+              const res = {
+                choices: [
+                  {
+                    delta: {
+                      role: "assistant",
+                      content: textContent,
+                    },
+                    finish_reason:
+                      candidate.finishReason?.toLowerCase() || null,
+                    index: contentIndex,
+                    logprobs: null,
+                  },
+                ],
+                created: parseInt(new Date().getTime() / 1000 + "", 10),
+                id: chunk.responseId || "",
+                model: chunk.modelVersion || "",
+                object: "chat.completion.chunk",
+                system_fingerprint: "fp_a49d71b8a1",
+                usage: {
+                  completion_tokens:
+                    chunk.usageMetadata?.candidatesTokenCount || 0,
+                  prompt_tokens: chunk.usageMetadata?.promptTokenCount || 0,
+                  prompt_tokens_details: {
+                    cached_tokens:
+                      chunk.usageMetadata?.cachedContentTokenCount || 0,
+                  },
+                  total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
+                  output_tokens_details: {
+                    reasoning_tokens:
+                      chunk.usageMetadata?.thoughtsTokenCount || 0,
+                  },
+                },
+              };
+
+              if (candidate?.groundingMetadata?.groundingChunks?.length) {
+                (res.choices[0].delta as any).annotations =
+                  candidate.groundingMetadata.groundingChunks.map(
+                    (groundingChunk: any, index: number) => {
+                      const support =
+                        candidate?.groundingMetadata?.groundingSupports?.filter(
+                          (item: any) =>
+                            item.groundingChunkIndices?.includes(index)
+                        );
+                      return {
+                        type: "url_citation",
+                        url_citation: {
+                          url: groundingChunk?.web?.uri || "",
+                          title: groundingChunk?.web?.title || "",
+                          content: support?.[0]?.segment?.text || "",
+                          start_index:
+                            support?.[0]?.segment?.startIndex || 0,
+                          end_index: support?.[0]?.segment?.endIndex || 0,
+                        },
+                      };
                     }
-                    const thinkingChunk = {
-                      choices: [
-                        {
-                          delta: {
-                            role: "assistant",
-                            content: null,
-                            thinking: {
-                              content: part.text,
-                            },
-                          },
-                          finish_reason: null,
-                          index: contentIndex,
-                          logprobs: null,
-                        },
-                      ],
-                      created: parseInt(new Date().getTime() / 1000 + "", 10),
-                      id: chunk.responseId || "",
-                      model: chunk.modelVersion || "",
-                      object: "chat.completion.chunk",
-                      system_fingerprint: "fp_a49d71b8a1",
-                    };
-                    controller.enqueue(
-                      encoder.encode(
-                        `data: ${JSON.stringify(thinkingChunk)}\n\n`
-                      )
-                    );
-                  });
+                  );
+              }
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
+              );
 
-                let signature = parts.find(
-                  (part: Part) => part.thoughtSignature
-                )?.thoughtSignature;
-                if (signature && !signatureSent) {
-                  if (!hasThinkingContent) {
-                    const thinkingChunk = {
-                      choices: [
-                        {
-                          delta: {
-                            role: "assistant",
-                            content: null,
-                            thinking: {
-                              content: "(no content)",
-                            },
+              if (!contentSent && textContent) {
+                contentSent = true;
+              }
+            }
+
+            if (tool_calls.length > 0) {
+              tool_calls.forEach((tool) => {
+                contentIndex++;
+                toolCallIndex++;
+                const res = {
+                  choices: [
+                    {
+                      delta: {
+                        role: "assistant",
+                        tool_calls: [
+                          {
+                            ...tool,
+                            index: toolCallIndex,
                           },
-                          finish_reason: null,
-                          index: contentIndex,
-                          logprobs: null,
-                        },
-                      ],
-                      created: parseInt(new Date().getTime() / 1000 + "", 10),
-                      id: chunk.responseId || "",
-                      model: chunk.modelVersion || "",
-                      object: "chat.completion.chunk",
-                      system_fingerprint: "fp_a49d71b8a1",
-                    };
-                    controller.enqueue(
-                      encoder.encode(
-                        `data: ${JSON.stringify(thinkingChunk)}\n\n`
-                      )
+                        ],
+                      },
+                      finish_reason:
+                        candidate.finishReason?.toLowerCase() || null,
+                      index: contentIndex,
+                      logprobs: null,
+                    },
+                  ],
+                  created: parseInt(new Date().getTime() / 1000 + "", 10),
+                  id: chunk.responseId || "",
+                  model: chunk.modelVersion || "",
+                  object: "chat.completion.chunk",
+                  system_fingerprint: "fp_a49d71b8a1",
+                  usage: {
+                    completion_tokens:
+                      chunk.usageMetadata?.candidatesTokenCount || 0,
+                    prompt_tokens:
+                      chunk.usageMetadata?.promptTokenCount || 0,
+                    prompt_tokens_details: {
+                      cached_tokens:
+                        chunk.usageMetadata?.cachedContentTokenCount || 0,
+                    },
+                    total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
+                    output_tokens_details: {
+                      reasoning_tokens:
+                        chunk.usageMetadata?.thoughtsTokenCount || 0,
+                    },
+                  },
+                };
+
+                if (candidate?.groundingMetadata?.groundingChunks?.length) {
+                  (res.choices[0].delta as any).annotations =
+                    candidate.groundingMetadata.groundingChunks.map(
+                      (groundingChunk: any, index: number) => {
+                        const support =
+                          candidate?.groundingMetadata?.groundingSupports?.filter(
+                            (item: any) =>
+                              item.groundingChunkIndices?.includes(index)
+                          );
+                        return {
+                          type: "url_citation",
+                          url_citation: {
+                            url: groundingChunk?.web?.uri || "",
+                            title: groundingChunk?.web?.title || "",
+                            content: support?.[0]?.segment?.text || "",
+                            start_index:
+                              support?.[0]?.segment?.startIndex || 0,
+                            end_index: support?.[0]?.segment?.endIndex || 0,
+                          },
+                        };
+                      }
                     );
-                  }
+                }
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
+                );
+              });
+
+              if (!contentSent && textContent) {
+                contentSent = true;
+              }
+            }
+
+            // Flush buffered text or send final finish_reason on stream end
+            if (candidate.finishReason) {
+              if (pendingContent) {
+                if (!signatureSent && hasThinkingContent) {
                   const signatureChunk = {
                     choices: [
                       {
                         delta: {
                           role: "assistant",
                           content: null,
-                          thinking: {
-                            signature,
-                          },
+                          thinking: { signature: `ccr_${+new Date()}` },
                         },
                         finish_reason: null,
                         index: contentIndex,
@@ -787,447 +1135,94 @@ export async function transformResponseOut(
                   );
                   signatureSent = true;
                   contentIndex++;
-                  if (pendingContent) {
-                    const res = {
-                      choices: [
-                        {
-                          delta: {
-                            role: "assistant",
-                            content: pendingContent,
-                          },
-                          finish_reason: null,
-                          index: contentIndex,
-                          logprobs: null,
-                        },
-                      ],
-                      created: parseInt(new Date().getTime() / 1000 + "", 10),
-                      id: chunk.responseId || "",
-                      model: chunk.modelVersion || "",
-                      object: "chat.completion.chunk",
-                      system_fingerprint: "fp_a49d71b8a1",
-                    };
-
-                    controller.enqueue(
-                      encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
-                    );
-
-                    pendingContent = "";
-                    if (!contentSent) {
-                      contentSent = true;
-                    }
-                  }
                 }
-
-                const tool_calls = parts
-                  .filter((part: Part) => part.functionCall)
-                  .map((part: Part) => ({
-                    id:
-                      part.functionCall?.id ||
-                      `ccr_tool_${Math.random().toString(36).substring(2, 15)}`,
-                    type: "function",
-                    function: {
-                      name: part.functionCall?.name,
-                      arguments: JSON.stringify(part.functionCall?.args || {}),
+                const flushRes = {
+                  choices: [
+                    {
+                      delta: {
+                        role: "assistant",
+                        content: pendingContent,
+                      },
+                      finish_reason: candidate.finishReason.toLowerCase(),
+                      index: contentIndex,
+                      logprobs: null,
                     },
-                    thought_signature: (part as any).thoughtSignature || (part as any).thought_signature,
-                  }));
-
-                const textContent = parts
-                  .filter((part: Part) => part.text && part.thought !== true)
-                  .map((part: Part) => part.text)
-                  .join("\n");
-
-                if (!textContent && signatureSent && !contentSent) {
-                  const emptyContentChunk = {
-                    choices: [
-                      {
-                        delta: {
-                          role: "assistant",
-                          content: "(no content)",
-                        },
-                        index: contentIndex,
-                        finish_reason: null,
-                        logprobs: null,
-                      },
-                    ],
-                    created: parseInt(new Date().getTime() / 1000 + "", 10),
-                    id: chunk.responseId || "",
-                    model: chunk.modelVersion || "",
-                    object: "chat.completion.chunk",
-                    system_fingerprint: "fp_a49d71b8a1",
-                  };
-                  controller.enqueue(
-                    encoder.encode(
-                      `data: ${JSON.stringify(emptyContentChunk)}\n\n`
-                    )
-                  );
-
-                  if (!contentSent) {
-                    contentSent = true;
-                  }
-                }
-
-                const hasFinalEvent = textContent || tool_calls.length > 0 || candidate.finishReason;
-                if (hasThinkingContent && !signatureSent && hasFinalEvent) {
-                  if (chunk.modelVersion.includes("3") && !candidate.finishReason && tool_calls.length === 0) {
-                    if (textContent) {
-                      pendingContent += textContent;
-                    }
-                    return;
-                  } else {
-                    const signatureChunk = {
-                      choices: [
-                        {
-                          delta: {
-                            role: "assistant",
-                            content: null,
-                            thinking: {
-                              signature: `ccr_${+new Date()}`,
-                            },
-                          },
-                          finish_reason: null,
-                          index: contentIndex,
-                          logprobs: null,
-                        },
-                      ],
-                      created: parseInt(new Date().getTime() / 1000 + "", 10),
-                      id: chunk.responseId || "",
-                      model: chunk.modelVersion || "",
-                      object: "chat.completion.chunk",
-                      system_fingerprint: "fp_a49d71b8a1",
-                    };
-                    controller.enqueue(
-                      encoder.encode(
-                        `data: ${JSON.stringify(signatureChunk)}\n\n`
-                      )
-                    );
-                    signatureSent = true;
-
-                    if (pendingContent) {
-                      contentIndex++;
-                      const res = {
-                        choices: [
-                          {
-                            delta: {
-                              role: "assistant",
-                              content: pendingContent,
-                            },
-                            finish_reason: null,
-                            index: contentIndex,
-                            logprobs: null,
-                          },
-                        ],
-                        created: parseInt(new Date().getTime() / 1000 + "", 10),
-                        id: chunk.responseId || "",
-                        model: chunk.modelVersion || "",
-                        object: "chat.completion.chunk",
-                        system_fingerprint: "fp_a49d71b8a1",
-                      };
-                      controller.enqueue(
-                        encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
-                      );
-                      pendingContent = "";
-                      contentSent = true;
-                    }
-                  }
-                }
-
-                if (textContent) {
-                  if (!pendingContent) contentIndex++;
-                  const res = {
-                    choices: [
-                      {
-                        delta: {
-                          role: "assistant",
-                          content: textContent,
-                        },
-                        finish_reason:
-                          candidate.finishReason?.toLowerCase() || null,
-                        index: contentIndex,
-                        logprobs: null,
-                      },
-                    ],
-                    created: parseInt(new Date().getTime() / 1000 + "", 10),
-                    id: chunk.responseId || "",
-                    model: chunk.modelVersion || "",
-                    object: "chat.completion.chunk",
-                    system_fingerprint: "fp_a49d71b8a1",
-                    usage: {
-                      completion_tokens:
-                        chunk.usageMetadata?.candidatesTokenCount || 0,
-                      prompt_tokens: chunk.usageMetadata?.promptTokenCount || 0,
-                      prompt_tokens_details: {
-                        cached_tokens:
-                          chunk.usageMetadata?.cachedContentTokenCount || 0,
-                      },
-                      total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
-                      output_tokens_details: {
-                        reasoning_tokens:
-                          chunk.usageMetadata?.thoughtsTokenCount || 0,
-                      },
+                  ],
+                  created: parseInt(new Date().getTime() / 1000 + "", 10),
+                  id: chunk.responseId || "",
+                  model: chunk.modelVersion || "",
+                  object: "chat.completion.chunk",
+                  system_fingerprint: "fp_a49d71b8a1",
+                  usage: {
+                    completion_tokens:
+                      chunk.usageMetadata?.candidatesTokenCount || 0,
+                    prompt_tokens: chunk.usageMetadata?.promptTokenCount || 0,
+                    prompt_tokens_details: {
+                      cached_tokens:
+                        chunk.usageMetadata?.cachedContentTokenCount || 0,
                     },
-                  };
-
-                  if (candidate?.groundingMetadata?.groundingChunks?.length) {
-                    (res.choices[0].delta as any).annotations =
-                      candidate.groundingMetadata.groundingChunks.map(
-                        (groundingChunk: any, index: number) => {
-                          const support =
-                            candidate?.groundingMetadata?.groundingSupports?.filter(
-                              (item: any) =>
-                                item.groundingChunkIndices?.includes(index)
-                            );
-                          return {
-                            type: "url_citation",
-                            url_citation: {
-                              url: groundingChunk?.web?.uri || "",
-                              title: groundingChunk?.web?.title || "",
-                              content: support?.[0]?.segment?.text || "",
-                              start_index:
-                                support?.[0]?.segment?.startIndex || 0,
-                              end_index: support?.[0]?.segment?.endIndex || 0,
-                            },
-                          };
-                        }
-                      );
-                  }
-                  controller.enqueue(
-                    encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
-                  );
-
-                  if (!contentSent && textContent) {
-                    contentSent = true;
-                  }
-                }
-
-                if (tool_calls.length > 0) {
-                  tool_calls.forEach((tool) => {
-                    contentIndex++;
-                    toolCallIndex++;
-                    const res = {
-                      choices: [
-                        {
-                          delta: {
-                            role: "assistant",
-                            tool_calls: [
-                              {
-                                ...tool,
-                                index: toolCallIndex,
-                              },
-                            ],
-                          },
-                          finish_reason:
-                            candidate.finishReason?.toLowerCase() || null,
-                          index: contentIndex,
-                          logprobs: null,
-                        },
-                      ],
-                      created: parseInt(new Date().getTime() / 1000 + "", 10),
-                      id: chunk.responseId || "",
-                      model: chunk.modelVersion || "",
-                      object: "chat.completion.chunk",
-                      system_fingerprint: "fp_a49d71b8a1",
-                      usage: {
-                        completion_tokens:
-                          chunk.usageMetadata?.candidatesTokenCount || 0,
-                        prompt_tokens:
-                          chunk.usageMetadata?.promptTokenCount || 0,
-                        prompt_tokens_details: {
-                          cached_tokens:
-                            chunk.usageMetadata?.cachedContentTokenCount || 0,
-                        },
-                        total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
-                        output_tokens_details: {
-                          reasoning_tokens:
-                            chunk.usageMetadata?.thoughtsTokenCount || 0,
-                        },
+                    total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
+                    output_tokens_details: {
+                      reasoning_tokens:
+                        chunk.usageMetadata?.thoughtsTokenCount || 0,
+                    },
+                  },
+                };
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify(flushRes)}\n\n`)
+                );
+                pendingContent = "";
+                contentSent = true;
+              } else if (!textContent && tool_calls.length === 0) {
+                contentIndex++;
+                const flushRes = {
+                  choices: [
+                    {
+                      delta: {
+                        role: "assistant",
+                        content: "",
                       },
-                    };
-
-                    if (candidate?.groundingMetadata?.groundingChunks?.length) {
-                      (res.choices[0].delta as any).annotations =
-                        candidate.groundingMetadata.groundingChunks.map(
-                          (groundingChunk: any, index: number) => {
-                            const support =
-                              candidate?.groundingMetadata?.groundingSupports?.filter(
-                                (item: any) =>
-                                  item.groundingChunkIndices?.includes(index)
-                              );
-                            return {
-                              type: "url_citation",
-                              url_citation: {
-                                url: groundingChunk?.web?.uri || "",
-                                title: groundingChunk?.web?.title || "",
-                                content: support?.[0]?.segment?.text || "",
-                                start_index:
-                                  support?.[0]?.segment?.startIndex || 0,
-                                end_index: support?.[0]?.segment?.endIndex || 0,
-                              },
-                            };
-                          }
-                        );
-                    }
-                    controller.enqueue(
-                      encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
-                    );
-                  });
-
-                  if (!contentSent && textContent) {
-                    contentSent = true;
-                  }
-                }
-
-                // Flush buffered text or send final finish_reason on stream end
-                if (candidate.finishReason) {
-                  if (pendingContent) {
-                    if (!signatureSent && hasThinkingContent) {
-                      const signatureChunk = {
-                        choices: [
-                          {
-                            delta: {
-                              role: "assistant",
-                              content: null,
-                              thinking: { signature: `ccr_${+new Date()}` },
-                            },
-                            finish_reason: null,
-                            index: contentIndex,
-                            logprobs: null,
-                          },
-                        ],
-                        created: parseInt(new Date().getTime() / 1000 + "", 10),
-                        id: chunk.responseId || "",
-                        model: chunk.modelVersion || "",
-                        object: "chat.completion.chunk",
-                        system_fingerprint: "fp_a49d71b8a1",
-                      };
-                      controller.enqueue(
-                        encoder.encode(
-                          `data: ${JSON.stringify(signatureChunk)}\n\n`
-                        )
-                      );
-                      signatureSent = true;
-                      contentIndex++;
-                    }
-                    const flushRes = {
-                      choices: [
-                        {
-                          delta: {
-                            role: "assistant",
-                            content: pendingContent,
-                          },
-                          finish_reason: candidate.finishReason.toLowerCase(),
-                          index: contentIndex,
-                          logprobs: null,
-                        },
-                      ],
-                      created: parseInt(new Date().getTime() / 1000 + "", 10),
-                      id: chunk.responseId || "",
-                      model: chunk.modelVersion || "",
-                      object: "chat.completion.chunk",
-                      system_fingerprint: "fp_a49d71b8a1",
-                      usage: {
-                        completion_tokens:
-                          chunk.usageMetadata?.candidatesTokenCount || 0,
-                        prompt_tokens: chunk.usageMetadata?.promptTokenCount || 0,
-                        prompt_tokens_details: {
-                          cached_tokens:
-                            chunk.usageMetadata?.cachedContentTokenCount || 0,
-                        },
-                        total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
-                        output_tokens_details: {
-                          reasoning_tokens:
-                            chunk.usageMetadata?.thoughtsTokenCount || 0,
-                        },
-                      },
-                    };
-                    controller.enqueue(
-                      encoder.encode(`data: ${JSON.stringify(flushRes)}\n\n`)
-                    );
-                    pendingContent = "";
-                    contentSent = true;
-                  } else if (!textContent && tool_calls.length === 0) {
-                    contentIndex++;
-                    const flushRes = {
-                      choices: [
-                        {
-                          delta: {
-                            role: "assistant",
-                            content: "",
-                          },
-                          finish_reason: candidate.finishReason.toLowerCase(),
-                          index: contentIndex,
-                          logprobs: null,
-                        },
-                      ],
-                      created: parseInt(new Date().getTime() / 1000 + "", 10),
-                      id: chunk.responseId || "",
-                      model: chunk.modelVersion || "",
-                      object: "chat.completion.chunk",
-                      system_fingerprint: "fp_a49d71b8a1",
-                      usage: {
-                        completion_tokens:
-                          chunk.usageMetadata?.candidatesTokenCount || 0,
-                        prompt_tokens: chunk.usageMetadata?.promptTokenCount || 0,
-                        prompt_tokens_details: {
-                          cached_tokens:
-                            chunk.usageMetadata?.cachedContentTokenCount || 0,
-                        },
-                        total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
-                        output_tokens_details: {
-                          reasoning_tokens:
-                            chunk.usageMetadata?.thoughtsTokenCount || 0,
-                        },
-                      },
-                    };
-                    controller.enqueue(
-                      encoder.encode(`data: ${JSON.stringify(flushRes)}\n\n`)
-                    );
-                  }
-                }
-              } catch (error: any) {
-                logger?.error(
-                  `Error parsing ${providerName} stream chunk`,
-                  chunkStr,
-                  error.message
+                      finish_reason: candidate.finishReason.toLowerCase(),
+                      index: contentIndex,
+                      logprobs: null,
+                    },
+                  ],
+                  created: parseInt(new Date().getTime() / 1000 + "", 10),
+                  id: chunk.responseId || "",
+                  model: chunk.modelVersion || "",
+                  object: "chat.completion.chunk",
+                  system_fingerprint: "fp_a49d71b8a1",
+                  usage: {
+                    completion_tokens:
+                      chunk.usageMetadata?.candidatesTokenCount || 0,
+                    prompt_tokens: chunk.usageMetadata?.promptTokenCount || 0,
+                    prompt_tokens_details: {
+                      cached_tokens:
+                        chunk.usageMetadata?.cachedContentTokenCount || 0,
+                    },
+                    total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
+                    output_tokens_details: {
+                      reasoning_tokens:
+                        chunk.usageMetadata?.thoughtsTokenCount || 0,
+                    },
+                  },
+                };
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify(flushRes)}\n\n`)
                 );
               }
             }
+          } catch (error: any) {
+            logger?.error(
+              `Error parsing ${providerName} stream chunk`,
+              chunkStr,
+              error.message
+            );
           }
-        };
-
-        const reader = response.body!.getReader();
-        let buffer = "";
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              if (buffer) {
-                await processLine(buffer, controller);
-              }
-              break;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              await processLine(line, controller);
-            }
-          }
-        } catch (error) {
-          controller.error(error);
-        } finally {
-          controller.close();
         }
-      },
-    });
+      }
+    };
 
-    return new Response(stream, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
+    return createSSEStreamReader(response, processLine);
   }
 }

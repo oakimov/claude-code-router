@@ -1,5 +1,6 @@
 import { UnifiedChatRequest } from "../types/llm";
 import { Transformer } from "../types/transformer";
+import { createSSEStreamReader } from "../utils/stream";
 
 export class TooluseTransformer implements Transformer {
   name = "tooluse";
@@ -68,154 +69,69 @@ Examples:
       const encoder = new TextEncoder();
       let exitToolIndex = -1;
       let exitToolResponse = "";
-      let buffer = ""; // Buffer for incomplete data
 
-      const stream = new ReadableStream({
-        async start(controller) {
-          const reader = response.body!.getReader();
+      const processLine = (
+        line: string,
+        ctx: { controller: ReadableStreamDefaultController; encoder: TextEncoder }
+      ) => {
+        const { controller, encoder } = ctx;
 
-          const processBuffer = (
-            buffer: string,
-            controller: ReadableStreamDefaultController,
-            encoder: TextEncoder
-          ) => {
-            const lines = buffer.split("\n");
-            for (const line of lines) {
-              if (line.trim()) {
-                controller.enqueue(encoder.encode(line + "\n"));
+        if (
+          line.startsWith("data: ") &&
+          line.trim() !== "data: [DONE]"
+        ) {
+          try {
+            const data = JSON.parse(line.slice(6));
+
+            if (data.choices[0]?.delta?.tool_calls?.length) {
+              const toolCall = data.choices[0].delta.tool_calls[0];
+
+              if (toolCall.function?.name === "ExitTool") {
+                exitToolIndex = toolCall.index;
+                return;
+              } else if (
+                exitToolIndex > -1 &&
+                toolCall.index === exitToolIndex &&
+                toolCall.function.arguments
+              ) {
+                exitToolResponse += toolCall.function.arguments;
+                try {
+                  const response = JSON.parse(exitToolResponse);
+                  data.choices = [
+                    {
+                      delta: {
+                        role: "assistant",
+                        content: response.response || "",
+                      },
+                    },
+                  ];
+                  const modifiedLine = `data: ${JSON.stringify(
+                    data
+                  )}\n\n`;
+                  controller.enqueue(encoder.encode(modifiedLine));
+                } catch (e) {}
+                return;
               }
             }
-          };
-
-          const processLine = (
-            line: string,
-            context: {
-              controller: ReadableStreamDefaultController;
-              encoder: TextEncoder;
-              exitToolIndex: () => number;
-              setExitToolIndex: (val: number) => void;
-              exitToolResponse: () => string;
-              appendExitToolResponse: (content: string) => void;
-            }
-          ) => {
-            const {
-              controller,
-              encoder,
-              exitToolIndex,
-              setExitToolIndex,
-              appendExitToolResponse,
-            } = context;
 
             if (
-              line.startsWith("data: ") &&
-              line.trim() !== "data: [DONE]"
+              data.choices?.[0]?.delta &&
+              Object.keys(data.choices[0].delta).length > 0
             ) {
-              try {
-                const data = JSON.parse(line.slice(6));
-
-                if (data.choices[0]?.delta?.tool_calls?.length) {
-                  const toolCall = data.choices[0].delta.tool_calls[0];
-
-                  if (toolCall.function?.name === "ExitTool") {
-                    setExitToolIndex(toolCall.index);
-                    return;
-                  } else if (
-                    exitToolIndex() > -1 &&
-                    toolCall.index === exitToolIndex() &&
-                    toolCall.function.arguments
-                  ) {
-                    appendExitToolResponse(toolCall.function.arguments);
-                    try {
-                      const response = JSON.parse(context.exitToolResponse());
-                      data.choices = [
-                        {
-                          delta: {
-                            role: "assistant",
-                            content: response.response || "",
-                          },
-                        },
-                      ];
-                      const modifiedLine = `data: ${JSON.stringify(
-                        data
-                      )}\n\n`;
-                      controller.enqueue(encoder.encode(modifiedLine));
-                    } catch (e) {}
-                    return;
-                  }
-                }
-
-                if (
-                  data.choices?.[0]?.delta &&
-                  Object.keys(data.choices[0].delta).length > 0
-                ) {
-                  const modifiedLine = `data: ${JSON.stringify(data)}\n\n`;
-                  controller.enqueue(encoder.encode(modifiedLine));
-                }
-              } catch (e) {
-                // If JSON parsing fails, pass through the original line
-                controller.enqueue(encoder.encode(line + "\n"));
-              }
-            } else {
-              // Pass through non-data lines (like [DONE])
-              controller.enqueue(encoder.encode(line + "\n"));
+              const modifiedLine = `data: ${JSON.stringify(data)}\n\n`;
+              controller.enqueue(encoder.encode(modifiedLine));
             }
-          };
-
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) {
-                if (buffer.trim()) {
-                  processBuffer(buffer, controller, encoder);
-                }
-                break;
-              }
-              const chunk = decoder.decode(value, { stream: true });
-              buffer += chunk;
-              const lines = buffer.split("\n");
-              buffer = lines.pop() || "";
-              for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                  processLine(line, {
-                    controller,
-                    encoder,
-                    exitToolIndex: () => exitToolIndex,
-                    setExitToolIndex: (val) => (exitToolIndex = val),
-                    exitToolResponse: () => exitToolResponse,
-                    appendExitToolResponse: (content) =>
-                      (exitToolResponse += content),
-                  });
-                } catch (error) {
-                  console.error("Error processing line:", line, error);
-                  // If parsing fails, pass through the original line
-                  controller.enqueue(encoder.encode(line + "\n"));
-                }
-              }
-            }
-          } catch (error) {
-            console.error("Stream error:", error);
-            controller.error(error);
-          } finally {
-            try {
-              reader.releaseLock();
-            } catch (e) {
-              console.error("Error releasing reader lock:", e);
-            }
-            controller.close();
+          } catch (e) {
+            // If JSON parsing fails, pass through the original line
+            controller.enqueue(encoder.encode(line + "\n"));
           }
-        },
-      });
+        } else {
+          // Pass through non-data lines (like [DONE])
+          controller.enqueue(encoder.encode(line + "\n"));
+        }
+      };
 
-      return new Response(stream, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        },
-      });
+      return createSSEStreamReader(response, processLine);
     }
 
     return response;

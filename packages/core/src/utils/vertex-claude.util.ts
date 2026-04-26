@@ -1,4 +1,5 @@
 import { UnifiedChatRequest, UnifiedMessage, UnifiedTool } from "../types/llm";
+import { createSSEStreamReader } from "./stream";
 
 // Vertex Claude message interface
 interface ClaudeMessage {
@@ -309,13 +310,11 @@ export async function transformResponseOut(
       return response;
     }
 
-    const decoder = new TextDecoder();
-    const encoder = new TextEncoder();
-
     const processLine = (
       line: string,
-      controller: ReadableStreamDefaultController
+      ctx: { controller: ReadableStreamDefaultController, encoder: TextEncoder }
     ) => {
+      const { controller, encoder } = ctx;
       if (line.startsWith("data: ")) {
         const chunkStr = line.slice(6).trim();
         if (chunkStr) {
@@ -517,42 +516,7 @@ export async function transformResponseOut(
       }
     };
 
-    const stream = new ReadableStream({
-      async start(controller) {
-        const reader = response.body!.getReader();
-        let buffer = "";
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              if (buffer) {
-                processLine(buffer, controller);
-              }
-              break;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              processLine(line, controller);
-            }
-          }
-        } catch (error) {
-          controller.error(error);
-        } finally {
-          controller.close();
-        }
-      },
-    });
-
-    return new Response(stream, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
+    return createSSEStreamReader(response, processLine);
   }
   return response;
 }
