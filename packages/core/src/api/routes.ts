@@ -4,6 +4,7 @@ import {
   FastifyRequest,
   FastifyReply,
 } from "fastify";
+import { Readable } from "stream";
 import { RegisterProviderRequest, LLMProvider } from "@/types/llm";
 import { sendUnifiedRequest } from "@/utils/request";
 import { createApiError } from "./middleware";
@@ -456,6 +457,10 @@ async function formatResponse(response: any, reply: FastifyReply, body: any) {
     reply.header("Content-Type", "text/event-stream");
     reply.header("Cache-Control", "no-cache");
     reply.header("Connection", "keep-alive");
+    // Convert Web API ReadableStream to Node.js stream for Fastify
+    if (response.body && typeof response.body.getReader === 'function') {
+      return reply.send(Readable.fromWeb(response.body));
+    }
     return reply.send(response.body);
   } else {
     // Handle regular JSON response (including error responses)

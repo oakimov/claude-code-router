@@ -206,7 +206,7 @@ export function buildRequestBody(
     });
   }
 
-  const contents: any[] = [];
+  const rawContents: any[] = [];
   const rawMessages = request.messages || [];
 
 
@@ -234,36 +234,7 @@ export function buildRequestBody(
     if (msg.role === "tool" || msg.role === "system") continue;
 
     const role = msg.role === "assistant" ? "assistant" : "user";
-    const lastMsg = messages[messages.length - 1];
-
-    if (lastMsg && lastMsg.role === role) {
-      const lastContent = lastMsg.content;
-      const currentContent = msg.content;
-
-      if (typeof lastContent === "string" && typeof currentContent === "string") {
-        lastMsg.content = lastContent + "\n" + currentContent;
-      } else if (Array.isArray(lastContent) && Array.isArray(currentContent)) {
-        lastMsg.content = [...lastContent, ...currentContent];
-      } else if (typeof lastContent === "string" && Array.isArray(currentContent)) {
-        lastMsg.content = [
-          { type: "text", text: lastContent },
-          ...currentContent,
-        ];
-      } else if (Array.isArray(lastContent) && typeof currentContent === "string") {
-        lastMsg.content = [
-          ...lastContent,
-          { type: "text", text: currentContent },
-        ];
-      } else {
-        // Fallback: just push as a new message and hope for the best,
-        // or force a role change. For Gemini, we MUST alternate.
-        // To force alternation, we can insert a dummy model message if needed,
-        // but merging is preferred.
-        messages.push({ ...msg, role });
-      }
-    } else {
-      messages.push({ ...msg, role });
-    }
+    messages.push({ ...msg, role });
   }
 
   const toolResponses = rawMessages.filter((item) => item.role === "tool");
@@ -276,103 +247,124 @@ export function buildRequestBody(
     }
     const parts = [];
 
-      const realSignature =
-        message.thinking?.signature &&
+    const realSignature =
+      message.thinking?.signature &&
         !message.thinking.signature.startsWith("ccr_")
-          ? message.thinking.signature
-          : undefined;
+        ? message.thinking.signature
+        : undefined;
 
-      if (realSignature && role === "model") {
-        parts.push({
-          thought: true,
-          text: message.thinking?.content || "",
-          thoughtSignature: realSignature,
-        });
-      }
+    if (realSignature && role === "model") {
+      parts.push({
+        thought: true,
+        text: message.thinking?.content || "",
+        thoughtSignature: realSignature,
+      });
+    }
 
-      if (typeof message.content === "string") {
-        parts.push({ text: message.content });
-      } else if (Array.isArray(message.content)) {
-        parts.push(
-          ...message.content.map((content) => {
-            if (content.type === "text") {
+    if (typeof message.content === "string") {
+      parts.push({ text: message.content });
+    } else if (Array.isArray(message.content)) {
+      parts.push(
+        ...message.content.map((content) => {
+          if (content.type === "text") {
+            return {
+              text: content.text || "",
+            };
+          }
+          if (content.type === "image_url") {
+            if (content.image_url.url.startsWith("http")) {
               return {
-                text: content.text || "",
+                file_data: {
+                  mime_type: content.media_type,
+                  file_uri: content.image_url.url,
+                },
+              };
+            } else {
+              return {
+                inlineData: {
+                  mime_type: content.media_type,
+                  data:
+                    content.image_url.url?.split(",")?.pop() ||
+                    content.image_url.url,
+                },
               };
             }
-            if (content.type === "image_url") {
-              if (content.image_url.url.startsWith("http")) {
-                return {
-                  file_data: {
-                    mime_type: content.media_type,
-                    file_uri: content.image_url.url,
-                  },
-                };
-              } else {
-                return {
-                  inlineData: {
-                    mime_type: content.media_type,
-                    data:
-                      content.image_url.url?.split(",")?.pop() ||
-                      content.image_url.url,
-                  },
-                };
-              }
-            }
-            return null;
-          }).filter(Boolean)
-        );
-      } else if (message.content && typeof message.content === "object") {
-        if ((message.content as any).text) {
-          parts.push({ text: (message.content as any).text });
-        } else {
-          parts.push({ text: JSON.stringify(message.content) });
-        }
+          }
+          return null;
+        }).filter(Boolean)
+      );
+    } else if (message.content && typeof message.content === "object") {
+      if ((message.content as any).text) {
+        parts.push({ text: (message.content as any).text });
+      } else {
+        parts.push({ text: JSON.stringify(message.content) });
       }
+    }
 
-      if (Array.isArray(message.tool_calls)) {
-        parts.push(
-          ...message.tool_calls.map((toolCall) => {
-            return {
-              functionCall: {
-                id:
-                  toolCall.id ||
-                  `tool_${Math.random().toString(36).substring(2, 15)}`,
-                name: toolCall.function.name,
-                args: JSON.parse(toolCall.function.arguments || "{}"),
-              },
-            };
-          })
-        );
-      }
-
-      if (parts.length === 0) {
-        parts.push({ text: "" });
-      }
-
-      contents.push({
-        role,
-        parts,
-      });
-
-      if (role === "model" && message.tool_calls) {
-        const functionResponses = message.tool_calls.map((tool) => {
-          const response = toolResponses.find(
-            (item) => item.tool_call_id === tool.id
-          );
+    if (Array.isArray(message.tool_calls)) {
+      parts.push(
+        ...message.tool_calls.map((toolCall) => {
           return {
-            functionResponse: {
-              name: tool?.function?.name,
-              response: { result: response?.content },
+            functionCall: {
+              id:
+                toolCall.id ||
+                `tool_${Math.random().toString(36).substring(2, 15)}`,
+              name: toolCall.function.name,
+              args: JSON.parse(toolCall.function.arguments || "{}"),
             },
           };
-        });
-        contents.push({
-          role: "user",
-          parts: functionResponses,
-        });
-      }
+        })
+      );
+    }
+
+    if (parts.length === 0) {
+      parts.push({ text: "" });
+    }
+
+    rawContents.push({
+      role,
+      parts,
     });
+
+    if (role === "model" && message.tool_calls) {
+      const functionResponses = message.tool_calls.map((tool) => {
+        const response = toolResponses.find(
+          (item) => item.tool_call_id === tool.id
+        );
+
+        let resultText = response?.content;
+        if (Array.isArray(resultText)) {
+          resultText = resultText
+            .filter((part: any) => part.type === "text")
+            .map((part: any) => part.text)
+            .join("\n");
+        } else if (typeof resultText === "object" && resultText !== null) {
+          resultText = JSON.stringify(resultText);
+        }
+
+        return {
+          functionResponse: {
+            name: tool?.function?.name,
+            response: { result: resultText },
+          },
+        };
+      });
+      rawContents.push({
+        role: "user",
+        parts: functionResponses,
+      });
+    }
+  });
+
+  const contents: any[] = [];
+  for (const item of rawContents) {
+    const lastItem = contents[contents.length - 1];
+    if (lastItem && lastItem.role === item.role) {
+      lastItem.parts.push(...item.parts);
+    } else {
+      contents.push({ ...item, parts: [...item.parts] });
+    }
+  }
 
   const generationConfig: any = {};
 
@@ -592,6 +584,10 @@ export async function transformResponseOut(
     thinkingSignature = parts.find(
       (part: any) => part.thoughtSignature
     )?.thoughtSignature;
+
+    if (thinkingContent && !thinkingSignature) {
+      thinkingSignature = `ccr_${+new Date()}`;
+    }
 
     const tool_calls =
       nonThinkingParts
@@ -867,9 +863,12 @@ export async function transformResponseOut(
                   }
                 }
 
-                if (hasThinkingContent && textContent && !signatureSent) {
-                  if (chunk.modelVersion.includes("3")) {
-                    pendingContent += textContent;
+                const hasFinalEvent = textContent || tool_calls.length > 0 || candidate.finishReason;
+                if (hasThinkingContent && !signatureSent && hasFinalEvent) {
+                  if (chunk.modelVersion.includes("3") && !candidate.finishReason && tool_calls.length === 0) {
+                    if (textContent) {
+                      pendingContent += textContent;
+                    }
                     return;
                   } else {
                     const signatureChunk = {
@@ -899,6 +898,33 @@ export async function transformResponseOut(
                       )
                     );
                     signatureSent = true;
+
+                    if (pendingContent) {
+                      contentIndex++;
+                      const res = {
+                        choices: [
+                          {
+                            delta: {
+                              role: "assistant",
+                              content: pendingContent,
+                            },
+                            finish_reason: null,
+                            index: contentIndex,
+                            logprobs: null,
+                          },
+                        ],
+                        created: parseInt(new Date().getTime() / 1000 + "", 10),
+                        id: chunk.responseId || "",
+                        model: chunk.modelVersion || "",
+                        object: "chat.completion.chunk",
+                        system_fingerprint: "fp_a49d71b8a1",
+                      };
+                      controller.enqueue(
+                        encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
+                      );
+                      pendingContent = "";
+                      contentSent = true;
+                    }
                   }
                 }
 
@@ -1047,18 +1073,45 @@ export async function transformResponseOut(
                   }
                 }
 
-                // Flush buffered text on stream end (e.g. Gemma models with thinking but no thoughtSignature)
-                if (candidate.finishReason && pendingContent) {
-                  if (!signatureSent && hasThinkingContent) {
-                    const signatureChunk = {
+                // Flush buffered text or send final finish_reason on stream end
+                if (candidate.finishReason) {
+                  if (pendingContent) {
+                    if (!signatureSent && hasThinkingContent) {
+                      const signatureChunk = {
+                        choices: [
+                          {
+                            delta: {
+                              role: "assistant",
+                              content: null,
+                              thinking: { signature: `ccr_${+new Date()}` },
+                            },
+                            finish_reason: null,
+                            index: contentIndex,
+                            logprobs: null,
+                          },
+                        ],
+                        created: parseInt(new Date().getTime() / 1000 + "", 10),
+                        id: chunk.responseId || "",
+                        model: chunk.modelVersion || "",
+                        object: "chat.completion.chunk",
+                        system_fingerprint: "fp_a49d71b8a1",
+                      };
+                      controller.enqueue(
+                        encoder.encode(
+                          `data: ${JSON.stringify(signatureChunk)}\n\n`
+                        )
+                      );
+                      signatureSent = true;
+                      contentIndex++;
+                    }
+                    const flushRes = {
                       choices: [
                         {
                           delta: {
                             role: "assistant",
-                            content: null,
-                            thinking: { signature: `ccr_${+new Date()}` },
+                            content: pendingContent,
                           },
-                          finish_reason: null,
+                          finish_reason: candidate.finishReason.toLowerCase(),
                           index: contentIndex,
                           logprobs: null,
                         },
@@ -1068,52 +1121,64 @@ export async function transformResponseOut(
                       model: chunk.modelVersion || "",
                       object: "chat.completion.chunk",
                       system_fingerprint: "fp_a49d71b8a1",
+                      usage: {
+                        completion_tokens:
+                          chunk.usageMetadata?.candidatesTokenCount || 0,
+                        prompt_tokens: chunk.usageMetadata?.promptTokenCount || 0,
+                        prompt_tokens_details: {
+                          cached_tokens:
+                            chunk.usageMetadata?.cachedContentTokenCount || 0,
+                        },
+                        total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
+                        output_tokens_details: {
+                          reasoning_tokens:
+                            chunk.usageMetadata?.thoughtsTokenCount || 0,
+                        },
+                      },
                     };
                     controller.enqueue(
-                      encoder.encode(
-                        `data: ${JSON.stringify(signatureChunk)}\n\n`
-                      )
+                      encoder.encode(`data: ${JSON.stringify(flushRes)}\n\n`)
                     );
-                    signatureSent = true;
+                    pendingContent = "";
+                    contentSent = true;
+                  } else if (!textContent && tool_calls.length === 0) {
                     contentIndex++;
-                  }
-                  const flushRes = {
-                    choices: [
-                      {
-                        delta: {
-                          role: "assistant",
-                          content: pendingContent,
+                    const flushRes = {
+                      choices: [
+                        {
+                          delta: {
+                            role: "assistant",
+                            content: "",
+                          },
+                          finish_reason: candidate.finishReason.toLowerCase(),
+                          index: contentIndex,
+                          logprobs: null,
                         },
-                        finish_reason: candidate.finishReason.toLowerCase(),
-                        index: contentIndex,
-                        logprobs: null,
+                      ],
+                      created: parseInt(new Date().getTime() / 1000 + "", 10),
+                      id: chunk.responseId || "",
+                      model: chunk.modelVersion || "",
+                      object: "chat.completion.chunk",
+                      system_fingerprint: "fp_a49d71b8a1",
+                      usage: {
+                        completion_tokens:
+                          chunk.usageMetadata?.candidatesTokenCount || 0,
+                        prompt_tokens: chunk.usageMetadata?.promptTokenCount || 0,
+                        prompt_tokens_details: {
+                          cached_tokens:
+                            chunk.usageMetadata?.cachedContentTokenCount || 0,
+                        },
+                        total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
+                        output_tokens_details: {
+                          reasoning_tokens:
+                            chunk.usageMetadata?.thoughtsTokenCount || 0,
+                        },
                       },
-                    ],
-                    created: parseInt(new Date().getTime() / 1000 + "", 10),
-                    id: chunk.responseId || "",
-                    model: chunk.modelVersion || "",
-                    object: "chat.completion.chunk",
-                    system_fingerprint: "fp_a49d71b8a1",
-                    usage: {
-                      completion_tokens:
-                        chunk.usageMetadata?.candidatesTokenCount || 0,
-                      prompt_tokens: chunk.usageMetadata?.promptTokenCount || 0,
-                      prompt_tokens_details: {
-                        cached_tokens:
-                          chunk.usageMetadata?.cachedContentTokenCount || 0,
-                      },
-                      total_tokens: chunk.usageMetadata?.totalTokenCount || 0,
-                      output_tokens_details: {
-                        reasoning_tokens:
-                          chunk.usageMetadata?.thoughtsTokenCount || 0,
-                      },
-                    },
-                  };
-                  controller.enqueue(
-                    encoder.encode(`data: ${JSON.stringify(flushRes)}\n\n`)
-                  );
-                  pendingContent = "";
-                  contentSent = true;
+                    };
+                    controller.enqueue(
+                      encoder.encode(`data: ${JSON.stringify(flushRes)}\n\n`)
+                    );
+                  }
                 }
               } catch (error: any) {
                 logger?.error(

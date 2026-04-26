@@ -96,6 +96,8 @@ export class OpenAIResponsesTransformer implements Transformer {
     request.messages = messages;
 
     const input: any[] = [];
+    let lastWasTool = false;
+
 
     const systemMessages = request.messages.filter(
       (msg) => msg.role === "system"
@@ -147,6 +149,7 @@ export class OpenAIResponsesTransformer implements Transformer {
         delete toolMessage.tool_call_id;
         delete toolMessage.content;
         input.push(toolMessage);
+        lastWasTool = true;
         return;
       }
 
@@ -154,7 +157,7 @@ export class OpenAIResponsesTransformer implements Transformer {
         const hasContent = message.content &&
           (typeof message.content === "string" ||
             (Array.isArray(message.content) && message.content.length > 0));
-
+        lastWasTool = false;
         message.tool_calls.forEach((tool) => {
           input.push({
             type: "function_call",
@@ -170,6 +173,14 @@ export class OpenAIResponsesTransformer implements Transformer {
         return;
       }
 
+      // If a user message follows a tool output, insert a dummy assistant message
+      if (lastWasTool && message.role === "user") {
+        input.push({
+          role: "assistant",
+          content: "",
+        });
+      }
+      lastWasTool = false;
       input.push(message);
     });
 

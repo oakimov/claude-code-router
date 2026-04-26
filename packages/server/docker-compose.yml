@@ -13,6 +13,14 @@ services:
     restart: always
     environment:
       - NODE_ENV=production
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SCW_SECRET_KEY=${SCW_SECRET_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - TOGETHERAI_API_KEY=${TOGETHERAI_API_KEY}
+      - CODESTRAL_API_KEY=${CODESTRAL_API_KEY}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}    
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3456/health"]
       interval: 30s

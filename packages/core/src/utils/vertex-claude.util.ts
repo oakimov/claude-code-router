@@ -4,13 +4,18 @@ import { UnifiedChatRequest, UnifiedMessage, UnifiedTool } from "../types/llm";
 interface ClaudeMessage {
   role: "user" | "assistant";
   content: Array<{
-    type: "text" | "image";
+    type: "text" | "image" | "tool_use" | "tool_result";
     text?: string;
     source?: {
       type: "base64";
       media_type: string;
       data: string;
     };
+    id?: string;
+    name?: string;
+    input?: Record<string, any>;
+    tool_use_id?: string;
+    content?: string | Array<any>;
   }>;
 }
 
@@ -66,70 +71,81 @@ interface VertexClaudeResponse {
 export function buildRequestBody(
   request: UnifiedChatRequest
 ): VertexClaudeRequest {
-  const messages: ClaudeMessage[] = [];
+  const rawMessages: ClaudeMessage[] = [];
 
   for (let i = 0; i < request.messages.length; i++) {
     const message = request.messages[i];
-    const isLastMessage = i === request.messages.length - 1;
     const isAssistantMessage = message.role === "assistant";
+    const role = isAssistantMessage ? "assistant" : "user";
 
     const content: ClaudeMessage["content"] = [];
 
-    if (typeof message.content === "string") {
-      // Keep all string content, even empty strings, as it may contain important information
+    if (message.role === "tool") {
+      let resultText = message.content;
+      if (Array.isArray(resultText)) {
+        resultText = resultText
+          .filter((part: any) => part.type === "text")
+          .map((part: any) => part.text)
+          .join("\n");
+      } else if (typeof resultText === "object" && resultText !== null) {
+        resultText = JSON.stringify(resultText);
+      }
       content.push({
-        type: "text",
-        text: message.content,
+        type: "tool_result",
+        tool_use_id: message.tool_call_id,
+        content: resultText as string,
       });
-    } else if (Array.isArray(message.content)) {
-      message.content.forEach((item) => {
-        if (item.type === "text") {
-          // Keep all text content, even empty strings
+    } else {
+      if (typeof message.content === "string") {
+        content.push({
+          type: "text",
+          text: message.content,
+        });
+      } else if (Array.isArray(message.content)) {
+        message.content.forEach((item) => {
+          if (item.type === "text") {
+            content.push({
+              type: "text",
+              text: item.text || "",
+            });
+          } else if (item.type === "image_url") {
+            content.push({
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: item.media_type || "image/jpeg",
+                data: item.image_url.url,
+              },
+            });
+          }
+        });
+      }
+
+      if (message.tool_calls && message.tool_calls.length > 0) {
+        message.tool_calls.forEach(toolCall => {
           content.push({
-            type: "text",
-            text: item.text || "",
+            type: "tool_use",
+            id: toolCall.id,
+            name: toolCall.function.name,
+            input: JSON.parse(toolCall.function.arguments || "{}"),
           });
-        } else if (item.type === "image_url") {
-          // Handle image content
-          content.push({
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: item.media_type || "image/jpeg",
-              data: item.image_url.url,
-            },
-          });
-        }
-      });
+        });
+      }
     }
 
-    // Only skip completely empty non-last messages (no content and no tool calls)
-    if (
-      !isLastMessage &&
-      content.length === 0 &&
-      !message.tool_calls &&
-      !message.content
-    ) {
-      continue;
+    if (content.length > 0) {
+      rawMessages.push({ role, content });
     }
+  }
 
-    // For last assistant message, add empty content if no content but has tool calls
-    if (
-      isLastMessage &&
-      isAssistantMessage &&
-      content.length === 0 &&
-      message.tool_calls
-    ) {
-      content.push({
-        type: "text",
-        text: "",
-      });
+  const messages: ClaudeMessage[] = [];
+  for (const msg of rawMessages) {
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg && lastMsg.role === msg.role) {
+      lastMsg.content.push(...msg.content);
+    } else {
+      messages.push({ role: msg.role, content: [...msg.content] });
     }
-
-    messages.push({
-      role: message.role === "assistant" ? "assistant" : "user",
-      content,
-    });
   }
 
   const requestBody: VertexClaudeRequest = {
