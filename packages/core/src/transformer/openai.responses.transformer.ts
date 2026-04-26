@@ -84,8 +84,9 @@ export class OpenAIResponsesTransformer implements Transformer {
     delete request.max_tokens;
 
     if (request.reasoning) {
-      (request as any).reasoning = {
+      request.reasoning = {
         effort: request.reasoning.effort,
+        // @ts-ignore - summary is specific to this API
         summary: "detailed",
       };
     }

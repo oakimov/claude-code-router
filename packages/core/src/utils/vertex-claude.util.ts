@@ -1,5 +1,12 @@
 import { UnifiedChatRequest, UnifiedMessage, UnifiedTool } from "../types/llm";
 import { createSSEStreamReader } from "./stream";
+import {
+  mapRole,
+  extractImageParts,
+  processImageContent,
+  consolidateMessages,
+  normalizeTool
+} from "./google.util";
 
 // Vertex Claude message interface
 interface ClaudeMessage {
@@ -72,14 +79,13 @@ interface VertexClaudeResponse {
 export function buildRequestBody(
   request: UnifiedChatRequest
 ): VertexClaudeRequest {
-  const rawMessages: ClaudeMessage[] = [];
+  const rawMessages: any[] = [];
 
   for (let i = 0; i < request.messages.length; i++) {
     const message = request.messages[i];
-    const isAssistantMessage = message.role === "assistant";
-    const role = isAssistantMessage ? "assistant" : "user";
+    const role = mapRole(message.role, { assistant: "assistant" });
 
-    const content: ClaudeMessage["content"] = [];
+    const content: any[] = [];
 
     if (message.role === "tool") {
       let resultText = message.content;
@@ -103,22 +109,19 @@ export function buildRequestBody(
           text: message.content,
         });
       } else if (Array.isArray(message.content)) {
+        // Text parts
         message.content.forEach((item) => {
           if (item.type === "text") {
             content.push({
               type: "text",
               text: item.text || "",
             });
-          } else if (item.type === "image_url") {
-            content.push({
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: item.media_type || "image/jpeg",
-                data: item.image_url.url,
-              },
-            });
           }
+        });
+        // Image parts
+        const images = extractImageParts(message.content);
+        images.forEach((img) => {
+          content.push(processImageContent(img, "claude"));
         });
       }
 
@@ -139,15 +142,7 @@ export function buildRequestBody(
     }
   }
 
-  const messages: ClaudeMessage[] = [];
-  for (const msg of rawMessages) {
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg && lastMsg.role === msg.role) {
-      lastMsg.content.push(...msg.content);
-    } else {
-      messages.push({ role: msg.role, content: [...msg.content] });
-    }
-  }
+  const messages = consolidateMessages(rawMessages, 'content');
 
   const requestBody: VertexClaudeRequest = {
     anthropic_version: "vertex-2023-10-16",
@@ -159,11 +154,14 @@ export function buildRequestBody(
 
   // Handle tool definitions
   if (request.tools && request.tools.length > 0) {
-    requestBody.tools = request.tools.map((tool: UnifiedTool) => ({
-      name: tool.function.name,
-      description: tool.function.description,
-      input_schema: tool.function.parameters,
-    }));
+    requestBody.tools = request.tools.map((tool: UnifiedTool) => {
+      const normalized = normalizeTool(tool);
+      return {
+        name: normalized.name,
+        description: normalized.description,
+        input_schema: normalized.parameters,
+      };
+    });
   }
 
   // Handle tool choice
@@ -447,10 +445,10 @@ export async function transformResponseOut(
                       chunk.delta?.stop_reason === "tool_use"
                         ? "tool_calls"
                         : chunk.delta?.stop_reason === "max_tokens"
-                        ? "length"
-                        : chunk.delta?.stop_reason === "stop_sequence"
-                        ? "content_filter"
-                        : "stop",
+                          ? "length"
+                          : chunk.delta?.stop_reason === "stop_sequence"
+                            ? "content_filter"
+                            : "stop",
                     index: 0,
                     logprobs: null,
                   },

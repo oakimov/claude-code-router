@@ -88,6 +88,7 @@ export type ThinkLevel = "none" | "low" | "medium" | "high";
 export interface UnifiedChatRequest {
   messages: UnifiedMessage[];
   model: string;
+  system?: string | MessageContent[];
   max_tokens?: number;
   temperature?: number;
   stream?: boolean;
@@ -107,6 +108,12 @@ export interface UnifiedChatRequest {
 
     enabled?: boolean;
   };
+  enable_thinking?: boolean;
+  thinking?: {
+    type: "enabled" | "disabled";
+    budget_tokens?: number;
+  };
+  parallel_tool_calls?: boolean;
 }
 
 // Unified response interface

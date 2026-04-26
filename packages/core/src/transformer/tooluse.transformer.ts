@@ -5,7 +5,11 @@ import { createSSEStreamReader } from "../utils/stream";
 export class TooluseTransformer implements Transformer {
   name = "tooluse";
 
-  transformRequestIn(request: UnifiedChatRequest): UnifiedChatRequest {
+  async transformRequestIn(
+    request: UnifiedChatRequest,
+    provider?: any,
+    context?: any
+  ): Promise<any> {
     request.messages.push({
       role: "system",
       content: `<system-reminder>Tool mode is active. The user expects you to proactively execute the most suitable tool to help complete the task. 
@@ -13,7 +17,7 @@ Before invoking a tool, you must carefully evaluate whether it matches the curre
 Always prioritize completing the user's task effectively and efficiently by using tools whenever appropriate.</system-reminder>`,
     });
     if (request.tools?.length) {
-      request.tool_choice = "required";
+      request.tool_choice = request.tool_choice || "required";
       request.tools.push({
         type: "function",
         function: {

@@ -2,13 +2,15 @@ import { UnifiedChatRequest, UnifiedMessage } from "../types/llm";
 import { Content, ContentListUnion, Part, ToolListUnion } from "@google/genai";
 import { sanitizeJsonSchema } from "./schema";
 import { createSSEStreamReader } from "./stream";
-
-declare module 'latex-to-unicode' {
-  function latexToUnicode(str: string): string;
-  export default latexToUnicode;
-}
-
-import latexToUnicode from "latex-to-unicode";
+import {
+  mapRole,
+  extractImageParts,
+  processImageContent,
+  consolidateMessages,
+  normalizeTool,
+  replaceLatexSymbols,
+  sanitizeGeminiFunctionName
+} from "./google.util";
 
 // Type enum equivalent in JavaScript
 const Type = {
@@ -168,45 +170,7 @@ export function tTool(tool: any): any {
   return tool;
 }
 
-/** Normalize a tool to unified format (handles both OpenAI and Anthropic tool shapes) */
-function normalizeTool(tool: any): { name: string; description: string; parameters: any } {
-  if (tool.function?.name) {
-    return { name: tool.function.name, description: tool.function.description, parameters: tool.function.parameters };
-  }
-  return { name: tool.name, description: tool.description, parameters: tool.input_schema };
-}
 
-/** Sanitize a function name for Gemini's naming rules:
- * Must start with a letter or underscore, contain only [a-zA-Z0-9_.:\-], max 128 chars */
-function sanitizeGeminiFunctionName(name: string): string {
-  if (!name) return "unnamed_function";
-  let sanitized = name.replace(/[^a-zA-Z0-9_.:\-]/g, "_");
-  if (/^[^a-zA-Z_]/.test(sanitized)) {
-    sanitized = "_" + sanitized;
-  }
-  return sanitized.substring(0, 128);
-}
-
-/** Replace LaTeX math symbols that some models generate with standard unicode using latex-to-unicode library */
-function replaceLatexSymbols(text: string): string {
-  if (!text) return text;
-  try {
-    // The library only replaces the first occurrence of each symbol (str.replace(key, val))
-    // So we loop until the string stops changing to ensure all occurrences are handled
-    let converted = text;
-    let prev;
-    do {
-      prev = converted;
-      converted = latexToUnicode(converted);
-    } while (converted !== prev);
-
-    // Some models wrap symbols in $, e.g. $\rightarrow$. 
-    // The library converts it to $→$, so we clean up the $ signs if they surround a single unicode char
-    return converted.replace(/\$([^\$])\$/g, '$1');
-  } catch (e) {
-    return text;
-  }
-}
 
 export function buildRequestBody(
   request: UnifiedChatRequest
@@ -257,23 +221,11 @@ export function buildRequestBody(
     if (msg.role === "system") extractText(msg.content);
   }
 
-  const messages: UnifiedMessage[] = [];
-
-  for (const msg of rawMessages) {
-    if (msg.role === "tool" || msg.role === "system") continue;
-
-    const role = msg.role === "assistant" ? "assistant" : "user";
-    messages.push({ ...msg, role });
-  }
-
   const toolResponses = rawMessages.filter((item) => item.role === "tool");
-  messages.forEach((message: UnifiedMessage) => {
-    let role: "user" | "model";
-    if (message.role === "assistant") {
-      role = "model";
-    } else {
-      role = "user";
-    }
+  const filteredMessages = rawMessages.filter((msg) => msg.role !== "tool" && msg.role !== "system");
+
+  filteredMessages.forEach((message: UnifiedMessage) => {
+    const role = mapRole(message.role, { assistant: "model" });
     const parts = [];
 
     const realSignature =
@@ -293,35 +245,17 @@ export function buildRequestBody(
     if (typeof message.content === "string") {
       parts.push({ text: message.content });
     } else if (Array.isArray(message.content)) {
-      parts.push(
-        ...message.content.map((content) => {
-          if (content.type === "text") {
-            return {
-              text: content.text || "",
-            };
-          }
-          if (content.type === "image_url") {
-            if (content.image_url.url.startsWith("http")) {
-              return {
-                file_data: {
-                  mime_type: content.media_type,
-                  file_uri: content.image_url.url,
-                },
-              };
-            } else {
-              return {
-                inlineData: {
-                  mime_type: content.media_type,
-                  data:
-                    content.image_url.url?.split(",")?.pop() ||
-                    content.image_url.url,
-                },
-              };
-            }
-          }
-          return null;
-        }).filter(Boolean)
-      );
+      // Text parts
+      message.content.forEach((item) => {
+        if (item.type === "text") {
+          parts.push({ text: item.text || "" });
+        }
+      });
+      // Image parts
+      const images = extractImageParts(message.content);
+      images.forEach((img) => {
+        parts.push(processImageContent(img, "gemini"));
+      });
     } else if (message.content && typeof message.content === "object") {
       if ((message.content as any).text) {
         parts.push({ text: (message.content as any).text });
@@ -387,28 +321,20 @@ export function buildRequestBody(
     }
   });
 
-  const contents: any[] = [];
-  for (const item of rawContents) {
-    const lastItem = contents[contents.length - 1];
-    if (lastItem && lastItem.role === item.role) {
-      lastItem.parts.push(...item.parts);
-    } else {
-      contents.push({ ...item, parts: [...item.parts] });
-    }
-  }
+  const contents = consolidateMessages(rawContents, 'parts');
 
-  const generationConfig: any = {};
+  const generation_config: any = {};
 
   if (
     request.reasoning &&
     request.reasoning.effort &&
     request.reasoning.effort !== "none"
   ) {
-    generationConfig.thinkingConfig = {
-      includeThoughts: true,
+    generation_config.thinking_config = {
+      include_thoughts: true,
     };
     if (request.model.includes("gemini-3")) {
-      generationConfig.thinkingConfig.thinkingLevel = request.reasoning.effort;
+      generation_config.thinking_config.thinking_level = request.reasoning.effort;
     } else {
       const thinkingBudgets = request.model.includes("pro")
         ? [128, 32768]
@@ -426,15 +352,19 @@ export function buildRequestBody(
         } else if (max_tokens > thinkingBudgets[1]) {
           thinkingBudget = thinkingBudgets[1];
         }
-        generationConfig.thinkingConfig.thinkingBudget = thinkingBudget;
+        generation_config.thinking_config.thinking_budget = thinkingBudget;
       }
     }
   }
 
+  // Map other generation config fields
+  if (request.max_tokens) generation_config.max_output_tokens = request.max_tokens;
+  if (request.temperature !== undefined) generation_config.temperature = request.temperature;
+
   const body: Record<string, any> = {
     contents: contents.length ? contents : [{ role: "user", parts: [{ text: "" }] }],
     tools: tools.length ? tools : undefined,
-    generationConfig,
+    generation_config,
   };
   if (systemTexts.length) {
     body.systemInstruction = {
@@ -605,7 +535,7 @@ export async function transformResponseOut(
 
     for (const part of parts) {
       if (part.text && part.thought === true) {
-        thinkingContent += part.text;
+        thinkingContent += replaceLatexSymbols(part.text);
       } else {
         nonThinkingParts.push(part);
       }
@@ -734,7 +664,7 @@ export async function transformResponseOut(
                         role: "assistant",
                         content: null,
                         thinking: {
-                          content: part.text,
+                          content: replaceLatexSymbols(part.text),
                         },
                       },
                       finish_reason: null,
@@ -1143,7 +1073,7 @@ export async function transformResponseOut(
                         role: "assistant",
                         content: pendingContent,
                       },
-                      finish_reason: candidate.finishReason.toLowerCase(),
+                      finish_reason: tool_calls.length > 0 ? "tool_calls" : candidate.finishReason.toLowerCase(),
                       index: contentIndex,
                       logprobs: null,
                     },
@@ -1182,7 +1112,7 @@ export async function transformResponseOut(
                         role: "assistant",
                         content: "",
                       },
-                      finish_reason: candidate.finishReason.toLowerCase(),
+                      finish_reason: tool_calls.length > 0 ? "tool_calls" : candidate.finishReason.toLowerCase(),
                       index: contentIndex,
                       logprobs: null,
                     },
