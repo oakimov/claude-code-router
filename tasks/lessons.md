@@ -13,6 +13,9 @@
 - **Problem**: Inefficient message grouping and suboptimal streaming logic for Gemini tool call handling.
   - **Resolution**: Refactored and optimized the internal message grouping mechanism and streaming logic for Gemini. This involved implementing smarter buffering and assembly of partial tool call events, leading to more efficient processing and faster, more accurate tool invocation.
   - **Symptoms & Fix**: If Gemini tool calls are delayed, appear out of order, or are incorrectly interpreted during streaming, examine the message grouping and streaming pipeline. Confirm that partial tool call payloads are being correctly identified, buffered, and reassembled before dispatching the full tool call.
+- **Problem**: Gemini thinking-stream refactors can preserve happy-path parity but still lose metadata or raise cleanup exceptions on abrupt stream termination.
+  - **Resolution**: Keep the last successfully parsed chunk/candidate around for end-of-stream finalization, and harden shared stream cleanup so `onComplete` failures and `controller.close()` do not mask the original stream error.
+  - **Symptoms & Fix**: If fallback thinking/content chunks are missing `id` or `model`, or stream failures produce noisy secondary exceptions during shutdown, inspect the finalization path and the shared SSE reader cleanup order before changing the thinking sequencer logic.
 
 ## LLM Provider Integration (Mistral)
 - **Parameter Mapping**: Mistral requires `reasoning_effort` (low, medium, high) instead of a `reasoning` object. 

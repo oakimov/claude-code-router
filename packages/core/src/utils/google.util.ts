@@ -2,6 +2,182 @@ import { UnifiedMessage, UnifiedTool, ImageContent, MessageContent } from "../ty
 // @ts-ignore - latex-to-unicode is a plain JS library without type definitions
 import latexToUnicode from "latex-to-unicode";
 
+// ---------------------------------------------------------------------------
+// ThinkingSequencer
+// ---------------------------------------------------------------------------
+
+/**
+ * Callbacks used by ThinkingSequencer to emit SSE chunks.
+ * The caller provides implementations that handle actual SSE serialization.
+ */
+export interface ThinkingSequencerEmit {
+  thinking: (content: string, chunk?: any) => void;
+  signature: (sig: string, chunk?: any) => void;
+  content: (
+    text: string,
+    meta?: {
+      chunk?: any;
+      candidate?: any;
+      mode?: "direct" | "buffered" | "placeholder" | "finish";
+      finishReason?: string | null;
+    }
+  ) => void;
+}
+
+/**
+ * State machine that enforces the emission order for Gemini thinking blocks:
+ *   Thinking Content -> Thinking Signature -> Final Content
+ *
+ * Handles:
+ * - Happy path: thinking, signature, content arrive in order
+ * - Gemini 3: content arrives before signature (buffered until signature)
+ * - Missing signature: fallback signature generated at finalize
+ * - Empty thinking: signature arrives with no prior thinking content
+ */
+export class ThinkingSequencer {
+  private _hasThinking = false;
+  private _sigSent = false;
+  private _contentSent = false;
+  private _buffer = "";
+
+  constructor(private emit: ThinkingSequencerEmit) {}
+
+  /** Called when thinking text arrives. Emits immediately. */
+  processThinking(text: string, chunk?: any): void {
+    this._hasThinking = true;
+    this.emit.thinking(text, chunk);
+  }
+
+  /**
+   * Called when a signature arrives.
+   * - Emits "(no content)" thinking if no thinking was seen
+   * - Emits the signature
+   * - Flushes any buffered content
+   */
+  processSignature(sig: string, chunk?: any): void {
+    this.processSignatureWithMeta(sig, chunk);
+  }
+
+  processSignatureWithMeta(
+    sig: string,
+    chunk?: any,
+    meta?: {
+      beforeFlush?: () => void;
+      flushMeta?: {
+        chunk?: any;
+        candidate?: any;
+        mode?: "direct" | "buffered" | "placeholder" | "finish";
+        finishReason?: string | null;
+      };
+    }
+  ): void {
+    if (this._sigSent) return;
+    if (!this._hasThinking) {
+      this._hasThinking = true;
+      this.emit.thinking("(no content)", chunk);
+    }
+    this._sigSent = true;
+    this.emit.signature(sig, chunk);
+    meta?.beforeFlush?.();
+    this.flushBufferedContent(meta?.flushMeta);
+  }
+
+  /**
+   * Called when content text arrives.
+   * - Signature already sent or no thinking at all: emit immediately
+   * - Thinking seen but no signature yet: buffer
+   */
+  processContent(text: string, chunk?: any, candidate?: any): void {
+    if (this._sigSent || !this._hasThinking) {
+      this._contentSent = true;
+      this.emit.content(text, { chunk, candidate, mode: "direct" });
+    } else {
+      this._buffer += text;
+    }
+  }
+
+  emitContentPlaceholder(
+    text: string,
+    meta?: {
+      chunk?: any;
+      candidate?: any;
+      finishReason?: string | null;
+    }
+  ): void {
+    this._contentSent = true;
+    this.emit.content(text, {
+      chunk: meta?.chunk,
+      candidate: meta?.candidate,
+      mode: "placeholder",
+      finishReason: meta?.finishReason,
+    });
+  }
+
+  /** Explicitly buffer content (for Gemini 3 out-of-order delivery). */
+  bufferContent(text: string): void {
+    this._buffer += text;
+  }
+
+  /**
+   * Finalize the stream:
+   * - Emits fallback signature if thinking was seen but no signature arrived
+   * - Flushes any remaining buffered content
+   */
+  finalize(
+    chunk?: any,
+    candidate?: any,
+    options?: { beforeFlush?: () => void }
+  ): void {
+    if (this._hasThinking && !this._sigSent) {
+      this.processSignatureWithMeta(`ccr_${Date.now()}`, chunk, {
+        beforeFlush: options?.beforeFlush,
+        flushMeta: {
+          chunk,
+          candidate,
+          mode: candidate?.finishReason ? "finish" : "buffered",
+          finishReason: candidate?.finishReason?.toLowerCase() || null,
+        },
+      });
+      return;
+    }
+    this.flushBufferedContent({
+      chunk,
+      candidate,
+      mode: candidate?.finishReason ? "finish" : "buffered",
+      finishReason: candidate?.finishReason?.toLowerCase() || null,
+    });
+  }
+
+  flushBufferedContent(meta?: {
+    chunk?: any;
+    candidate?: any;
+    mode?: "direct" | "buffered" | "placeholder" | "finish";
+    finishReason?: string | null;
+  }): void {
+    if (this._buffer) {
+      this._contentSent = true;
+      this.emit.content(this._buffer, {
+        chunk: meta?.chunk,
+        candidate: meta?.candidate,
+        mode: meta?.mode || "buffered",
+        finishReason: meta?.finishReason,
+      });
+      this._buffer = "";
+    }
+  }
+
+  /** Whether Gemini 3 content should be deferred (signature not yet seen, not finishing, no tool calls). */
+  shouldDeferContent(isFinish: boolean, hasToolCalls: boolean): boolean {
+    return this._hasThinking && !this._sigSent && !isFinish && !hasToolCalls;
+  }
+
+  get hasBufferedContent(): boolean { return this._buffer.length > 0; }
+  get hasThinkingContent(): boolean { return this._hasThinking; }
+  get signatureSent(): boolean { return this._sigSent; }
+  get contentSent(): boolean { return this._contentSent; }
+  get needsContentPlaceholder(): boolean { return this._sigSent && !this._contentSent; }
+}
+
 
 /**
  * Interface for normalized image data before provider-specific wrapping
@@ -168,4 +344,3 @@ export function sanitizeGeminiFunctionName(name: string): string {
   }
   return sanitized.substring(0, 128);
 }
-

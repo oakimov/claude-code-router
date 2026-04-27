@@ -8,9 +8,13 @@ export interface StreamContext {
 export function createSSEStreamReader(
   response: Response,
   processLine: (line: string, context: StreamContext) => void,
-  options?: { bufferSize?: number }
+  options?: {
+    bufferSize?: number;
+    onComplete?: (context: StreamContext) => void;
+  }
 ): Response {
   const encoder = new TextEncoder();
+  let streamFailed = false;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -52,9 +56,22 @@ export function createSSEStreamReader(
         }
       } catch (error) {
         console.error("Stream error:", error);
+        streamFailed = true;
         controller.error(error);
       } finally {
-        controller.close();
+        try {
+          options?.onComplete?.(ctx);
+        } catch (error) {
+          console.error("Stream completion error:", error);
+          if (!streamFailed) {
+            streamFailed = true;
+            controller.error(error);
+          }
+        }
+
+        if (!streamFailed) {
+          controller.close();
+        }
       }
     },
   });
