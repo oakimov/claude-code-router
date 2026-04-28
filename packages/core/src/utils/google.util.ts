@@ -302,31 +302,39 @@ export function processImageContent(
   throw new Error(`Unsupported provider for image processing: ${provider}`);
 }
 
-/** 
- * Replace LaTeX math symbols that some models generate with standard unicode 
- * using the latex-to-unicode library.
- */
 export function replaceLatexSymbols(text: string): string {
   if (!text) return text;
+
+  // Guard: if no backslash and no dollar sign, it's likely not LaTeX we want to touch
+  if (!text.includes("\\") && !text.includes("$")) return text;
+
   try {
-    // The library only replaces the first occurrence of each symbol
-    // So we loop until the string stops changing to ensure all occurrences are handled
-    let converted = text;
-    let prev;
-    const converter = typeof latexToUnicode === "function"
-      ? latexToUnicode
-      : (latexToUnicode as any).default;
+    const converter =
+      typeof latexToUnicode === "function"
+        ? latexToUnicode
+        : (latexToUnicode as any).default;
 
     if (typeof converter !== "function") return text;
 
-    do {
-      prev = converted;
-      converted = converter(converted);
-    } while (converted !== prev);
+    // Pattern to match LaTeX math blocks and commands:
+    // 1. $$...$$ or $...$
+    // 2. \(...\) or \[...\]
+    // 3. \command (backslash followed by letters)
+    const latexPattern =
+      /(\$\$?[\s\S]+?\$\$?|\\\(?:[\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\\(?:[a-zA-Z]+))/g;
 
-    // Some models wrap symbols in $, e.g. $\rightarrow$. 
-    // The library converts it to $→$, so we clean up the $ signs if they surround converted chars
-    return converted.replace(/\$([^\$]+)\$/g, '$1');
+    return text.replace(latexPattern, (match) => {
+      let converted = match;
+      let prev;
+      do {
+        prev = converted;
+        converted = converter(converted);
+      } while (converted !== prev);
+
+      // Some models wrap symbols in $, e.g. $\rightarrow$. 
+      // The library converts it to $→$, so we clean up the $ signs if they surround converted chars
+      return converted.replace(/\$([^\$]+)\$/g, "$1");
+    });
   } catch (e) {
     return text;
   }
