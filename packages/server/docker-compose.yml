@@ -20,7 +20,8 @@ services:
       - TOGETHERAI_API_KEY=${TOGETHERAI_API_KEY}
       - CODESTRAL_API_KEY=${CODESTRAL_API_KEY}
       - MISTRAL_API_KEY=${MISTRAL_API_KEY}
-      - NVIDIA_API_KEY=${NVIDIA_API_KEY}    
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3456/health"]
       interval: 30s
