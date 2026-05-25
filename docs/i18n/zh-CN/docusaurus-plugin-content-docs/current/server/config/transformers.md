@@ -123,7 +123,7 @@ interface UnifiedChatRequest {
   tools?: UnifiedTool[];
   tool_choice?: any;
   reasoning?: {
-    effort?: ThinkLevel;  // "none" | "low" | "medium" | "high"
+    effort?: ThinkLevel;  // "none" | "low" | "medium" | "high" | "xhigh" | "max"
     max_tokens?: number;
     enabled?: boolean;
   };

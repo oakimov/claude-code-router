@@ -1,12 +1,12 @@
 # ===========================
 # Build Stage
 # ===========================
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 # Install pnpm
-RUN npm install -g pnpm@latest && \
+RUN npm install -g pnpm@9 && \
     rm -rf /root/.npm
 
 # Copy workspace configuration and package files first for caching
@@ -49,7 +49,7 @@ RUN pnpm build
 # ===========================
 # Production Stage
 # ===========================
-FROM node:20-alpine AS production
+FROM node:22-alpine AS production
 
 # Install PM2, curl, and pm2-logrotate
 RUN apk add --no-cache curl && \

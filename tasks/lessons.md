@@ -97,6 +97,12 @@
 - **Transformer naming**: Use the `name` field value (e.g., `"Anthropic"`), not the class name (`"AnthropicTransformer"`), in config arrays.
 - **Files modified**: `packages/core/src/api/routes.ts` (4 changes), `packages/core/src/services/provider.ts` (1 change)
 
+## LLM Provider Integration (Codex / ChatGPT Backend)
+- **Effort Passthrough Over Inference**: Claude Code now sends `thinking: {type: "adaptive"}` with `output_config: {effort: "high"}` instead of the old `budget_tokens` format. Reading `request.output_config?.effort` (with fallback to `request.effort`) passes the user's `/effort` setting through directly. Avoid mapping `budget_tokens` to effort levels — effort is a behavioral signal, not derivable from a token cap, and `getThinkLevel(undefined)` only returned `"high"` by accident.
+- **Provider Config Validation**: When exposing provider-level options (e.g., `parallelToolCalls`, `verbosity`, `reasoningSummary`), validate against a whitelist of acceptable values. Any value outside the whitelist should be treated as unset (parameter omitted) to avoid sending invalid params that the upstream API would reject.
+- **Model-Slug Suffixes Are Unnecessary**: Parsing effort from model name suffixes (`-high`, `-xhigh`) adds complexity for no benefit in this codebase. Effort comes from Claude Code's `/effort` setting, not from model naming conventions.
+- **Active Maintenance Awareness**: Claude Code is under active development and its API request format can change (e.g., `budget_tokens` → `output_config.effort`). If a passthrough seems to work only for certain values, check the actual request body in the logs rather than assuming the mapping is correct.
+
 ## Development & Tooling
 - **Dependency Scoping**: `pino` is provided by Fastify in the server package but is not a direct dependency of the `core` package. Direct imports of `pino` in `core` will cause build failures; use the passed-in `logger` instance or native `fs` for separate log files.
 - **Response Cloning**: When implementing background logging for responses, use `response.clone()` to avoid consuming the original stream, which would otherwise prevent the transformer from processing the output.

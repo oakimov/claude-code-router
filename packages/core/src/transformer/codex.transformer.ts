@@ -99,12 +99,27 @@ export class CodexTransformer implements Transformer {
     delete request.temperature;
     delete request.max_tokens;
 
-    if (request.reasoning) {
-      request.reasoning = {
-        effort: request.reasoning.effort,
-        // @ts-ignore - summary is specific to this API
-        summary: "detailed",
-      };
+    // Effort comes from the unified reasoning field (populated by anthropic.transformer
+    // from the user's /effort setting via output_config.effort or request.effort).
+    const effort = (request as any).reasoning?.effort || provider?.reasoningEffort;
+    if (effort) {
+      const reasoning: Record<string, any> = { effort };
+      // Summary is opt-in: model default is "none", and "detailed" wastes output tokens
+      // on a stream Claude Code does not surface.
+      const VALID_SUMMARIES = ["auto", "detailed", "none"];
+      const summary = provider?.reasoningSummary;
+      if (summary && VALID_SUMMARIES.includes(summary) && summary !== "none") {
+        reasoning.summary = summary;
+      }
+      (request as any).reasoning = reasoning;
+    } else {
+      delete (request as any).reasoning;
+    }
+
+    // Pass through verbosity when configured (Codex models accept low|medium|high)
+    const VALID_VERBOSITIES = ["low", "medium", "high"];
+    if (provider?.verbosity && VALID_VERBOSITIES.includes(provider.verbosity)) {
+      (request as any).verbosity = provider.verbosity;
     }
 
     const model = request.model || "";
@@ -266,7 +281,8 @@ export class CodexTransformer implements Transformer {
       }
     }
 
-    request.parallel_tool_calls = false;
+    // Default to serial tool calls for safety; provider can opt-in to parallel via config
+    request.parallel_tool_calls = provider?.parallelToolCalls === true;
     (request as any).stream = true;
 
     const headers: Record<string, string> = {

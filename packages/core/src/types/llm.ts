@@ -83,7 +83,7 @@ export interface UnifiedTool {
   };
 }
 
-export type ThinkLevel = "none" | "low" | "medium" | "high";
+export type ThinkLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
 // Unified request interface
 export interface UnifiedChatRequest {

@@ -11,7 +11,6 @@ import {
   TransformerOptions,
 } from "@/types/transformer";
 import { v4 as uuidv4 } from "uuid";
-import { getThinkLevel } from "@/utils/thinking";
 import { createApiError } from "@/api/middleware";
 import { formatBase64 } from "@/utils/image";
 
@@ -195,9 +194,8 @@ export class AnthropicTransformer implements Transformer {
     };
     if (request.thinking) {
       result.reasoning = {
-        effort: getThinkLevel(request.thinking.budget_tokens),
-        // max_tokens: request.thinking.budget_tokens,
-        enabled: request.thinking.type === "enabled",
+        effort: request.output_config?.effort || request.effort,
+        enabled: request.thinking.type === "enabled" || request.thinking.type === "adaptive",
       };
     }
     if (request.tool_choice) {
