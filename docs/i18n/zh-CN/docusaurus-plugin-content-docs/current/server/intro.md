@@ -147,7 +147,9 @@ docker compose up --build -d
 ```yaml
 services:
   ccr:
-    image: musistudio/claude-code-router:latest
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     ports:
       - "3456:3456"
     volumes:

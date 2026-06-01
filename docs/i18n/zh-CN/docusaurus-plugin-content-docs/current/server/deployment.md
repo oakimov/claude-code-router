@@ -54,7 +54,9 @@ docker compose -f packages/server/docker-compose.yml build
 ```yaml
 services:
   ccr:
-    image: musistudio/claude-code-router:latest
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     ports:
       - "3456:3456"
     volumes:
@@ -69,7 +71,9 @@ services:
 ```yaml
 services:
   ccr:
-    image: musistudio/claude-code-router:latest
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     ports:
       - "3456:3456"
     volumes:
@@ -166,7 +170,9 @@ sudo certbot --nginx -d your-domain.com
 ```yaml
 services:
   ccr:
-    image: musistudio/claude-code-router:latest
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     volumes:
       - ./logs:/root/.claude-code-router/logs
     environment:
@@ -180,7 +186,9 @@ services:
 ```yaml
 services:
   ccr:
-    image: musistudio/claude-code-router:latest
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3456/api/config"]
       interval: 30s

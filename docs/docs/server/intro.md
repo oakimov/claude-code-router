@@ -151,7 +151,9 @@ Deploy using Docker Compose to provide shared service for team members:
 ```yaml
 services:
   ccr:
-    image: musistudio/claude-code-router:latest
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     ports:
       - "3456:3456"
     volumes:

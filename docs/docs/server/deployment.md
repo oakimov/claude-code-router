@@ -48,7 +48,9 @@ Mount a configuration directory into the container by creating a `docker-compose
 ```yaml
 services:
   ccr:
-    image: musistudio/claude-code-router:latest
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     ports:
       - "3456:3456"
     volumes:
@@ -63,7 +65,9 @@ Or mount a single config file:
 ```yaml
 services:
   ccr:
-    image: musistudio/claude-code-router:latest
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     ports:
       - "3456:3456"
     volumes:
@@ -160,7 +164,9 @@ Configure log rotation and persistence:
 ```yaml
 services:
   ccr:
-    image: musistudio/claude-code-router:latest
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     volumes:
       - ./logs:/root/.claude-code-router/logs
     environment:
@@ -174,7 +180,9 @@ Configure Docker health check:
 ```yaml
 services:
   ccr:
-    image: musistudio/claude-code-router:latest
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3456/api/config"]
       interval: 30s
