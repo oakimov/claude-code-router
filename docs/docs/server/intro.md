@@ -146,10 +146,19 @@ docker compose up --build -d
 ```
 
 ### Scenario 2: Team Shared Service
-Deploy using Docker to provide shared service for team members:
+Deploy using Docker Compose to provide shared service for team members:
 
-```bash
-docker run -d -p 3456:3456 musistudio/claude-code-router
+```yaml
+services:
+  ccr:
+    image: musistudio/claude-code-router:latest
+    ports:
+      - "3456:3456"
+    volumes:
+      - ~/.claude-code-router:/root/.claude-code-router
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3456
 ```
 
 ### Scenario 3: Secondary Development

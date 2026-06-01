@@ -142,10 +142,19 @@ docker compose up --build -d
 ```
 
 ### 场景二：团队共享服务
-使用 Docker 部署，为团队成员提供共享服务：
+使用 Docker Compose 部署，为团队成员提供共享服务：
 
-```bash
-docker run -d -p 3456:3456 musistudio/claude-code-router
+```yaml
+services:
+  ccr:
+    image: musistudio/claude-code-router:latest
+    ports:
+      - "3456:3456"
+    volumes:
+      - ~/.claude-code-router:/root/.claude-code-router
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3456
 ```
 
 ### 场景三：二次开发

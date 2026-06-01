@@ -41,28 +41,42 @@ Check logs:
 docker compose logs -f ccr
 ```
 
-## Docker Run
-
-Use the pre-built image from Docker Hub:
-
-```bash
-docker run -d \
-  --name claude-code-router \
-  -p 3456:3456 \
-  -v ~/.claude-code-router:/root/.claude-code-router \
-  musistudio/claude-code-router:latest
-```
-
 ## Configuration File Mounting
 
-Mount configuration file into container:
+Mount a configuration directory into the container by creating a `docker-compose.yml`:
+
+```yaml
+services:
+  ccr:
+    image: musistudio/claude-code-router:latest
+    ports:
+      - "3456:3456"
+    volumes:
+      - ./config:/root/.claude-code-router
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3456
+```
+
+Or mount a single config file:
+
+```yaml
+services:
+  ccr:
+    image: musistudio/claude-code-router:latest
+    ports:
+      - "3456:3456"
+    volumes:
+      - ./config.json:/root/.claude-code-router/config.json
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3456
+```
+
+Start with:
 
 ```bash
-docker run -d \
-  --name claude-code-router \
-  -p 3456:3456 \
-  -v $(pwd)/config.json:/root/.claude-code-router/config.json \
-  musistudio/claude-code-router:latest
+docker compose up -d
 ```
 
 Configuration file example:
@@ -144,9 +158,8 @@ sudo certbot --nginx -d your-domain.com
 Configure log rotation and persistence:
 
 ```yaml
-version: '3.8'
 services:
-  claude-code-router:
+  ccr:
     image: musistudio/claude-code-router:latest
     volumes:
       - ./logs:/root/.claude-code-router/logs
@@ -159,11 +172,14 @@ services:
 Configure Docker health check:
 
 ```yaml
-healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:3456/api/config"]
-  interval: 30s
-  timeout: 10s
-  retries: 3
+services:
+  ccr:
+    image: musistudio/claude-code-router:latest
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3456/api/config"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 ```
 
 ## Access Web UI

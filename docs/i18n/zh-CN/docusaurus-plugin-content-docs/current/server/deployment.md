@@ -37,18 +37,6 @@ docker compose up --build -d
 docker compose logs -f ccr
 ```
 
-## Docker Run
-
-使用 Docker Hub 上的预构建镜像：
-
-```bash
-docker run -d \
-  --name claude-code-router \
-  -p 3456:3456 \
-  -v ~/.claude-code-router:/root/.claude-code-router \
-  musistudio/claude-code-router:latest
-```
-
 ## 自定义构建
 
 从源码构建 Docker 镜像：
@@ -56,19 +44,45 @@ docker run -d \
 ```bash
 git clone https://github.com/oakimov/claude-code-router.git
 cd claude-code-router
-docker build -t claude-code-router:latest -f packages/server/Dockerfile .
+docker compose -f packages/server/docker-compose.yml build
 ```
 
 ## 配置文件挂载
 
-将配置文件挂载到容器中：
+将配置文件目录挂载到容器中，创建 `docker-compose.yml`：
+
+```yaml
+services:
+  ccr:
+    image: musistudio/claude-code-router:latest
+    ports:
+      - "3456:3456"
+    volumes:
+      - ./config:/root/.claude-code-router
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3456
+```
+
+或挂载单个配置文件：
+
+```yaml
+services:
+  ccr:
+    image: musistudio/claude-code-router:latest
+    ports:
+      - "3456:3456"
+    volumes:
+      - ./config.json:/root/.claude-code-router/config.json
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3456
+```
+
+启动：
 
 ```bash
-docker run -d \
-  --name claude-code-router \
-  -p 3456:3456 \
-  -v $(pwd)/config.json:/root/.claude-code-router/config.json \
-  musistudio/claude-code-router:latest
+docker compose up -d
 ```
 
 配置文件示例：
@@ -150,9 +164,8 @@ sudo certbot --nginx -d your-domain.com
 配置日志轮转和持久化：
 
 ```yaml
-version: '3.8'
 services:
-  claude-code-router:
+  ccr:
     image: musistudio/claude-code-router:latest
     volumes:
       - ./logs:/root/.claude-code-router/logs
@@ -165,11 +178,14 @@ services:
 配置 Docker 健康检查：
 
 ```yaml
-healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:3456/api/config"]
-  interval: 30s
-  timeout: 10s
-  retries: 3
+services:
+  ccr:
+    image: musistudio/claude-code-router:latest
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3456/api/config"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 ```
 
 ## 访问 Web UI
