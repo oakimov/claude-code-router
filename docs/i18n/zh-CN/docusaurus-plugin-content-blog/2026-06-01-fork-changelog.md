@@ -55,13 +55,6 @@ tags: [changelog, fork, features]
 - `feat(bridge): add multi-session dashboard, idle eviction`
 - `refactor: migrate bridge to explicit <tool_result> XML tags`
 
-## 5 月 13 日 — Terminal Forge UI 重新设计
-
-Web UI 的全面视觉重新设计（"Terminal Forge" 设计系统），采用深色主题，刷新了 shell、页头、仪表板、登录、提供商、转换器和路由面板的布局。新增 Codex Control Room 主控组件。
-
-- `feat(ui): introduce Terminal Forge design tokens and force dark theme`
-- `feat(ui): rewrite CodexControlRoom as the routing hero`
-
 ## 5 月 18 日 — 透传模式与 DeepSeek 思考修复
 
 添加了基于提供商的透传模式，支持直接的 Anthropic 风格认证处理，并修复了 DeepSeek 思考功能，无需客户端发送 reasoning 参数。

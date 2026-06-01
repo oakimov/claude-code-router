@@ -55,14 +55,6 @@ Enhanced the Chrome bridge with a multi-session dashboard, idle eviction for sta
 - `feat(bridge): add multi-session dashboard, idle eviction`
 - `refactor: migrate bridge to explicit <tool_result> XML tags`
 
-## May 13 — Terminal Forge UI Redesign
-
-Complete visual redesign of the Web UI ("Terminal Forge" design system) with a dark theme, refreshed layouts for the shell, header, dashboard, login, providers, transformers, and router panels. Added a Codex Control Room hero component.
-
-- `feat(ui): introduce Terminal Forge design tokens and force dark theme`
-- `feat(ui): redesign App shell, header and dashboard layout`
-- `feat(ui): rewrite CodexControlRoom as the routing hero`
-
 ## May 18 — Passthrough Mode & DeepSeek Thinking Fix
 
 Added per-provider passthrough mode for direct Anthropic-style auth handling, and fixed DeepSeek thinking without requiring the client to send a reasoning parameter.
