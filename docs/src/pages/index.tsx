@@ -82,7 +82,7 @@ function HomepageHeader() {
             </Link>
             <Link
               className="px-6 sm:px-8 py-3 sm:py-4 bg-white hover:bg-gray-50 text-gray-900 border border-gray-300 rounded-lg text-base sm:text-lg font-semibold transition-all duration-300 hover:border-primary hover:scale-105"
-              to="https://github.com/musistudio/claude-code-router"
+              to="https://github.com/oakimov/claude-code-router"
             >
               {t.github}
             </Link>
@@ -124,7 +124,7 @@ function HomepageHeader() {
 
                 {/* Copy Button */}
                 <button
-                  onClick={() => navigator.clipboard.writeText('npm install -g @musistudio/claude-code-router')}
+                  onClick={() => navigator.clipboard.writeText('git clone https://github.com/oakimov/claude-code-router.git && cd claude-code-router/packages/server && docker compose up --build -d')}
                   className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-mono transition-all duration-200 hover:bg-white/10"
                   style={{ color: '#9ca3af' }}
                   title="Copy to clipboard"
@@ -143,12 +143,20 @@ function HomepageHeader() {
                   <div className="flex items-start gap-3">
                     <span style={{ color: '#22c55e', fontWeight: '600' }}>$</span>
                     <span className="flex-1">
-                      <span style={{ color: '#60a5fa' }}>npm</span>
-                      <span style={{ color: '#f97583', marginLeft: '0.5rem' }}>install</span>
-                      <span style={{ color: '#fbbf24', marginLeft: '0.5rem' }}>-g</span>
+                      <span style={{ color: '#60a5fa' }}>cd</span>
                       <span style={{ color: '#e5e7eb', marginLeft: '0.5rem' }}>
-                        @musistudio/claude-code-router
+                        packages/server
                       </span>
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-3 mt-2">
+                    <span style={{ color: '#22c55e', fontWeight: '600' }}>$</span>
+                    <span className="flex-1">
+                      <span style={{ color: '#60a5fa' }}>docker</span>
+                      <span style={{ color: '#f97583', marginLeft: '0.5rem' }}>compose</span>
+                      <span style={{ color: '#fbbf24', marginLeft: '0.5rem' }}>up</span>
+                      <span style={{ color: '#f97583', marginLeft: '0.5rem' }}>--build</span>
+                      <span style={{ color: '#e5e7eb', marginLeft: '0.5rem' }}>-d</span>
                     </span>
                   </div>
                 </div>
@@ -626,7 +634,7 @@ function CTASection() {
           {/* Secondary links */}
           <div className="flex flex-col sm:flex-row gap-6 justify-center items-center text-white/80">
             <a
-              href="https://github.com/musistudio/claude-code-router"
+              href="https://github.com/oakimov/claude-code-router"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 hover:text-white transition-colors group"
@@ -640,7 +648,7 @@ function CTASection() {
             <div className="hidden sm:block w-px h-4 bg-white/30"></div>
 
             <a
-              href="https://github.com/musistudio/claude-code-router/discussions"
+              href="https://github.com/oakimov/claude-code-router/discussions"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 hover:text-white transition-colors group"
