@@ -19,6 +19,7 @@ import { CustomParamsTransformer } from "./customparams.transformer";
 import { VercelTransformer } from "./vercel.transformer";
 import { OpenAIResponsesTransformer } from "./openai.responses.transformer";
 import { CodexTransformer } from "./codex.transformer";
+import { QwenAuthTransformer } from "./qwen-auth.transformer";
 import { ForceReasoningTransformer } from "./forcereasoning.transformer";
 import { MistralTransformer } from "./mistral.transformer";
 import { ChromeOnDeviceTransformer } from "./chrome-on-device.transformer";
@@ -46,6 +47,7 @@ export default {
   VercelTransformer,
   OpenAIResponsesTransformer,
   CodexTransformer,
+  QwenAuthTransformer,
   ForceReasoningTransformer,
   MistralTransformer,
   ChromeOnDeviceTransformer,

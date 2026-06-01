@@ -20,6 +20,7 @@ import { parseStatusLineData, StatusLineInput } from "./utils/statusline";
 import {handlePresetCommand} from "./utils/preset";
 import { handleInstallCommand } from "./utils/installCommand";
 import { runCodexAuth } from "./utils/codex-cli-auth";
+import { runQwenAuth } from "./utils/qwen-cli-auth";
 import { runChromeBridge } from "./utils/chrome-device-bridge";
 
 
@@ -40,6 +41,7 @@ const KNOWN_COMMANDS = [
   "env",
   "ui",
   "codex-auth",
+  "qwen-auth",
   "chrome-bridge",
   "-v",
   "version",
@@ -65,6 +67,7 @@ Commands:
   activate      Output environment variables for shell integration
   ui            Open the web UI in browser
   codex-auth    Authenticate with Codex API via OAuth
+  qwen-auth     Authenticate with Qwen Chat (paste JWT from localStorage)
   chrome-bridge Start Chrome on-device model bridge (for Gemini Nano)
   -v, version   Show version information
   -h, help      Show help information
@@ -314,6 +317,9 @@ async function main() {
       break;
     case "codex-auth":
       await runCodexAuth();
+      break;
+    case "qwen-auth":
+      await runQwenAuth();
       break;
     case "chrome-bridge": {
       // Parse optional --port and --cdp flags

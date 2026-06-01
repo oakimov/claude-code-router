@@ -23,6 +23,7 @@ This fork is based on [claude-code-router](https://github.com/musistudio/claude-
 - **Code Quality**: Localized codebase (English comments), improved error handling, and addressed Copilot review feedback.
 - **Gemini Stability & Tool Use Fixes**: Corrected `thoughtSignature` placement in Gemini request bodies (must be a standalone `thought: true` part, not attached to text/function-call parts); filtered synthetic `ccr_` placeholder signatures from outgoing Gemini requests to prevent Gemini 500 errors; fixed `tool_result` content-array serialization in the Anthropic transformer so models receive plain text instead of JSON-wrapped arrays (resolves "Error editing file" in Claude Code); fixed Fastify `onSend` hook to prevent `invalid type 'object'` unhandled rejections on error responses.
 - **Codex (ChatGPT) Integration**: Added Codex transformer for the ChatGPT backend API (Responses API), supporting OAuth-based authentication (`ccr codex-auth`), SSE streaming, reasoning/thinking content, tool calls with web search, and image handling.
+- **Qwen Chat Integration**: Added `qwen-auth` transformer for the Qwen Chat backend (`qwen.aikit.club/v1/chat/completions`), supporting JWT-based authentication (`ccr qwen-auth`) where the user pastes a token copied from `chat.qwen.ai` localStorage, automatic token rotation, and stripping of the trailing `<details>...</details>` metadata block Qwen injects into responses.
 - **DeepSeek Reasoning Replay**: Implemented mandatory reasoning replay for DeepSeek models (e.g., via OpenCode/ZenGo). DeepSeek requires previous assistant reasoning content to be included in subsequent requests — the `reasoning` transformer automatically replays reasoning output from prior turns.
 - **Model Discovery**: Enabled non-interactive model discovery for arbitrary API providers. Using `ccr model get <provider>`, the tool automatically fetches remote models, parses custom JSON structures using configurable paths, and appends missing models to the local configuration while preserving existing settings.
 - **Chrome On-Device Model**: Added `chrome-on-device` transformer for Chrome's built-in Gemini Nano (~4GB local model). Communicates via a bridge process (`ccr chrome-bridge`) that connects to Chrome's Prompt API over CDP. Uses `responseConstraint` for structured JSON output (tool calls + text), supports streaming and non-streaming, exposes an OpenAI-compatible `/v1/chat/completions` endpoint, and replaces Claude Code's system prompt with a minimal tool-focused one. Zero API cost, zero latency to external providers.
@@ -388,6 +389,36 @@ docker exec -it claude-code-router ccr codex-auth
 
 The CLI prints a URL to open in your host browser. After signing in, the browser redirects to `http://localhost:1455/auth/callback`, which Docker forwards to the container. Tokens persist across container restarts via the volume-mounted `./ccr-config` directory.
 
+#### Qwen Provider Authentication
+
+The Qwen provider uses a single JWT to authenticate with the Qwen Chat backend. Before using Qwen models, you must save a token to your local CCR config:
+
+```shell
+ccr qwen-auth
+```
+
+This command:
+1. Prints a URL (`http://127.0.0.1:<port>/qwen/auth`) for the in-browser auth page
+2. The page offers two options:
+   - **Bookmarklet (recommended)**: drag the "Get Qwen Token" link to your bookmarks bar, then click it on the signed-in Qwen page. The token is sent back to CCR automatically.
+   - **Manual paste**: sign in at `chat.qwen.ai`, open dev tools (F12) → Console, run `copy(localStorage.getItem('token'))`, paste the JWT into the form and submit.
+3. The token is validated against `qwen.aikit.club/v1/validate` and saved to `~/.claude-code-router/qwen_auth.json` (mode 0600)
+4. The `qwen-auth` transformer automatically refreshes the token when it nears expiry (within 6 hours)
+
+> **Note**: The server must be running for `ccr qwen-auth` to work, as it hosts the auth form at `/qwen/auth`. Unlike the Codex flow, no OAuth callback is required — the token is pasted directly into the form.
+
+**Running with Docker**:
+
+The Qwen auth page is served on the regular CCR port (no separate callback port). When running in Docker:
+
+```shell
+docker exec -it claude-code-router ccr qwen-auth
+```
+
+The CLI prints a URL to open in your host browser (`http://localhost:3456/qwen/auth`, which Docker forwards to the container). Tokens persist across container restarts via the volume-mounted `./ccr-config` directory.
+
+**Custom host/port for the bookmarklet**: The bookmarklet's redirect target is hardcoded into the JS because it runs in the Qwen page's context (with no knowledge of CCR's address). By default it points to `http://127.0.0.1:3456`. If your CCR server is on a different host or port, set the `QWEN_AUTH_REDIRECT` env var before starting the server, e.g. `QWEN_AUTH_REDIRECT=http://192.168.1.10:8080` — the bookmarklet will then redirect to that address.
+
 #### Chrome On-Device Bridge
 
 The `chrome-on-device` transformer requires a bridge process running on the host to communicate with Chrome's Gemini Nano model:
@@ -665,6 +696,30 @@ The Codex transformer connects to the ChatGPT backend API, providing access to G
 ```
 
 > **Note**: The `api_key` field is a placeholder — actual authentication is handled via OAuth tokens stored in `~/.claude-code-router/codex_auth.json`. Run `ccr codex-auth` to authenticate before using the Codex provider.
+
+**Qwen Provider Configuration:**
+
+The Qwen provider uses the `qwen-auth` transformer (for the `Authorization: Bearer <jwt>` header and trailing `<details>` strip) paired with the existing `OpenAI` transformer (which registers the `POST /v1/chat/completions` endpoint).
+
+```json
+{
+  "name": "qwen",
+  "api_base_url": "https://qwen.aikit.club/v1/chat/completions",
+  "api_key": "qwen-placeholder",
+  "models": ["qwen3-max", "qwen3-coder-plus"],
+  "transformer": {
+    "use": ["qwen-auth", "reasoning", "OpenAI"]
+  }
+}
+```
+
+Three transformers are required in the chain:
+
+- `qwen-auth` — sets the `Authorization: Bearer <jwt>` header on every outbound request (loading/refreshing the JWT from `~/.claude-code-router/qwen_auth.json`) and strips the trailing `<details>...</details>` block Qwen injects into responses.
+- `reasoning` — maps Claude Code's unified `reasoning` field onto the request so the Qwen endpoint's `enable_thinking` and `thinking_budget` parameters are populated.
+- `OpenAI` — registers the `POST /v1/chat/completions` route. It is a thin endpoint stub with no body conversion, so it must remain last in the chain.
+
+> **Note**: The `api_key` field is a placeholder — actual authentication is handled via the JWT stored in `~/.claude-code-router/qwen_auth.json`. Run `ccr qwen-auth` to authenticate before using the Qwen provider.
 
 **DeepSeek via OpenCode (Mandatory Reasoning Replay):**
 
