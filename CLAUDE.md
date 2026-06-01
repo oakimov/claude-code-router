@@ -99,7 +99,25 @@ Token calculation uses `tiktoken` (cl100k_base) to estimate request size.
 
 ### 2. Transformer System
 
-The project uses the `@musistudio/llms` package (external dependency) to handle request/response transformations. Transformers adapt to different provider API differences:
+> **⚠️ CRITICAL — Read this before working with transformers.**
+>
+> The request pipeline always follows this order (see `api/routes.ts`):
+>
+>     Client → POST /v1/messages
+>       → AnthropicTransformer.transformRequestOut()        // Anthropic → Unified (OpenAI Chat Completions)
+>       → provider.transformer.use[].transformRequestIn()   // provider middleware
+>       → sendRequestToProvider()                           // HTTP call upstream
+>       → provider.transformer.use[].transformResponseOut() // provider middleware (reversed)
+>       → AnthropicTransformer.transformResponseIn()        // Unified (OpenAI) → Anthropic
+>       → Client
+>
+> **The Unified format IS the OpenAI Chat Completions format.** `AnthropicTransformer.transformRequestOut()` converts the incoming Anthropic body into Unified. By the time the provider chain runs, the body is already in OpenAI Chat Completions shape — no further conversion is needed for providers that accept that format.
+>
+> **`OpenAITransformer`** (in `openai.transformer.ts`) only sets `endPoint = "/v1/chat/completions"` to register a server-side route. It has no `transformRequestIn` because the body is already correct. It is NOT a passthrough — the transformation happened in the previous pipeline stage.
+>
+> **`OpenAIResponsesTransformer`** (in `openai.responses.transformer.ts`) converts the Unified body to the Responses API format (`/v1/responses`): `messages` → `input`, function tools → flat tool definitions, `web_search` → `{ type: "web_search" }`, etc. It uses shared utilities from `openai.util.ts` (`validateOpenAIToolCalls`, `injectPromptCaching`).
+
+The project uses transformers to adapt to different provider API differences:
 
 - Built-in transformers: `anthropic`, `deepseek`, `gemini`, `openrouter`, `groq`, `maxtoken`, `tooluse`, `reasoning`, `enhancetool`, etc.
 - Custom transformers: Load external plugins via `transformers` array in `config.json`
