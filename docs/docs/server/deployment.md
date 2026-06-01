@@ -6,32 +6,21 @@ title: Server Deployment
 
 Claude Code Router Server supports multiple deployment methods, from local development to production environments.
 
-## Docker Deployment (Recommended)
+## Docker Compose (Recommended)
 
-### Using Docker Hub Image
-
-```bash
-docker run -d \
-  --name claude-code-router \
-  -p 3456:3456 \
-  -v ~/.claude-code-router:/app/.claude-code-router \
-  musistudio/claude-code-router:latest
-```
-
-### Using Docker Compose
-
-Create `docker-compose.yml`:
+The fastest way to get started is using Docker Compose from the repository root:
 
 ```yaml
-version: '3.8'
+# packages/server/docker-compose.yml
 services:
-  claude-code-router:
-    image: musistudio/claude-code-router:latest
-    container_name: claude-code-router
+  ccr:
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     ports:
       - "3456:3456"
     volumes:
-      - ./config:/app/.claude-code-router
+      - ./ccr-config:/root/.claude-code-router
     environment:
       - LOG_LEVEL=info
       - HOST=0.0.0.0
@@ -42,17 +31,26 @@ services:
 Start the service:
 
 ```bash
-docker-compose up -d
+cd packages/server
+docker compose up --build -d
 ```
 
-### Custom Build
-
-Build Docker image from source:
+Check logs:
 
 ```bash
-git clone https://github.com/musistudio/claude-code-router.git
-cd claude-code-router
-docker build -t claude-code-router:latest .
+docker compose logs -f ccr
+```
+
+## Docker Run
+
+Use the pre-built image from Docker Hub:
+
+```bash
+docker run -d \
+  --name claude-code-router \
+  -p 3456:3456 \
+  -v ~/.claude-code-router:/root/.claude-code-router \
+  musistudio/claude-code-router:latest
 ```
 
 ## Configuration File Mounting
@@ -63,7 +61,7 @@ Mount configuration file into container:
 docker run -d \
   --name claude-code-router \
   -p 3456:3456 \
-  -v $(pwd)/config.json:/app/.claude-code-router/config.json \
+  -v $(pwd)/config.json:/root/.claude-code-router/config.json \
   musistudio/claude-code-router:latest
 ```
 
@@ -151,7 +149,7 @@ services:
   claude-code-router:
     image: musistudio/claude-code-router:latest
     volumes:
-      - ./logs:/app/.claude-code-router/logs
+      - ./logs:/root/.claude-code-router/logs
     environment:
       - LOG_LEVEL=warn
 ```

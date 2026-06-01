@@ -37,7 +37,7 @@ Claude Code Router Server 是一个核心服务组件，负责将 Claude Code �
 
 ### 什么是 @musistudio/llms？
 
-`@musistudio/llms` 是一个独立的 npm 包（`@musistudio/llms`），负责处理：
+`@musistudio/llms` 是一个独立的 npm 包，负责处理：
 
 - **API 格式转换**：在不同的 LLM 提供商 API 之间转换（Anthropic、OpenAI、Gemini 等）
 - **请求/响应转换**：将请求和响应转换为统一格式
@@ -137,7 +137,8 @@ CCR server 通过以下方式集成 `@musistudio/llms`：
 在本地运行服务，供个人 Claude Code 使用：
 
 ```bash
-ccr start
+cd packages/server
+docker compose up --build -d
 ```
 
 ### 场景二：团队共享服务
@@ -158,6 +159,6 @@ GET /api/logs
 
 ## 下一步
 
-- [Docker 部署指南](/docs/server/deployment) - 学习如何部署服务
-- [API 参考](/docs/category/api) - 查看完整的 API 文档
-- [配置说明](/docs/category/server-config) - 了解服务器配置选项
+- [Docker 部署指南](/docs/server/deployment) — 学习如何部署服务
+- [API 参考](/docs/category/api) — 查看完整的 API 文档
+- [配置说明](/docs/category/server-config) — 了解服务器配置选项

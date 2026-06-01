@@ -6,51 +6,50 @@ sidebar_position: 3
 
 Get up and running with Claude Code Router in 5 minutes.
 
-## 1. Configure the Router
+## 1. Start the Router with Docker Compose
 
-Before using Claude Code Router, you need to configure your LLM providers. You can either:
+From the repository root, start the service:
 
-### Option A: Edit Configuration File Directly
+```bash
+cd packages/server
+docker compose up --build -d
+```
 
-Edit `~/.claude-code-router/config.json`:
+The router will start on `http://localhost:3456`.
 
-```json
+## 2. Configure the Router
+
+Before using Claude Code Router, you need to configure your LLM providers. Edit the configuration mounted into the container at `packages/server/ccr-config/config.json`:
+
+```json5
 {
   "HOST": "0.0.0.0",
-  "PORT": 8080,
+  "PORT": 3456,
   "Providers": [
     {
-      "name": "openai",
-      "api_base_url": "https://api.openai.com/v1/chat/completions",
-      "api_key": "your-api-key-here",
-      "models": ["gpt-4", "gpt-3.5-turbo"]
+      "name": "my-provider",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKey": "$YOUR_API_KEY",
+      "models": ["model-name"]
     }
   ],
   "Router": {
-    "default": "openai,gpt-4"
+    "default": "my-provider,model-name"
   }
 }
 ```
 
-### Option B: Use Web UI
+After editing the config, restart the service:
 
 ```bash
-ccr ui
+docker compose restart ccr
 ```
 
-This will open the web interface where you can configure providers visually.
-
-## 2. Start the Router
-
-```bash
-ccr start
-```
-
-The router will start on `http://localhost:8080` by default.
+You can also use the Web UI at `http://localhost:3456/ui/` to configure providers visually.
 
 ## 3. Use Claude Code
 
-Now you can use Claude Code normally:
+Now you can use Claude Code with your configured provider:
 
 ```bash
 ccr code
@@ -63,13 +62,11 @@ Your requests will be routed through Claude Code Router to your configured provi
 If you modify the configuration file or make changes through the Web UI, restart the service:
 
 ```bash
-ccr restart
+docker compose restart ccr
 ```
-
-Or restart directly through the Web UI.
 
 ## What's Next?
 
-- [Basic Configuration](/docs/cli/config/basic) - Learn about configuration options
-- [Routing](/docs/cli/config/routing) - Configure smart routing rules
-- [CLI Commands](/docs/category/cli-commands) - Explore all CLI commands
+- [Basic Configuration](/docs/cli/config/basic) — Learn about configuration options
+- [Routing](/docs/cli/config/routing) — Configure smart routing rules
+- [CLI Commands](/docs/category/cli-commands) — Explore all CLI commands

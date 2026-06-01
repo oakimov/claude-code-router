@@ -2,32 +2,21 @@
 
 Claude Code Router Server 支持多种部署方式，从本地开发到生产环境。
 
-## Docker 部署（推荐）
+## Docker Compose（推荐）
 
-### 使用 Docker Hub 镜像
-
-```bash
-docker run -d \
-  --name claude-code-router \
-  -p 3456:3456 \
-  -v ~/.claude-code-router:/app/.claude-code-router \
-  musistudio/claude-code-router:latest
-```
-
-### 使用 Docker Compose
-
-创建 `docker-compose.yml`：
+从仓库根目录使用 Docker Compose 快速启动：
 
 ```yaml
-version: '3.8'
+# packages/server/docker-compose.yml
 services:
-  claude-code-router:
-    image: musistudio/claude-code-router:latest
-    container_name: claude-code-router
+  ccr:
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
     ports:
       - "3456:3456"
     volumes:
-      - ./config:/app/.claude-code-router
+      - ./ccr-config:/root/.claude-code-router
     environment:
       - LOG_LEVEL=info
       - HOST=0.0.0.0
@@ -38,17 +27,36 @@ services:
 启动服务：
 
 ```bash
-docker-compose up -d
+cd packages/server
+docker compose up --build -d
 ```
 
-### 自定义构建
+查看日志：
+
+```bash
+docker compose logs -f ccr
+```
+
+## Docker Run
+
+使用 Docker Hub 上的预构建镜像：
+
+```bash
+docker run -d \
+  --name claude-code-router \
+  -p 3456:3456 \
+  -v ~/.claude-code-router:/root/.claude-code-router \
+  musistudio/claude-code-router:latest
+```
+
+## 自定义构建
 
 从源码构建 Docker 镜像：
 
 ```bash
-git clone https://github.com/musistudio/claude-code-router.git
+git clone https://github.com/oakimov/claude-code-router.git
 cd claude-code-router
-docker build -t claude-code-router:latest .
+docker build -t claude-code-router:latest -f packages/server/Dockerfile .
 ```
 
 ## 配置文件挂载
@@ -59,7 +67,7 @@ docker build -t claude-code-router:latest .
 docker run -d \
   --name claude-code-router \
   -p 3456:3456 \
-  -v $(pwd)/config.json:/app/.claude-code-router/config.json \
+  -v $(pwd)/config.json:/root/.claude-code-router/config.json \
   musistudio/claude-code-router:latest
 ```
 
@@ -147,7 +155,7 @@ services:
   claude-code-router:
     image: musistudio/claude-code-router:latest
     volumes:
-      - ./logs:/app/.claude-code-router/logs
+      - ./logs:/root/.claude-code-router/logs
     environment:
       - LOG_LEVEL=warn
 ```

@@ -41,7 +41,7 @@ The server is built on top of **@musistudio/llms**, a universal LLM API transfor
 
 ### What is @musistudio/llms?
 
-`@musistudio/llms` is a standalone npm package (`@musistudio/llms`) that handles:
+`@musistudio/llms` is a standalone npm package that handles:
 
 - **API Format Conversion**: Transforms between different LLM provider APIs (Anthropic, OpenAI, Gemini, etc.)
 - **Request/Response Transformation**: Converts requests and responses to a unified format
@@ -141,7 +141,8 @@ The current version of `@musistudio/llms` is `1.0.51`. It's published as an inde
 Run the service locally for personal Claude Code use:
 
 ```bash
-ccr start
+cd packages/server
+docker compose up --build -d
 ```
 
 ### Scenario 2: Team Shared Service
@@ -162,6 +163,6 @@ GET /api/logs
 
 ## Next Steps
 
-- [Docker Deployment Guide](/docs/server/deployment) - Learn how to deploy the service
-- [API Reference](/docs/category/api) - View complete API documentation
-- [Configuration Guide](/docs/category/server-config) - Understand server configuration options
+- [Docker Deployment Guide](/docs/server/deployment) — Learn how to deploy the service
+- [API Reference](/docs/category/api) — View complete API documentation
+- [Configuration Guide](/docs/category/server-config) — Understand server configuration options

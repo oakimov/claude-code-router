@@ -20,8 +20,24 @@ Claude Code Router CLI (`ccr`) is a command-line tool for managing and controlli
 
 ## Installation
 
+### Docker Compose (Recommended)
+
+Clone the repo and start the service:
+
+```bash
+git clone https://github.com/oakimov/claude-code-router.git
+cd claude-code-router/packages/server
+docker compose up --build -d
+```
+
+### Via Package Manager
+
 ```bash
 npm install -g @musistudio/claude-code-router
+# or
+pnpm add -g @musistudio/claude-code-router
+# or
+yarn global add @musistudio/claude-code-router
 ```
 
 ## Basic Usage
@@ -36,10 +52,10 @@ Before using Claude Code Router, you need to configure your providers. You can e
 After making configuration changes, restart the service:
 
 ```bash
-ccr restart
+docker compose restart ccr   # if using Docker
+# or
+ccr restart                   # if installed via package manager
 ```
-
-Or restart directly through the Web UI.
 
 ### Start Claude Code
 
@@ -74,8 +90,8 @@ Configure once, and both CLI and Server will use it.
 
 ## Next Steps
 
-- [Installation Guide](/docs/cli/installation) - Detailed installation instructions
-- [Quick Start](/docs/cli/quick-start) - Get started in 5 minutes
-- [Command Reference](/docs/category/cli-commands) - Complete command list
-- [Status Line](/docs/cli/commands/statusline) - Customize your status bar
-- [Configuration Guide](/docs/category/cli-config) - Configuration file details
+- [Installation Guide](/docs/cli/installation) — Detailed installation instructions
+- [Quick Start](/docs/cli/quick-start) — Get started in 5 minutes
+- [Command Reference](/docs/category/cli-commands) — Complete command list
+- [Status Line](/docs/cli/commands/statusline) — Customize your status bar
+- [Configuration Guide](/docs/category/cli-config) — Configuration file details

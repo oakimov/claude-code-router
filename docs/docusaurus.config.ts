@@ -7,10 +7,10 @@ const config: Config = {
   tagline: 'Use Claude Code without an Anthropics account and route it to another LLM provider',
   favicon: 'img/favicon.ico',
 
-  url: 'https://musistudio.github.io',
+  url: 'https://oakimov.github.io',
   baseUrl: '/claude-code-router/',
 
-  organizationName: 'musistudio',
+  organizationName: 'oakimov',
   projectName: 'claude-code-router',
 
   onBrokenLinks: 'warn',
@@ -29,12 +29,12 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           editUrl:
-            'https://github.com/musistudio/claude-code-router/tree/main/docs',
+            'https://github.com/oakimov/claude-code-router/tree/main/docs',
         },
         blog: {
           showReadingTime: true,
           editUrl:
-            'https://github.com/musistudio/claude-code-router/tree/main/docs',
+            'https://github.com/oakimov/claude-code-router/tree/main/docs',
         },
         theme: {
           customCss: './src/css/custom.css',
@@ -73,7 +73,7 @@ const config: Config = {
           position: 'right',
         },
         {
-          href: 'https://github.com/musistudio/claude-code-router',
+          href: 'https://github.com/oakimov/claude-code-router',
           label: 'GitHub',
           position: 'right',
         },

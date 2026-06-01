@@ -27,6 +27,16 @@ slug: /
 
 ### 安装
 
+**推荐方式 — Docker Compose：**
+
+```bash
+git clone https://github.com/oakimov/claude-code-router.git
+cd claude-code-router/packages/server
+docker compose up --build -d
+```
+
+**或通过包管理器：**
+
 ```bash
 npm install -g @musistudio/claude-code-router
 # 或
@@ -51,10 +61,10 @@ claude code
 
 ## 下一步
 
-- [安装指南](/docs/installation) - 详细安装说明
-- [快速开始](/docs/quick-start) - 5 分钟入门
-- [配置](/docs/config/basic) - 了解如何配置路由器
-- [CLI 参考](/docs/cli/start) - 完整的 CLI 命令参考
+- [安装指南](/docs/installation) — 详细安装说明
+- [快速开始](/docs/quick-start) — 5 分钟入门
+- [配置](/docs/config/basic) — 了解如何配置路由器
+- [CLI 参考](/docs/cli/start) — 完整的 CLI 命令参考
 
 ## 架构
 
@@ -67,4 +77,4 @@ Claude Code Router 由四个主要组件组成：
 
 ## 许可证
 
-MIT © [musistudio](https://github.com/musistudio)
+MIT © [oakimov](https://github.com/oakimov)
