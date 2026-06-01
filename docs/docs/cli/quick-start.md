@@ -6,7 +6,7 @@ sidebar_position: 3
 
 Get up and running with Claude Code Router in 5 minutes.
 
-## 1. Start the Router with Docker Compose
+## 1. Start the Router
 
 From the repository root, start the service:
 
@@ -49,10 +49,12 @@ You can also use the Web UI at `http://localhost:3456/ui/` to configure provider
 
 ## 3. Use Claude Code
 
-Now you can use Claude Code with your configured provider:
+Now you can use Claude Code with your configured provider. Set the required environment variables and run Claude Code directly:
 
 ```bash
-ccr code
+export ANTHROPIC_BASE_URL="http://localhost:3456/v1"
+export ANTHROPIC_API_KEY="dummy"
+claude
 ```
 
 Your requests will be routed through Claude Code Router to your configured provider.
@@ -69,4 +71,4 @@ docker compose restart ccr
 
 - [Basic Configuration](/docs/cli/config/basic) — Learn about configuration options
 - [Routing](/docs/cli/config/routing) — Configure smart routing rules
-- [CLI Commands](/docs/category/cli-commands) — Explore all CLI commands
+- [Integration Guides](/docs/category/integration-guides) — Set up provider-specific features

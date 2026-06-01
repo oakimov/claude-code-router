@@ -9,74 +9,67 @@ sidebar_position: 3
 
 ## 1. 启动路由器
 
-```bash
-ccr start
-```
-
-路由器默认将在 `http://localhost:8080` 上启动。
-
-## 2. 配置环境变量
-
-在您的 shell 中设置以下环境变量：
+从仓库根目录启动服务：
 
 ```bash
-export ANTHROPIC_API_URL="http://localhost:8080/v1"
-export ANTHROPIC_API_KEY="your-provider-api-key"
+cd packages/server
+docker compose up --build -d
 ```
 
-或者使用 `ccr activate` 命令获取环境变量：
+路由器将在 `http://localhost:3456` 启动。
 
-```bash
-eval "$(ccr activate)"
-```
+## 2. 配置路由器
 
-## 3. 使用 Claude Code
+编辑挂载到容器中的配置文件 `packages/server/ccr-config/config.json`：
 
-现在您可以正常使用 Claude Code：
-
-```bash
-claude code
-```
-
-您的请求将通过 Claude Code Router 路由到您配置的提供商。
-
-## 4. 配置提供商（可选）
-
-要配置多个提供商或自定义路由，使用：
-
-```bash
-ccr model
-```
-
-这将打开一个交互式菜单来选择和配置模型。
-
-或者直接编辑配置文件：
-
-```bash
-# 在默认编辑器中打开配置
-ccr config edit
-```
-
-配置文件示例 (`~/.claude-code-router/config.json`)：
-
-```json
+```json5
 {
+  "HOST": "0.0.0.0",
+  "PORT": 3456,
   "Providers": [
     {
-      "name": "deepseek",
-      "api_base_url": "https://api.deepseek.com/chat/completions",
-      "api_key": "your-deepseek-api-key",
-      "models": ["deepseek-chat", "deepseek-coder"]
+      "name": "my-provider",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKey": "$YOUR_API_KEY",
+      "models": ["model-name"]
     }
   ],
   "Router": {
-    "default": "deepseek,deepseek-chat"
+    "default": "my-provider,model-name"
   }
 }
 ```
 
+编辑完成后重启服务：
+
+```bash
+docker compose restart ccr
+```
+
+您也可以访问 `http://localhost:3456/ui/` 通过 Web UI 可视化配置提供商。
+
+## 3. 使用 Claude Code
+
+配置环境变量后直接运行 Claude Code：
+
+```bash
+export ANTHROPIC_BASE_URL="http://localhost:3456/v1"
+export ANTHROPIC_API_KEY="dummy"
+claude
+```
+
+您的请求将通过 Claude Code Router 路由到您配置的提供商。
+
+## 修改配置后重启
+
+修改配置文件或通过 Web UI 更改后，重启服务：
+
+```bash
+docker compose restart ccr
+```
+
 ## 下一步
 
-- [基础配置](/zh/docs/config/basic) - 了解配置选项
-- [路由配置](/zh/docs/config/routing) - 配置智能路由规则
-- [CLI 命令](/zh/docs/cli/start) - 探索所有 CLI 命令
+- [基础配置](/zh/docs/cli/config/basic) — 了解配置选项
+- [路由配置](/zh/docs/cli/config/routing) — 配置智能路由规则
+- [集成指南](/zh/docs/category/integration-guides) — 提供商特定功能设置

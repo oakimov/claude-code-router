@@ -1,5 +1,5 @@
 ---
-title: 欢迎使用 Claude Code Router
+title: 开始使用
 sidebar_position: 1
 slug: /
 ---
@@ -27,53 +27,49 @@ slug: /
 
 ### 安装
 
-**推荐方式 — Docker Compose：**
-
 ```bash
 git clone https://github.com/oakimov/claude-code-router.git
 cd claude-code-router/packages/server
 docker compose up --build -d
 ```
 
-**或通过包管理器：**
-
-```bash
-npm install -g @musistudio/claude-code-router
-# 或
-pnpm add -g @musistudio/claude-code-router
-# 或
-yarn global add @musistudio/claude-code-router
-```
-
 ### 基本使用
 
+配置 Claude Code 使用路由器：
+
 ```bash
-# 启动路由器服务器
-ccr start
-
-# 配置 Claude Code 使用路由器
-export ANTHROPIC_API_URL="http://localhost:8080/v1"
-export ANTHROPIC_API_KEY="your-api-key"
-
-# 现在可以正常使用 Claude Code！
-claude code
+export ANTHROPIC_BASE_URL="http://localhost:3456/v1"
+export ANTHROPIC_API_KEY="dummy"
+claude
 ```
 
-## 下一步
+## 服务管理
 
-- [安装指南](/docs/installation) — 详细安装说明
-- [快速开始](/docs/quick-start) — 5 分钟入门
-- [配置](/docs/config/basic) — 了解如何配置路由器
-- [CLI 参考](/docs/cli/start) — 完整的 CLI 命令参考
+```bash
+docker compose up --build -d    # 启动路由器
+docker compose down             # 停止路由器
+docker compose restart ccr      # 重启路由器
+docker compose logs -f ccr      # 查看日志
+```
+
+## Web UI
+
+在浏览器中访问 `http://localhost:3456/ui/` 管理配置和监控服务。
 
 ## 架构
 
 Claude Code Router 由四个主要组件组成：
 
-- **CLI** (`@musistudio/claude-code-router`): 提供 `ccr` 命令的命令行工具
 - **Server** (`@CCR/server`): 处理 API 路由和转换的核心服务器
 - **Shared** (`@CCR/shared`): 共享常量和工具
 - **UI** (`@CCR/ui`): Web 管理界面（React + Vite）
+
+## 下一步
+
+- [安装指南](/zh/docs/cli/installation) — 详细安装说明
+- [快速开始](/zh/docs/quick-start) — 5 分钟入门
+- [配置](/zh/docs/cli/config/basic) — 了解如何配置路由器
+- [集成指南](/zh/docs/category/integration-guides) — 提供商特定功能设置
 
 ## 许可证
 
