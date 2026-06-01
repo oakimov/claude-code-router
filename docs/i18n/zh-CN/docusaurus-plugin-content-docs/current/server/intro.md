@@ -87,13 +87,22 @@ interface Transformer {
 #### 3. 内置转换器
 
 核心包包含以下转换器：
-- **anthropic**：Anthropic API 格式
-- **openai**：OpenAI API 格式
+- **anthropic**：Anthropic API 格式（`/v1/messages`）
+- **openai**：OpenAI Chat Completions 格式（`/v1/chat/completions`）
+- **openai-responses**：OpenAI Responses API 格式（`/v1/responses`，用于 Codex）
 - **gemini**：Google Gemini API 格式
+- **vertex-gemini / vertex-claude**：Google Vertex AI 格式
 - **deepseek**：DeepSeek API 格式
+- **mistral**：Mistral AI API 格式
 - **groq**：Groq API 格式
+- **cerebras**：Cerebras API 格式
 - **openrouter**：OpenRouter API 格式
-- 等等...
+- **codex**：Codex（ChatGPT）后端 API
+- **qwen-auth**：Qwen Chat 认证（基于 JWT）
+- **chrome-on-device**：Chrome 内置 Gemini Nano（本地运行，无需 API 费用）
+- **vercel**：Vercel AI SDK 格式
+- **opencode-headers**：OpenCode 请求头注入
+- **以及其他工具转换器**：`cleancache`、`customparams`、`enhancetool`、`forcereasoning`、`maxcompletiontokens`、`maxtoken`、`reasoning`、`sampling`、`streamoptions`、`tooluse`
 
 ### 与 CCR Server 的集成
 

@@ -39,8 +39,8 @@ Detailed guide for configuring LLM providers.
   "NAME": "gemini",
   "HOST": "https://generativelanguage.googleapis.com/v1beta",
   "APIKEY": "your-api-key",
-  "MODELS": ["gemini-1.5-pro"],
-  "transformers": ["anthropic"]
+  "MODELS": ["gemini-2.0-flash", "gemini-2.5-pro"],
+  "transformers": ["gemini"]
 }
 ```
 
@@ -51,8 +51,80 @@ Detailed guide for configuring LLM providers.
   "NAME": "openrouter",
   "HOST": "https://openrouter.ai/api/v1",
   "APIKEY": "your-api-key",
-  "MODELS": ["anthropic/claude-3.5-sonnet"],
-  "transformers": ["anthropic"]
+  "MODELS": ["anthropic/claude-sonnet-4", "google/gemini-2.5-pro-preview"],
+  "transformers": ["openrouter"]
+}
+```
+
+### Mistral
+
+```json
+{
+  "NAME": "mistral",
+  "HOST": "https://api.mistral.ai/v1",
+  "APIKEY": "your-api-key",
+  "MODELS": ["mistral-large-latest", "mistral-small-latest"],
+  "transformers": ["mistral"]
+}
+```
+
+### Cerebras
+
+```json
+{
+  "NAME": "cerebras",
+  "HOST": "https://api.cerebras.ai/v1",
+  "APIKEY": "your-api-key",
+  "MODELS": ["cerebras-gpt"],
+  "transformers": ["cerebras"]
+}
+```
+
+### Codex (ChatGPT)
+
+Requires OAuth authentication via `ccr codex-auth`.
+
+```json
+{
+  "NAME": "codex",
+  "baseUrl": "https://api.githubcopilot.com",
+  "apiKey": "$CODEX_ACCESS_TOKEN",
+  "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
+  "transformer": {
+    "use": ["codex"]
+  }
+}
+```
+
+### Qwen Chat
+
+Requires JWT authentication via `ccr qwen-auth`.
+
+```json
+{
+  "NAME": "qwen",
+  "baseUrl": "https://qwen.aikit.club/v1/chat/completions",
+  "apiKey": "$QWEN_ACCESS_TOKEN",
+  "models": ["qwen-max", "qwen-plus", "qwen-turbo"],
+  "transformer": {
+    "use": ["qwen-auth", "OpenAI"]
+  }
+}
+```
+
+### Chrome On-Device (Gemini Nano)
+
+Requires the bridge process via `ccr chrome-bridge`.
+
+```json
+{
+  "NAME": "chrome",
+  "baseUrl": "http://127.0.0.1:9229",
+  "apiKey": "dummy",
+  "models": ["gemini-nano"],
+  "transformer": {
+    "use": ["chrome-on-device"]
+  }
 }
 ```
 
@@ -78,9 +150,11 @@ For example:
 
 ```
 deepseek,deepseek-chat
+codex,gpt-5
+chrome,gemini-nano
 ```
 
 ## Next Steps
 
-- [Routing Configuration](/docs/config/routing) - Configure how requests are routed
-- [Transformers](/docs/config/transformers) - Apply transformations to requests
+- [Routing Configuration](/docs/config/routing) — Configure how requests are routed
+- [Transformers](/docs/config/transformers) — Apply transformations to requests

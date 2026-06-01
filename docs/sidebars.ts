@@ -97,6 +97,23 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'category',
+          label: 'Integration Guides',
+          link: {
+            type: 'generated-index',
+            title: 'Integration Guides',
+            description: 'Guides for using fork-specific provider integrations',
+            slug: 'category/integration-guides',
+          },
+          items: [
+            'server/guides/codex',
+            'server/guides/qwen',
+            'server/guides/chrome-on-device',
+            'server/guides/deepseek-reasoning',
+            'server/guides/model-discovery',
+          ],
+        },
+        {
+          type: 'category',
           label: 'Advanced',
           link: {
             type: 'generated-index',

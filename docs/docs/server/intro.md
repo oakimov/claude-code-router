@@ -91,13 +91,22 @@ interface Transformer {
 #### 3. Built-in Transformers
 
 The core package includes transformers for:
-- **anthropic**: Anthropic API format
-- **openai**: OpenAI API format
+- **anthropic**: Anthropic API format (`/v1/messages`)
+- **openai**: OpenAI Chat Completions format (`/v1/chat/completions`)
+- **openai-responses**: OpenAI Responses API format (`/v1/responses`, used by Codex)
 - **gemini**: Google Gemini API format
+- **vertex-gemini / vertex-claude**: Google Vertex AI formats
 - **deepseek**: DeepSeek API format
+- **mistral**: Mistral AI API format
 - **groq**: Groq API format
+- **cerebras**: Cerebras API format
 - **openrouter**: OpenRouter API format
-- And more...
+- **codex**: Codex (ChatGPT) backend API
+- **qwen-auth**: Qwen Chat authentication (JWT-based)
+- **chrome-on-device**: Chrome built-in Gemini Nano (local, no API cost)
+- **vercel**: Vercel AI SDK format
+- **opencode-headers**: OpenCode header injection
+- **And more utility transformers**: `cleancache`, `customparams`, `enhancetool`, `forcereasoning`, `maxcompletiontokens`, `maxtoken`, `reasoning`, `sampling`, `streamoptions`, `tooluse`
 
 ### Integration with CCR Server
 

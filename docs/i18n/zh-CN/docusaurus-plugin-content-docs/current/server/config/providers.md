@@ -65,6 +65,82 @@ sidebar_position: 2
 }
 ```
 
+### Mistral
+
+```json
+{
+  "name": "mistral",
+  "api_base_url": "https://api.mistral.ai/v1/chat/completions",
+  "api_key": "your-api-key",
+  "models": ["mistral-large-latest", "mistral-small-latest"],
+  "transformer": {
+    "use": ["mistral"]
+  }
+}
+```
+
+### Cerebras
+
+```json
+{
+  "name": "cerebras",
+  "api_base_url": "https://api.cerebras.ai/v1/chat/completions",
+  "api_key": "your-api-key",
+  "models": ["cerebras-gpt"],
+  "transformer": {
+    "use": ["cerebras"]
+  }
+}
+```
+
+### Codex（ChatGPT）
+
+需要通过 `ccr codex-auth` 完成 OAuth 认证。
+
+```json
+{
+  "name": "codex",
+  "baseUrl": "https://api.githubcopilot.com",
+  "apiKey": "$CODEX_ACCESS_TOKEN",
+  "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
+  "transformer": {
+    "use": ["codex"]
+  }
+}
+```
+
+### Qwen Chat
+
+需要通过 `ccr qwen-auth` 完成 JWT 认证。
+
+```json
+{
+  "name": "qwen",
+  "baseUrl": "https://qwen.aikit.club/v1/chat/completions",
+  "apiKey": "$QWEN_ACCESS_TOKEN",
+  "models": ["qwen-max", "qwen-plus", "qwen-turbo"],
+  "transformer": {
+    "use": ["qwen-auth", "OpenAI"]
+  }
+}
+```
+
+### Chrome 内置模型（Gemini Nano）
+
+需要运行 `ccr chrome-bridge` 桥接进程。
+
+```json
+{
+  "name": "chrome",
+  "baseUrl": "http://127.0.0.1:9229",
+  "apiKey": "dummy",
+  "models": ["gemini-nano"],
+  "transformer": {
+    "use": ["chrome-on-device"]
+  }
+}
+```
+
 ### Ollama（本地模型）
 
 ```json
