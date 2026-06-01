@@ -665,6 +665,45 @@ function CTASection() {
   );
 }
 
+function ForkCredit() {
+  const {i18n} = useDocusaurusContext();
+  const currentLocale = i18n.currentLocale;
+
+  const content = {
+    en: {
+      text: 'This is an active fork of',
+      original: 'musistudio/claude-code-router',
+      description: 'Contains additional provider integrations, bug fixes, and improvements not yet merged upstream.',
+    },
+    'zh-CN': {
+      text: '这是一个更活跃的分支，基于',
+      original: 'musistudio/claude-code-router',
+      description: '包含上游尚未合并的额外提供商集成、错误修复和改进。',
+    }
+  };
+
+  const t = content[currentLocale as keyof typeof content] || content.en;
+
+  return (
+    <section className="py-12 bg-gray-50 border-t border-gray-200">
+      <div className="container mx-auto px-4 text-center">
+        <p className="text-gray-500 text-sm">
+          {t.text}{' '}
+          <a
+            href="https://github.com/musistudio/claude-code-router"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary hover:underline font-medium"
+          >
+            {t.original}
+          </a>
+        </p>
+        <p className="text-gray-400 text-xs mt-2">{t.description}</p>
+      </div>
+    </section>
+  );
+}
+
 export default function Home() {
   return (
     <Layout>
@@ -675,6 +714,7 @@ export default function Home() {
         <UseCases />
         <CTASection />
       </main>
+      <ForkCredit />
     </Layout>
   );
 }
