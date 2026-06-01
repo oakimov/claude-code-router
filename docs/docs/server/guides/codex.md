@@ -4,18 +4,23 @@ sidebar_position: 1
 
 # Codex (ChatGPT) Integration
 
-Claude Code Router supports routing requests through the **Codex backend API**, which powers GitHub Copilot's ChatGPT models (GPT-5 series). This requires OAuth authentication via your GitHub account.
+Claude Code Router can use a **ChatGPT/Codex subscription** to route Claude Code requests through OpenAI's models. The Codex backend powers OpenAI's ChatGPT product and this integration lets you leverage that subscription with Claude Code.
+
+Authentication uses OpenAI OAuth — a ChatGPT Plus or Pro subscription is required.
 
 ## How It Works
 
-1. `ccr codex-auth` opens a browser for GitHub Copilot sign-in
-2. The OAuth flow returns an access token stored in `~/.claude-code-router/codex-token.json`
-3. The `codex` provider transformer uses this token to authenticate API requests
-4. Requests are sent to `https://api.githubcopilot.com` using the Responses API format
+1. `ccr codex-auth` prints an authorization URL and starts a local callback server on port 1455
+2. You open the URL in your browser and sign into your OpenAI / ChatGPT account
+3. OpenAI redirects to `http://localhost:1455/auth/callback`, where the CCR server exchanges the authorization code for tokens (PKCE flow)
+4. Tokens are saved to `~/.claude-code-router/codex_auth.json`
+5. You return to the terminal and press Enter — the CLI confirms the tokens were saved
+6. The `codex` transformer reads the access token and uses it to authenticate API requests
+7. When the token nears expiry, it's refreshed automatically using the refresh token
 
 ## Prerequisites
 
-- An active [GitHub Copilot](https://github.com/features/copilot) subscription
+- A [ChatGPT Plus or Pro](https://chat.openai.com) subscription
 - Claude Code Router running (Docker Compose or local)
 
 ## Setup
@@ -28,13 +33,7 @@ Run the OAuth flow:
 ccr codex-auth
 ```
 
-This opens a browser. Sign in with your GitHub account and authorize the application. The token is saved automatically.
-
-To verify the token is valid:
-
-```bash
-ccr codex-auth --check
-```
+The CLI prints an authorization URL. Open it in your browser, sign in with your OpenAI / ChatGPT account, and authorize the application. After the browser shows "Authentication Successful", return to your terminal and press Enter. The tokens are saved automatically.
 
 ### 2. Configure Provider
 
@@ -45,8 +44,8 @@ Add the Codex provider to your `~/.claude-code-router/config.json`:
   "Providers": [
     {
       "name": "codex",
-      "baseUrl": "https://api.githubcopilot.com",
-      "apiKey": "$CODEX_ACCESS_TOKEN",
+      "baseUrl": "https://chatgpt.com/backend-api/codex",
+      "apiKey": "oauth_dummy_key",
       "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
       "transformer": {
         "use": ["codex"]

@@ -4,18 +4,23 @@ sidebar_position: 1
 
 # Codex（ChatGPT）集成
 
-Claude Code Router 支持将请求路由到 **Codex 后端 API**（即 GitHub Copilot 的 ChatGPT 模型，GPT-5 系列）。需要通过 GitHub 账户进行 OAuth 认证。
+Claude Code Router 可以使用 **ChatGPT/Codex 订阅** 将 Claude Code 请求通过 OpenAI 的模型路由。Codex 后端是 OpenAI ChatGPT 产品的基础，此集成让您能够将该订阅与 Claude Code 一起使用。
+
+认证使用 OpenAI OAuth — 需要 ChatGPT Plus 或 Pro 订阅。
 
 ## 工作原理
 
-1. `ccr codex-auth` 打开浏览器进行 GitHub Copilot 登录
-2. OAuth 流程获取访问令牌并保存在 `~/.claude-code-router/codex-token.json`
-3. `codex` 转换器使用该令牌进行 API 请求认证
-4. 请求通过 Responses API 格式发送到 `https://api.githubcopilot.com`
+1. `ccr codex-auth` 输出授权 URL 并在端口 1455 启动本地回调服务器
+2. 您在浏览器中打开该 URL，登录您的 OpenAI / ChatGPT 账户
+3. OpenAI 重定向到 `http://localhost:1455/auth/callback`，CCR 服务器在此交换授权码以获取令牌（PKCE 流程）
+4. 令牌保存到 `~/.claude-code-router/codex_auth.json`
+5. 返回终端并按下 Enter — CLI 确认令牌已保存
+6. `codex` 转换器读取访问令牌并用于 API 请求认证
+7. 令牌即将过期时，自动使用刷新令牌续期
 
 ## 前置要求
 
-- 有效的 [GitHub Copilot](https://github.com/features/copilot) 订阅
+- [ChatGPT Plus 或 Pro](https://chat.openai.com) 订阅
 - 正在运行的 Claude Code Router（Docker Compose 或本地安装）
 
 ## 设置步骤
@@ -28,13 +33,7 @@ Claude Code Router 支持将请求路由到 **Codex 后端 API**（即 GitHub Co
 ccr codex-auth
 ```
 
-这将打开浏览器。使用您的 GitHub 账户登录并授权应用程序。令牌会自动保存。
-
-验证令牌是否有效：
-
-```bash
-ccr codex-auth --check
-```
+CLI 会输出一个授权 URL。在浏览器中打开该 URL，使用您的 OpenAI / ChatGPT 账户登录并授权应用程序。浏览器显示"Authentication Successful"后，返回终端并按下 Enter。令牌会自动保存。
 
 ### 2. 配置提供商
 
@@ -45,8 +44,8 @@ ccr codex-auth --check
   "Providers": [
     {
       "name": "codex",
-      "baseUrl": "https://api.githubcopilot.com",
-      "apiKey": "$CODEX_ACCESS_TOKEN",
+      "baseUrl": "https://chatgpt.com/backend-api/codex",
+      "apiKey": "oauth_dummy_key",
       "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
       "transformer": {
         "use": ["codex"]

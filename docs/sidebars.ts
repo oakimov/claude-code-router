@@ -27,9 +27,12 @@ const sidebars: SidebarsConfig = {
           items: [
             'cli/commands/start',
             'cli/commands/model',
+            'cli/commands/model-get',
             'cli/commands/status',
             'cli/commands/statusline',
             'cli/commands/preset',
+            'cli/commands/auth',
+            'cli/commands/chrome-bridge',
             'cli/commands/other',
           ],
         },

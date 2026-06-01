@@ -100,8 +100,8 @@ sidebar_position: 2
 ```json
 {
   "name": "codex",
-  "baseUrl": "https://api.githubcopilot.com",
-  "apiKey": "$CODEX_ACCESS_TOKEN",
+  "baseUrl": "https://chatgpt.com/backend-api/codex",
+  "apiKey": "oauth_dummy_key",
   "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
   "transformer": {
     "use": ["codex"]
@@ -117,10 +117,10 @@ sidebar_position: 2
 {
   "name": "qwen",
   "baseUrl": "https://qwen.aikit.club/v1/chat/completions",
-  "apiKey": "$QWEN_ACCESS_TOKEN",
+  "apiKey": "oauth_dummy_key",
   "models": ["qwen-max", "qwen-plus", "qwen-turbo"],
   "transformer": {
-    "use": ["qwen-auth", "OpenAI"]
+    "use": ["qwen-auth", "reasoning", "OpenAI"]
   }
 }
 ```

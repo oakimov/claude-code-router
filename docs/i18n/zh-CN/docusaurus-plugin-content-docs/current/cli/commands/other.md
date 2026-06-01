@@ -47,38 +47,6 @@ ccr ui
 ccr activate
 ```
 
-## ccr codex-auth
-
-通过 OAuth 认证 Codex（ChatGPT）API。打开浏览器进行 GitHub Copilot 登录并保存访问令牌。
-
-```bash
-ccr codex-auth
-```
-
-## ccr qwen-auth
-
-认证 Qwen Chat API。提示您粘贴从 `chat.qwen.ai` localStorage 复制的 JWT 令牌，并自动管理令牌轮换。
-
-```bash
-ccr qwen-auth
-```
-
-## ccr chrome-bridge
-
-启动 Chrome 内置模型（Gemini Nano）桥接进程。**必须在宿主机上运行**（而不是 Docker 容器内）。通过 CDP 连接 Chrome 的 Prompt API。
-
-```bash
-ccr chrome-bridge
-```
-
-## ccr model get
-
-非交互式发现提供商的可用模型。获取远程模型列表，解析自定义 JSON 结构，并将缺失的模型追加到配置中。
-
-```bash
-ccr model get <provider-name>
-```
-
 ## 全局选项
 
 这些选项可用于任何命令：
