@@ -2,9 +2,34 @@
 sidebar_position: 7
 ---
 
-# ccr codex-auth / ccr qwen-auth
+# ccr claude-auth / ccr codex-auth / ccr qwen-auth
 
 Authentication commands for provider backends that require OAuth or JWT tokens.
+
+## ccr claude-auth
+
+Authenticate with Anthropic's API using your Claude Pro or Max subscription via OAuth with PKCE.
+
+```bash
+ccr claude-auth
+```
+
+### How It Works
+
+1. The CLI generates a PKCE challenge and prints an authorization URL from `claude.ai`
+2. You open the URL in your browser and sign into your Claude account
+3. Claude redirects to `http://localhost:1455/callback`, where the CCR server exchanges the authorization code for tokens
+4. Tokens are saved to `~/.claude-code-router/claude_auth.json`
+5. You return to the terminal and press Enter — the CLI confirms the tokens were saved
+6. The `claude-auth` transformer reads the token and uses it for API requests
+7. When the token nears expiry, it's refreshed automatically using the refresh token
+
+### Prerequisites
+
+- A [Claude Pro or Max](https://claude.ai) subscription
+- The CCR server must be running (it hosts the OAuth callback on port 1455)
+
+---
 
 ## ccr codex-auth
 

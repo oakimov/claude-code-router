@@ -26,6 +26,7 @@ import fastifyMultipart from "@fastify/multipart";
 import AdmZip from "adm-zip";
 import { registerCodexAuthRoutes } from "./routes/codex-auth";
 import { registerQwenAuthRoutes } from "./routes/qwen-auth";
+import { registerClaudeAuthRoutes } from "./routes/claude-auth";
 
 export const createServer = async (config: any): Promise<any> => {
   const server = new Server(config);
@@ -88,6 +89,9 @@ export const createServer = async (config: any): Promise<any> => {
 
   // Register Qwen Chat JWT auth routes
   await registerQwenAuthRoutes(app);
+
+  // Register Claude OAuth callback route (http://127.0.0.1:8080/callback)
+  await registerClaudeAuthRoutes(app);
 
   app.post("/v1/messages/count_tokens", async (req: any, reply: any) => {
     const { messages, tools, system, model } = req.body;

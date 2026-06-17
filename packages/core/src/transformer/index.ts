@@ -24,6 +24,7 @@ import { ForceReasoningTransformer } from "./forcereasoning.transformer";
 import { MistralTransformer } from "./mistral.transformer";
 import { ChromeOnDeviceTransformer } from "./chrome-on-device.transformer";
 import { OpencodeHeadersTransformer } from "./opencode-headers.transformer";
+import { ClaudeAuthTransformer } from "./claude-auth.transformer";
 
 export default {
   AnthropicTransformer,
@@ -52,4 +53,5 @@ export default {
   MistralTransformer,
   ChromeOnDeviceTransformer,
   OpencodeHeadersTransformer,
+  ClaudeAuthTransformer,
 };

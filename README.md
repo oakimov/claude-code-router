@@ -389,6 +389,32 @@ docker exec -it claude-code-router ccr codex-auth
 
 The CLI prints a URL to open in your host browser. After signing in, the browser redirects to `http://localhost:1455/auth/callback`, which Docker forwards to the container. Tokens persist across container restarts via the volume-mounted `./ccr-config` directory.
 
+#### Claude Subscription Authentication
+
+The Claude subscription provider uses OAuth to authenticate with Anthropic's API using your Claude Pro or Max subscription. Before using Claude models this way, you must authenticate:
+
+```shell
+ccr claude-auth
+```
+
+This command:
+1. Opens your browser to the Claude OAuth authorization page
+2. After you sign in, the OAuth callback is handled by the running CCR server on port `1455`
+3. Tokens are stored in `~/.claude-code-router/claude_auth.json`
+4. The `claude-auth` transformer automatically refreshes tokens when they expire
+
+> **Note**: The server must be running for `ccr claude-auth` to work, as it hosts the OAuth callback endpoint on port 1455.
+
+**Running with Docker**:
+
+The OAuth callback uses port `1455`, which is mapped to the CCR server port in `docker-compose.yml` (`"1455:3456"`). When running in Docker:
+
+```shell
+docker exec -it claude-code-router ccr claude-auth
+```
+
+The CLI prints a URL to open in your host browser. After signing in, the browser redirects to `http://localhost:1455/callback`, which Docker forwards to the container. Tokens persist across container restarts via the volume-mounted `./ccr-config` directory.
+
 #### Qwen Provider Authentication
 
 The Qwen provider uses a single JWT to authenticate with the Qwen Chat backend. Before using Qwen models, you must save a token to your local CCR config:
@@ -611,6 +637,7 @@ Transformers allow you to modify the request and response payloads to ensure com
 - `qwen-cli` (experimental): Unofficial support for qwen3-coder-plus model via Qwen CLI [qwen-cli.js](https://gist.github.com/musistudio/f5a67841ced39912fd99e42200d5ca8b).
 - `rovo-cli` (experimental): Unofficial support for gpt-5 via Atlassian Rovo Dev CLI [rovo-cli.js](https://gist.github.com/SaseQ/c2a20a38b11276537ec5332d1f7a5e53).
 - `codex`: Adapts requests/responses for the Codex (ChatGPT) Responses API. Requires OAuth authentication via `ccr codex-auth`.
+- `claude-auth`: Authenticates requests to Anthropic's API using your Claude Pro or Max subscription OAuth token. Converts Unified format to Anthropic format and handles SSE response conversion. Requires OAuth authentication via `ccr claude-auth`.
 - `chrome-on-device`: Routes requests to Chrome's on-device Gemini Nano model via the Prompt API. Uses `responseConstraint` for structured JSON output. Requires a bridge process running on the host (`ccr chrome-bridge`).
 
 **Chrome On-Device Provider Configuration:**
@@ -720,6 +747,29 @@ Three transformers are required in the chain:
 - `OpenAI` — registers the `POST /v1/chat/completions` route. It is a thin endpoint stub with no body conversion, so it must remain last in the chain.
 
 > **Note**: The `api_key` field is a placeholder — actual authentication is handled via the JWT stored in `~/.claude-code-router/qwen_auth.json`. Run `ccr qwen-auth` to authenticate before using the Qwen provider.
+
+**Claude Subscription Provider Configuration:**
+
+The `claude-auth` transformer routes requests to Anthropic's API using your Claude Pro or Max subscription OAuth token instead of a static API key.
+
+```json
+{
+  "name": "claude-subscription",
+  "api_base_url": "https://api.anthropic.com",
+  "api_key": "no-key",
+  "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+  "transformer": {
+    "use": ["claude-auth", "Anthropic"]
+  }
+}
+```
+
+Two transformers are required in the chain:
+
+- `claude-auth` — converts the request from Unified (OpenAI) format to Anthropic format, injects `Authorization: Bearer <token>` (loading/refreshing the token from `~/.claude-code-router/claude_auth.json`), and converts the Anthropic SSE response back to Unified format.
+- `Anthropic` — registers the `POST /v1/messages` route. It has no body conversion in the provider chain, so it acts as a no-op endpoint stub.
+
+> **Note**: The `api_key` field is a placeholder — actual authentication is handled via OAuth tokens stored in `~/.claude-code-router/claude_auth.json`. Run `ccr claude-auth` to authenticate before using this provider.
 
 **DeepSeek via OpenCode (Mandatory Reasoning Replay):**
 

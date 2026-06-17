@@ -108,6 +108,7 @@ const sidebars: SidebarsConfig = {
             slug: 'category/integration-guides',
           },
           items: [
+            'server/guides/claude-auth',
             'server/guides/codex',
             'server/guides/qwen',
             'server/guides/chrome-on-device',
