@@ -2,9 +2,6 @@ name: Deploy Docs to GitHub Pages
 
 on:
   push:
-    branches:
-      - main
-  page_build:
   workflow_dispatch:
 
 permissions:
@@ -13,7 +10,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: docs-deploy
   cancel-in-progress: false
 
 jobs:
