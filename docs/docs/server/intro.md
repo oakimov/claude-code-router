@@ -10,7 +10,8 @@ Claude Code Router Server is a core service component responsible for routing Cl
 - **Authentication & Authorization**: Support API Key authentication
 - **Configuration Management**: Dynamic configuration of providers, routing rules, and transformers
 - **Web UI**: Built-in management interface
-- **Logging System**: Complete request logging
+- **Logging System**: Complete request logging with file rotation
+- **Documentation**: Built-in Docusaurus documentation site with GitHub Pages deployment
 
 ## Architecture Overview
 
