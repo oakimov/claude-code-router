@@ -6,9 +6,16 @@ sidebar_position: 1
 
 Claude Code Router can use a **ChatGPT/Codex subscription** to route Claude Code requests through OpenAI's models. The Codex backend powers OpenAI's ChatGPT product and this integration lets you leverage that subscription with Claude Code.
 
-Authentication uses OpenAI OAuth — a ChatGPT Plus or Pro subscription is required.
+Codex supports **two authentication modes**:
 
-## How It Works
+- **OAuth** via `ccr codex-auth` — recommended when you want CCR to manage OpenAI tokens for you
+- **PAT** (Personal Access Token) via `api_key: "at-..."` — recommended when you already have a Codex-compatible PAT
+
+A ChatGPT Plus or Pro subscription is still required.
+
+## Authentication Modes
+
+### OAuth via `ccr codex-auth`
 
 1. `ccr codex-auth` prints an authorization URL and starts a local callback server on port 1455
 2. You open the URL in your browser and sign into your OpenAI / ChatGPT account
@@ -18,6 +25,17 @@ Authentication uses OpenAI OAuth — a ChatGPT Plus or Pro subscription is requi
 6. The `codex` transformer reads the access token and uses it to authenticate API requests
 7. When the token nears expiry, it's refreshed automatically using the refresh token
 
+### PAT via `api_key`
+
+If the provider `api_key` starts with `at-`, the Codex transformer treats it as a Personal Access Token instead of using OAuth tokens.
+
+1. You place the PAT directly in the provider `api_key` field
+2. On the first request, CCR calls OpenAI's whoami endpoint to resolve the required account headers
+3. The result is cached in memory for reuse while the process is running
+4. Requests are then authenticated directly with `Authorization: Bearer <pat>`
+
+If `api_key` is missing, is just a placeholder, or does not start with `at-`, CCR falls back to the OAuth token flow from `~/.claude-code-router/codex_auth.json`.
+
 ## Prerequisites
 
 - A [ChatGPT Plus or Pro](https://chat.openai.com) subscription
@@ -25,7 +43,9 @@ Authentication uses OpenAI OAuth — a ChatGPT Plus or Pro subscription is requi
 
 ## Setup
 
-### 1. Authenticate
+### Option A: OAuth setup
+
+#### 1. Authenticate
 
 Run the OAuth flow:
 
@@ -35,7 +55,7 @@ ccr codex-auth
 
 The CLI prints an authorization URL. Open it in your browser, sign in with your OpenAI / ChatGPT account, and authorize the application. After the browser shows "Authentication Successful", return to your terminal and press Enter. The tokens are saved automatically.
 
-### 2. Configure Provider
+#### 2. Configure Provider
 
 Add the Codex provider to your `~/.claude-code-router/config.json`:
 
@@ -44,8 +64,8 @@ Add the Codex provider to your `~/.claude-code-router/config.json`:
   "Providers": [
     {
       "name": "codex",
-      "baseUrl": "https://chatgpt.com/backend-api/codex",
-      "apiKey": "oauth_dummy_key",
+      "api_base_url": "https://chatgpt.com/backend-api/codex",
+      "api_key": "oauth_dummy_key",
       "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
       "transformer": {
         "use": ["codex"]
@@ -58,11 +78,88 @@ Add the Codex provider to your `~/.claude-code-router/config.json`:
 }
 ```
 
-### 3. Restart
+### Option B: PAT setup
+
+If you already have a Codex-compatible PAT, you can skip `ccr codex-auth` and place the token directly in `api_key`.
+
+```json
+{
+  "Providers": [
+    {
+      "name": "codex",
+      "api_base_url": "https://chatgpt.com/backend-api/codex",
+      "api_key": "at-your-personal-access-token",
+      "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
+      "transformer": {
+        "use": ["codex"]
+      }
+    }
+  ],
+  "Router": {
+    "default": "codex,gpt-5"
+  }
+}
+```
+
+PAT detection is intentionally simple: if `api_key` starts with `at-`, CCR uses PAT auth. Otherwise it falls back to OAuth.
+
+### Final step: Restart
 
 ```bash
 docker compose restart ccr
 ```
+
+## Authentication Fallback Order
+
+The Codex transformer uses this order:
+
+1. If `api_key` starts with `at-` → use PAT auth
+2. Otherwise → use OAuth tokens from `~/.claude-code-router/codex_auth.json`
+3. If neither is available → authentication fails
+
+Use OAuth when you want browser-based sign-in and automatic token refresh. Use PAT when you want explicit static credentials in the provider config.
+
+## Running with Docker
+
+The OAuth callback uses port `1455`, which is mapped to the CCR server port in `docker-compose.yml` (`"1455:3456"`). When running in Docker and using OAuth:
+
+```bash
+docker exec -it claude-code-router ccr codex-auth
+```
+
+The CLI prints a URL to open in your host browser. After signing in, the browser redirects to `http://localhost:1455/auth/callback`, which Docker forwards to the container. Tokens persist across container restarts via the volume-mounted `./ccr-config` directory.
+
+PAT auth does not require the browser flow, but it still uses the same provider configuration inside the container.
+
+## Provider Configuration Notes
+
+- Use `api_base_url`, not `baseUrl`, in `config.json`
+- Use `api_key`, not `apiKey`, in `config.json`
+- The `api_key` value may be either:
+  - `oauth_dummy_key` (or another placeholder) for OAuth mode
+  - a real PAT starting with `at-` for PAT mode
+- The provider still uses the `codex` transformer in both modes
+- `ccr model get codex` works with either auth mode
+
+## Transformer Behavior
+
+The `codex` transformer:
+
+- converts the unified request into the ChatGPT backend format
+- authenticates using either OAuth tokens or a PAT
+- resolves and sends `ChatGPT-Account-ID` automatically
+- adds `X-OpenAI-Fedramp: true` when required by the authenticated account
+- converts streaming Responses-style events back into Claude Code-compatible output
+
+## When to use `ccr codex-auth`
+
+Run `ccr codex-auth` when:
+
+- you want OAuth instead of a PAT
+- your OAuth tokens expired or were revoked
+- you removed a PAT from config and want to fall back to OAuth again
+
+You do **not** need `ccr codex-auth` when `api_key` already contains a valid PAT starting with `at-`.
 
 ## Features
 
@@ -97,6 +194,21 @@ Use Codex as your default model or route specific scenarios:
 
 ## Troubleshooting
 
-**Token expired or invalid**: Re-run `ccr codex-auth` to refresh the token.
+**OAuth token expired or invalid**: Re-run `ccr codex-auth` to refresh the token.
+
+**PAT rejected**: Ensure `api_key` contains the full PAT and that it starts with `at-`.
 
 **Provider not found**: Ensure the provider name in your config matches `body.model` (e.g., `codex,gpt-5`).
+
+**Wrong config fields**: Use `api_base_url` and `api_key` in `config.json`, not `baseUrl` / `apiKey`.
+
+**Unexpected OAuth fallback**: If PAT mode did not activate, verify that `api_key` begins with `at-` after trimming whitespace.
+
+**No auth available**: Configure either a PAT in `api_key` or OAuth tokens via `ccr codex-auth`.
+
+## Related Docs
+
+- [CLI auth commands](/docs/cli/commands/auth)
+- [Claude subscription guide](/docs/server/guides/claude-auth)
+- [Providers configuration](/docs/server/config/providers)
+- [Transformers configuration](/docs/server/config/transformers)

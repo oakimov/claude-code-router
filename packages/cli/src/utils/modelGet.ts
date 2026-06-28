@@ -104,7 +104,12 @@ function getCodexAccessToken(): string {
 
 function getRequestApiKey(provider: ProviderConfig): string | undefined {
   if (normalizeProviderName(provider.name) === "codex") {
-    return getCodexAccessToken();
+    // Prefer a concrete api_key starting with "at-" (PAT) over OAuth tokens
+    const apiKey = getProviderApiKey(provider)?.trim();
+    if (apiKey && apiKey.startsWith("at-")) {
+      return apiKey; // PAT mode
+    }
+    return getCodexAccessToken(); // OAuth fallback
   }
 
   return getProviderApiKey(provider);
@@ -112,7 +117,8 @@ function getRequestApiKey(provider: ProviderConfig): string | undefined {
 
 function getMissingApiKeyMessage(provider: ProviderConfig): string {
   if (normalizeProviderName(provider.name) === "codex") {
-    return "Codex OAuth access token is unavailable. Run `ccr codex-auth` first.";
+    return "Codex authentication unavailable. No valid api_key (PAT) and no OAuth tokens found. " +
+           "Set api_key to a PAT, or run `ccr codex-auth` for OAuth.";
   }
 
   return `Provider \"${provider.name}\" does not have a usable API key configured.`;
@@ -393,7 +399,12 @@ function printEndpointHelp(provider: ProviderConfig, endpoint: ResolvedEndpoint)
 
 function printAuthSource(provider: ProviderConfig): void {
   if (normalizeProviderName(provider.name) === "codex") {
-    console.log(`${BOLDCYAN}Auth source:${RESET} ${CODEX_AUTH_FILE}`);
+    const apiKey = getProviderApiKey(provider);
+    if (apiKey && apiKey.startsWith("at-")) {
+      console.log(`${BOLDCYAN}Auth source:${RESET} api_key (PAT)`);
+    } else {
+      console.log(`${BOLDCYAN}Auth source:${RESET} ${CODEX_AUTH_FILE}`);
+    }
   }
 }
 

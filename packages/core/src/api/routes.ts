@@ -60,6 +60,7 @@ async function handleTransformerEndpoint(
       req.headers,
       {
         req,
+        provider,
       }
     );
 
@@ -156,7 +157,7 @@ async function handleFallback(
         provider,
         transformer,
         req.headers,
-        { req: newReq }
+        { req: newReq, provider }
       );
 
       // Send request to LLM provider
@@ -225,7 +226,7 @@ async function processRequestTransformers(
 
   // Execute transformer's transformRequestOut method
   if (!skipBodyConversion && typeof transformer.transformRequestOut === "function") {
-    const transformOut = await transformer.transformRequestOut(requestBody);
+    const transformOut = await transformer.transformRequestOut(requestBody, context);
     if (transformOut.body) {
       requestBody = transformOut.body;
       config = transformOut.config || {};

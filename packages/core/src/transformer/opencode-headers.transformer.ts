@@ -31,7 +31,7 @@ export class OpencodeHeadersTransformer implements Transformer {
           "x-opencode-session": sessionId,
           "x-opencode-request": requestId,
           "x-opencode-client": "cli",
-          "user-agent": "opencode/1.15.0",
+          "user-agent": "opencode/1.17.1",
           authorization: undefined,
         },
       },

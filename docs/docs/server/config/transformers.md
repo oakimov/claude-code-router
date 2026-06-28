@@ -174,6 +174,32 @@ Transforms requests to be compatible with Anthropic-style APIs:
 - Supports thinking/reasoning content blocks
 - Manages streaming responses
 
+### codex
+
+Adapts requests and responses for the Codex (ChatGPT) backend API.
+
+**Features:**
+- Converts unified requests into the ChatGPT backend request format
+- Supports both OAuth auth (`ccr codex-auth`) and PAT auth when `api_key` starts with `at-`
+- Resolves required account headers automatically
+- Converts streaming backend events back into Claude Code-compatible output
+
+### claude-auth
+
+Authenticates requests to Anthropic's API using your Claude Pro or Max subscription OAuth token.
+
+**Features:**
+- Rebuilds the Anthropic request body from the unified request
+- Injects `Authorization: Bearer <token>` using tokens from `~/.claude-code-router/claude_auth.json`
+- Refreshes expired OAuth access tokens automatically
+- Converts Anthropic streaming responses back into Claude Code-compatible output
+- Intended to be used together with `Anthropic` in the provider chain
+
+See also:
+- [Codex integration guide](/docs/server/guides/codex)
+- [Claude subscription guide](/docs/server/guides/claude-auth)
+- [CLI auth commands](/docs/cli/commands/auth)
+
 ### deepseek
 
 Specialized transformer for DeepSeek API:

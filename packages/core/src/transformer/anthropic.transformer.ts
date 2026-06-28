@@ -44,7 +44,8 @@ export class AnthropicTransformer implements Transformer {
   }
 
   async transformRequestOut(
-    request: Record<string, any>
+    request: Record<string, any>,
+    context?: any
   ): Promise<UnifiedChatRequest> {
     const messages: UnifiedMessage[] = [];
 
@@ -198,6 +199,19 @@ export class AnthropicTransformer implements Transformer {
         enabled: request.thinking.type === "enabled" || request.thinking.type === "adaptive",
       };
     }
+
+    // Preserve Anthropic-specific parameters through the Unified roundtrip
+    // only when claude-auth is in the outbound transformer chain. Other
+    // backends (codex, gemini, openai, etc.) mutate the Unified body in place
+    // and would leak these fields upstream as unsupported parameters.
+    const usesClaudeAuth = Array.isArray(context?.provider?.transformer?.use)
+      && context.provider.transformer.use.some((t: any) => t?.name === "claude-auth");
+    if (usesClaudeAuth) {
+      if (request.thinking) result.anthropic_thinking = request.thinking;
+      if (request.output_config) result.anthropic_output_config = request.output_config;
+      if (request.metadata) result.anthropic_metadata = request.metadata;
+      if (request.stop_sequences) result.anthropic_stop_sequences = request.stop_sequences;
+    }
     if (request.tool_choice) {
       if (request.tool_choice.type === "tool") {
         result.tool_choice = {
@@ -243,6 +257,154 @@ export class AnthropicTransformer implements Transformer {
         headers: { "Content-Type": "application/json" },
       });
     }
+  }
+
+  /**
+   * Rebuild an Anthropic-format request body from a UnifiedChatRequest.
+   * Used by claude-auth.transformRequestIn() to reconstruct the body before
+   * sending to Anthropic, preserving all original parameters.
+   */
+  static buildAnthropicBody(request: UnifiedChatRequest, logger?: any): Record<string, any> {
+    // System prompt: check request.system first (set by some transformers),
+    // otherwise recover from role:"system" messages (how transformRequestOut stores it).
+    let system: any = undefined;
+    if (request.system) {
+      if (typeof request.system === "string") {
+        system = request.system;
+      } else if (Array.isArray(request.system) && request.system.length) {
+        system = request.system.map((part) => ({
+          type: "text",
+          text: part.text,
+          ...(part as any).cache_control ? { cache_control: (part as any).cache_control } : {},
+        }));
+      }
+    }
+
+    // Messages: convert Unified format back to Anthropic format
+    const messages: any[] = [];
+    for (const msg of request.messages) {
+      if (msg.role === "system") {
+        // Recover system prompt from role:"system" messages when request.system
+        // was not populated by the pipeline (e.g. transformRequestOut stores it here).
+        if (!system) {
+          if (typeof msg.content === "string") {
+            system = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            const textParts = msg.content.filter((c: any) => c.type === "text" && c.text);
+            if (textParts.length === 1 && !textParts[0].cache_control) {
+              system = textParts[0].text;
+            } else if (textParts.length > 0) {
+              system = textParts.map((c: any) => ({
+                type: "text",
+                text: c.text,
+                ...(c.cache_control ? { cache_control: c.cache_control } : {}),
+              }));
+            }
+          }
+        }
+        continue;
+      }
+
+      if (msg.role === "tool") {
+        // Unified tool messages → Anthropic tool_result blocks, merged into preceding user message
+        const toolResult: any = {
+          type: "tool_result",
+          tool_use_id: msg.tool_call_id,
+          content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+        };
+        const last = messages[messages.length - 1];
+        if (last?.role === "user" && Array.isArray(last.content)) {
+          last.content.push(toolResult);
+        } else {
+          messages.push({ role: "user", content: [toolResult] });
+        }
+        continue;
+      }
+
+      if (msg.role === "assistant") {
+        const content: any[] = [];
+        // Anthropic requires thinking blocks to precede tool_use blocks in the content array
+        if (msg.thinking) {
+          content.push({ type: "thinking", thinking: msg.thinking.content, signature: msg.thinking.signature });
+        }
+        if (typeof msg.content === "string" && msg.content) {
+          content.push({ type: "text", text: msg.content });
+        }
+        if (msg.tool_calls?.length) {
+          for (const tc of msg.tool_calls) {
+            let input: Record<string, any> = {};
+            try { input = JSON.parse(tc.function.arguments || "{}"); } catch (e) { (logger?.error ?? console.error)("Failed to parse tool_call arguments for tool '%s': %s", tc.function.name, e); }
+            content.push({ type: "tool_use", id: tc.id, name: tc.function.name, input });
+          }
+        }
+        if (content.length > 0) messages.push({ role: "assistant", content });
+        continue;
+      }
+
+      if (msg.role === "user") {
+        const content: any[] = [];
+        if (typeof msg.content === "string") {
+          content.push({ type: "text", text: msg.content });
+        } else if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (part.type === "text" && part.text) {
+              content.push({ type: "text", text: part.text, ...((part as any).cache_control ? { cache_control: (part as any).cache_control } : {}) });
+            } else if (part.type === "image_url" && (part as any).image_url?.url) {
+              const url = (part as any).image_url.url;
+              if (url.startsWith("data:")) {
+                const [meta, data] = url.split(",");
+                const mediaType = meta.split(":")[1]?.split(";")[0] ?? "image/jpeg";
+                content.push({ type: "image", source: { type: "base64", media_type: mediaType, data } });
+              } else {
+                content.push({ type: "image", source: { type: "url", url } });
+              }
+            }
+          }
+        }
+        if (content.length > 0) messages.push({ role: "user", content });
+        continue;
+      }
+    }
+
+    // Tools: convert Unified format back to Anthropic format
+    let tools: any[] | undefined;
+    if (request.tools?.length) {
+      tools = request.tools.map((tool) => ({
+        name: tool.function.name,
+        description: tool.function.description || "",
+        input_schema: tool.function.parameters,
+      }));
+    }
+
+    // Tool choice: convert Unified format back to Anthropic format
+    let tool_choice: any | undefined;
+    if (request.tool_choice) {
+      const tc = request.tool_choice;
+      if (tc === "auto") tool_choice = { type: "auto" };
+      else if (tc === "required") tool_choice = { type: "any" };
+      else if (typeof tc === "string") tool_choice = { type: "tool", name: tc };
+      else if (tc.type === "function") tool_choice = { type: "tool", name: tc.function?.name };
+    }
+
+    const body: Record<string, any> = {
+      model: request.model,
+      max_tokens: request.max_tokens ?? 8192,
+      messages,
+      stream: request.stream ?? true,
+    };
+
+    if (system !== undefined) body.system = system;
+    if (request.temperature !== undefined) body.temperature = request.temperature;
+    if (request.tool_choice !== "none" && tools?.length) body.tools = tools;
+    if (request.tool_choice !== "none" && tool_choice) body.tool_choice = tool_choice;
+
+    // Pass through Anthropic-specific fields preserved during the roundtrip
+    if (request.anthropic_thinking) body.thinking = request.anthropic_thinking;
+    if (request.anthropic_output_config) body.output_config = request.anthropic_output_config;
+    if (request.anthropic_metadata) body.metadata = request.anthropic_metadata;
+    if (request.anthropic_stop_sequences) body.stop_sequences = request.anthropic_stop_sequences;
+
+    return body;
   }
 
   private convertAnthropicToolsToUnified(tools: any[]): UnifiedTool[] {

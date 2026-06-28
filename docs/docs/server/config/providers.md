@@ -6,17 +6,45 @@ sidebar_position: 2
 
 Detailed guide for configuring LLM providers.
 
+## Provider Schema
+
+In this fork, provider entries in `config.json` use the following fields:
+
+```json
+{
+  "name": "provider-name",
+  "api_base_url": "https://example.com/v1/chat/completions",
+  "api_key": "$PROVIDER_API_KEY",
+  "models": ["model-1", "model-2"],
+  "transformer": {
+    "use": ["OpenAI"]
+  }
+}
+```
+
+## Provider Configuration Options
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Unique provider identifier |
+| `api_base_url` | string | Yes | Provider API base URL or endpoint |
+| `api_key` | string | Yes | API key, placeholder, or subscription auth token marker depending on provider |
+| `models` | string[] | No | List of available models |
+| `transformer.use` | string[] | No | Transformers applied to the provider |
+
 ## Supported Providers
 
 ### DeepSeek
 
 ```json
 {
-  "NAME": "deepseek",
-  "HOST": "https://api.deepseek.com",
-  "APIKEY": "your-api-key",
-  "MODELS": ["deepseek-chat", "deepseek-coder"],
-  "transformers": ["anthropic"]
+  "name": "deepseek",
+  "api_base_url": "https://api.deepseek.com/chat/completions",
+  "api_key": "$DEEPSEEK_API_KEY",
+  "models": ["deepseek-chat", "deepseek-reasoner"],
+  "transformer": {
+    "use": ["deepseek"]
+  }
 }
 ```
 
@@ -24,11 +52,13 @@ Detailed guide for configuring LLM providers.
 
 ```json
 {
-  "NAME": "groq",
-  "HOST": "https://api.groq.com/openai/v1",
-  "APIKEY": "your-api-key",
-  "MODELS": ["llama-3.3-70b-versatile"],
-  "transformers": ["anthropic"]
+  "name": "groq",
+  "api_base_url": "https://api.groq.com/openai/v1/chat/completions",
+  "api_key": "$GROQ_API_KEY",
+  "models": ["llama-3.3-70b-versatile"],
+  "transformer": {
+    "use": ["OpenAI"]
+  }
 }
 ```
 
@@ -36,11 +66,13 @@ Detailed guide for configuring LLM providers.
 
 ```json
 {
-  "NAME": "gemini",
-  "HOST": "https://generativelanguage.googleapis.com/v1beta",
-  "APIKEY": "your-api-key",
-  "MODELS": ["gemini-2.0-flash", "gemini-2.5-pro"],
-  "transformers": ["gemini"]
+  "name": "gemini",
+  "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models/",
+  "api_key": "$GEMINI_API_KEY",
+  "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
+  "transformer": {
+    "use": ["gemini"]
+  }
 }
 ```
 
@@ -48,11 +80,13 @@ Detailed guide for configuring LLM providers.
 
 ```json
 {
-  "NAME": "openrouter",
-  "HOST": "https://openrouter.ai/api/v1",
-  "APIKEY": "your-api-key",
-  "MODELS": ["anthropic/claude-sonnet-4", "google/gemini-2.5-pro-preview"],
-  "transformers": ["openrouter"]
+  "name": "openrouter",
+  "api_base_url": "https://openrouter.ai/api/v1/chat/completions",
+  "api_key": "$OPENROUTER_API_KEY",
+  "models": ["anthropic/claude-sonnet-4", "google/gemini-2.5-pro-preview"],
+  "transformer": {
+    "use": ["openrouter"]
+  }
 }
 ```
 
@@ -60,38 +94,65 @@ Detailed guide for configuring LLM providers.
 
 ```json
 {
-  "NAME": "mistral",
-  "HOST": "https://api.mistral.ai/v1",
-  "APIKEY": "your-api-key",
-  "MODELS": ["mistral-large-latest", "mistral-small-latest"],
-  "transformers": ["mistral"]
-}
-```
-
-### Cerebras
-
-```json
-{
-  "NAME": "cerebras",
-  "HOST": "https://api.cerebras.ai/v1",
-  "APIKEY": "your-api-key",
-  "MODELS": ["cerebras-gpt"],
-  "transformers": ["cerebras"]
+  "name": "mistral",
+  "api_base_url": "https://api.mistral.ai/v1/chat/completions",
+  "api_key": "$MISTRAL_API_KEY",
+  "models": ["mistral-large-latest", "mistral-small-latest"],
+  "transformer": {
+    "use": ["mistral"]
+  }
 }
 ```
 
 ### Codex (ChatGPT)
 
-Requires OAuth authentication via `ccr codex-auth`.
+Codex supports **two auth modes**:
+
+- **OAuth** via `ccr codex-auth`
+- **PAT** via `api_key` starting with `at-`
+
+#### Codex with OAuth
 
 ```json
 {
-  "NAME": "codex",
-  "baseUrl": "https://chatgpt.com/backend-api/codex",
-  "apiKey": "oauth_dummy_key",
+  "name": "codex",
+  "api_base_url": "https://chatgpt.com/backend-api/codex",
+  "api_key": "oauth_dummy_key",
   "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
   "transformer": {
     "use": ["codex"]
+  }
+}
+```
+
+#### Codex with PAT
+
+```json
+{
+  "name": "codex",
+  "api_base_url": "https://chatgpt.com/backend-api/codex",
+  "api_key": "at-your-personal-access-token",
+  "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
+  "transformer": {
+    "use": ["codex"]
+  }
+}
+```
+
+If `api_key` starts with `at-`, CCR uses PAT auth. Otherwise it falls back to OAuth tokens from `~/.claude-code-router/codex_auth.json`.
+
+### Claude Subscription
+
+Claude subscription auth uses OAuth via `ccr claude-auth` and requires the `claude-auth` + `Anthropic` transformer chain.
+
+```json
+{
+  "name": "claude-subscription",
+  "api_base_url": "https://api.anthropic.com",
+  "api_key": "no-key",
+  "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+  "transformer": {
+    "use": ["claude-auth", "Anthropic"]
   }
 }
 ```
@@ -102,9 +163,9 @@ Requires JWT authentication via `ccr qwen-auth`.
 
 ```json
 {
-  "NAME": "qwen",
-  "baseUrl": "https://qwen.aikit.club/v1/chat/completions",
-  "apiKey": "oauth_dummy_key",
+  "name": "qwen",
+  "api_base_url": "https://qwen.aikit.club/v1/chat/completions",
+  "api_key": "qwen-placeholder",
   "models": ["qwen-max", "qwen-plus", "qwen-turbo"],
   "transformer": {
     "use": ["qwen-auth", "reasoning", "OpenAI"]
@@ -118,25 +179,15 @@ Requires the bridge process via `ccr chrome-bridge`.
 
 ```json
 {
-  "NAME": "chrome",
-  "baseUrl": "http://127.0.0.1:9229",
-  "apiKey": "dummy",
+  "name": "chrome-nano",
+  "api_base_url": "http://127.0.0.1:3457",
+  "api_key": "placeholder",
   "models": ["gemini-nano"],
   "transformer": {
-    "use": ["chrome-on-device"]
+    "use": ["chrome-on-device", "tooluse"]
   }
 }
 ```
-
-## Provider Configuration Options
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `NAME` | string | Yes | Unique provider identifier |
-| `HOST` | string | Yes | API base URL |
-| `APIKEY` | string | Yes | API authentication key |
-| `MODELS` | string[] | No | List of available models |
-| `transformers` | string[] | No | List of transformers to apply |
 
 ## Model Selection
 
@@ -151,10 +202,22 @@ For example:
 ```
 deepseek,deepseek-chat
 codex,gpt-5
-chrome,gemini-nano
+claude-subscription,claude-sonnet-4-6
+chrome-nano,gemini-nano
 ```
 
-## Next Steps
+## Auth Notes by Provider
 
-- [Routing Configuration](/docs/config/routing) — Configure how requests are routed
-- [Transformers](/docs/config/transformers) — Apply transformations to requests
+- **Standard API providers** usually use a normal API key in `api_key`
+- **Codex** can use either OAuth (`ccr codex-auth`) or a PAT in `api_key`
+- **Claude subscription** uses OAuth tokens managed by `ccr claude-auth`; `api_key` is just a placeholder marker
+- **Qwen** uses a JWT managed by `ccr qwen-auth`
+- **Chrome on-device** uses a local bridge, so `api_key` is only a placeholder
+
+## Related Docs
+
+- [Codex integration guide](/docs/server/guides/codex)
+- [Claude subscription guide](/docs/server/guides/claude-auth)
+- [CLI auth commands](/docs/cli/commands/auth)
+- [Transformers configuration](/docs/server/config/transformers)
+- [Routing configuration](/docs/server/config/routing)

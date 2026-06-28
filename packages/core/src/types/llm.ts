@@ -115,6 +115,14 @@ export interface UnifiedChatRequest {
     budget_tokens?: number;
   };
   parallel_tool_calls?: boolean;
+
+  // Pass-through fields for Anthropic-specific parameters.
+  // These survive the Anthropic → Unified → Anthropic roundtrip so that
+  // claude-auth can rebuild the original request body accurately.
+  anthropic_thinking?: Record<string, any>;
+  anthropic_output_config?: Record<string, any>;
+  anthropic_metadata?: Record<string, any>;
+  anthropic_stop_sequences?: string[];
 }
 
 // Unified response interface

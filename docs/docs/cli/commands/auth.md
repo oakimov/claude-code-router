@@ -35,6 +35,12 @@ ccr claude-auth
 
 Authenticate with the Codex (ChatGPT) backend API via OpenAI OAuth with PKCE.
 
+This command is only needed for the **OAuth** Codex flow. If your Codex provider uses a PAT directly in `api_key` (a value starting with `at-`), you do not need to run `ccr codex-auth`.
+
+See also: [Codex integration guide](/docs/server/guides/codex).
+
+### OAuth Flow
+
 ```bash
 ccr codex-auth
 ```
@@ -52,6 +58,27 @@ ccr codex-auth
 ### Prerequisites
 
 - A [ChatGPT Plus or Pro](https://chat.openai.com) subscription
+- The CCR server must be running for the OAuth callback flow on port 1455
+
+### PAT Alternative
+
+As an alternative to OAuth, the Codex provider can authenticate with a Personal Access Token by setting `api_key` to a value starting with `at-` in `config.json`. In that case, skip `ccr codex-auth` entirely.
+
+```json
+{
+  "name": "codex",
+  "api_base_url": "https://chatgpt.com/backend-api/codex",
+  "api_key": "at-your-personal-access-token",
+  "models": ["gpt-5"],
+  "transformer": {
+    "use": ["codex"]
+  }
+}
+```
+
+CCR checks `api_key` first for PAT mode and otherwise falls back to OAuth tokens from `~/.claude-code-router/codex_auth.json`.
+
+---
 
 ## ccr qwen-auth
 

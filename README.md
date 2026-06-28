@@ -22,7 +22,8 @@ This fork is based on [claude-code-router](https://github.com/musistudio/claude-
 - **Build & Deployment**: Integrated the UI package into the Docker build process and added a Docker Compose configuration.
 - **Code Quality**: Localized codebase (English comments), improved error handling, and addressed Copilot review feedback.
 - **Gemini Stability & Tool Use Fixes**: Corrected `thoughtSignature` placement in Gemini request bodies (must be a standalone `thought: true` part, not attached to text/function-call parts); filtered synthetic `ccr_` placeholder signatures from outgoing Gemini requests to prevent Gemini 500 errors; fixed `tool_result` content-array serialization in the Anthropic transformer so models receive plain text instead of JSON-wrapped arrays (resolves "Error editing file" in Claude Code); fixed Fastify `onSend` hook to prevent `invalid type 'object'` unhandled rejections on error responses.
-- **Codex (ChatGPT) Integration**: Added Codex transformer for the ChatGPT backend API (Responses API), supporting OAuth-based authentication (`ccr codex-auth`), SSE streaming, reasoning/thinking content, tool calls with web search, and image handling.
+- **Codex (ChatGPT) Integration**: Added Codex transformer for the ChatGPT backend API (Responses API), supporting both OAuth-based authentication (`ccr codex-auth`) and PAT auth via `api_key: "at-..."`, plus SSE streaming, reasoning/thinking content, tool calls with web search, and image handling.
+- **Claude Subscription Integration**: Added `claude-auth` support for routing through a Claude Pro or Max subscription via OAuth (`ccr claude-auth`), using the `claude-auth` + `Anthropic` transformer chain.
 - **Qwen Chat Integration**: Added `qwen-auth` transformer for the Qwen Chat backend (`qwen.aikit.club/v1/chat/completions`), supporting JWT-based authentication (`ccr qwen-auth`) where the user pastes a token copied from `chat.qwen.ai` localStorage, automatic token rotation, and stripping of the trailing `<details>...</details>` metadata block Qwen injects into responses.
 - **DeepSeek Reasoning Replay**: Implemented mandatory reasoning replay for DeepSeek models (e.g., via OpenCode/ZenGo). DeepSeek requires previous assistant reasoning content to be included in subsequent requests — the `reasoning` transformer automatically replays reasoning output from prior turns.
 - **Model Discovery**: Enabled non-interactive model discovery for arbitrary API providers. Using `ccr model get <provider>`, the tool automatically fetches remote models, parses custom JSON structures using configurable paths, and appends missing models to the local configuration while preserving existing settings.
@@ -365,7 +366,14 @@ If the provider returns additional models, `ccr model get <provider>` can append
 
 #### Codex Provider Authentication
 
-The Codex provider uses OAuth to authenticate with the ChatGPT backend. Before using Codex models, you must authenticate with your OpenAI account:
+The Codex provider supports two authentication modes:
+
+- **OAuth** via `ccr codex-auth`
+- **PAT** via `api_key: "at-..."`
+
+##### OAuth mode
+
+Before using Codex models with OAuth, authenticate with your OpenAI account:
 
 ```shell
 ccr codex-auth
@@ -388,6 +396,26 @@ docker exec -it claude-code-router ccr codex-auth
 ```
 
 The CLI prints a URL to open in your host browser. After signing in, the browser redirects to `http://localhost:1455/auth/callback`, which Docker forwards to the container. Tokens persist across container restarts via the volume-mounted `./ccr-config` directory.
+
+##### PAT mode
+
+If your provider `api_key` starts with `at-`, CCR treats it as a Codex Personal Access Token and uses it directly. In PAT mode, you do **not** run `ccr codex-auth`.
+
+```json
+{
+  "name": "codex",
+  "api_base_url": "https://chatgpt.com/backend-api/codex",
+  "api_key": "at-your-personal-access-token",
+  "models": ["gpt-5.4"],
+  "transformer": {
+    "use": ["codex"]
+  }
+}
+```
+
+On the first request, CCR resolves the required account headers from OpenAI and caches the result in memory. If `api_key` is not a PAT, CCR falls back to OAuth tokens from `~/.claude-code-router/codex_auth.json`.
+
+> **See also**: Full Codex setup and troubleshooting are documented in `docs/docs/server/guides/codex.md`.
 
 #### Claude Subscription Authentication
 
@@ -414,6 +442,24 @@ docker exec -it claude-code-router ccr claude-auth
 ```
 
 The CLI prints a URL to open in your host browser. After signing in, the browser redirects to `http://localhost:1455/callback`, which Docker forwards to the container. Tokens persist across container restarts via the volume-mounted `./ccr-config` directory.
+
+A Claude subscription provider requires the `claude-auth` + `Anthropic` transformer chain:
+
+```json
+{
+  "name": "claude-subscription",
+  "api_base_url": "https://api.anthropic.com",
+  "api_key": "no-key",
+  "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+  "transformer": {
+    "use": ["claude-auth", "Anthropic"]
+  }
+}
+```
+
+> **See also**: Full Claude subscription setup is documented in `docs/docs/server/guides/claude-auth.md`.
+
+**Custom Transformers:**
 
 #### Qwen Provider Authentication
 
@@ -636,8 +682,8 @@ Transformers allow you to modify the request and response payloads to ensure com
 - `chutes-glm` Unofficial support for GLM 4.5 model via Chutes [chutes-glm-transformer.js](https://gist.github.com/vitobotta/2be3f33722e05e8d4f9d2b0138b8c863).
 - `qwen-cli` (experimental): Unofficial support for qwen3-coder-plus model via Qwen CLI [qwen-cli.js](https://gist.github.com/musistudio/f5a67841ced39912fd99e42200d5ca8b).
 - `rovo-cli` (experimental): Unofficial support for gpt-5 via Atlassian Rovo Dev CLI [rovo-cli.js](https://gist.github.com/SaseQ/c2a20a38b11276537ec5332d1f7a5e53).
-- `codex`: Adapts requests/responses for the Codex (ChatGPT) Responses API. Requires OAuth authentication via `ccr codex-auth`.
-- `claude-auth`: Authenticates requests to Anthropic's API using your Claude Pro or Max subscription OAuth token. Converts Unified format to Anthropic format and handles SSE response conversion. Requires OAuth authentication via `ccr claude-auth`.
+- `codex`: Adapts requests/responses for the Codex (ChatGPT) backend API. Supports OAuth via `ccr codex-auth` or PAT auth when `api_key` starts with `at-`.
+- `claude-auth`: Authenticates requests to Anthropic's API using your Claude Pro or Max subscription OAuth token. Converts Unified format to Anthropic format and handles SSE response conversion. Use it together with `Anthropic` in the provider chain, and authenticate via `ccr claude-auth`.
 - `chrome-on-device`: Routes requests to Chrome's on-device Gemini Nano model via the Prompt API. Uses `responseConstraint` for structured JSON output. Requires a bridge process running on the host (`ccr chrome-bridge`).
 
 **Chrome On-Device Provider Configuration:**
@@ -708,7 +754,7 @@ The bridge automatically launches Chrome with the required flags if it's not alr
 
 **Codex Provider Configuration:**
 
-The Codex transformer connects to the ChatGPT backend API, providing access to GPT-5.x models. It uses OAuth authentication instead of a static API key.
+The Codex transformer connects to the ChatGPT backend API, providing access to GPT-5.x models. It supports either OAuth authentication or a PAT in `api_key`.
 
 ```json
 {
@@ -722,7 +768,23 @@ The Codex transformer connects to the ChatGPT backend API, providing access to G
 }
 ```
 
-> **Note**: The `api_key` field is a placeholder — actual authentication is handled via OAuth tokens stored in `~/.claude-code-router/codex_auth.json`. Run `ccr codex-auth` to authenticate before using the Codex provider.
+> **OAuth mode**: Keep `api_key` as a placeholder and run `ccr codex-auth`. OAuth tokens are stored in `~/.claude-code-router/codex_auth.json`.
+
+```json
+{
+  "name": "codex",
+  "api_base_url": "https://chatgpt.com/backend-api/codex",
+  "api_key": "at-your-personal-access-token",
+  "models": ["gpt-5.4"],
+  "transformer": {
+    "use": ["codex"]
+  }
+}
+```
+
+> **PAT mode**: If `api_key` starts with `at-`, CCR uses it directly and skips `ccr codex-auth`.
+
+> **Note**: If `api_key` is not a PAT, CCR falls back to OAuth tokens from `~/.claude-code-router/codex_auth.json`.
 
 **Qwen Provider Configuration:**
 

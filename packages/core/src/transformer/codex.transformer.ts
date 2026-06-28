@@ -5,6 +5,15 @@ import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } fr
 import { stripCacheControl } from "../utils/cacheControl";
 import { getValidAccessToken } from "../utils/codex-auth";
 
+// Module-level cache for PAT whoami results — keyed by PAT value.
+// Auto-invalidates when the user changes api_key in the provider config.
+const whoamiCache = new Map<string, { accountId: string; isFedramp: boolean }>();
+
+interface WhoamiResponse {
+  chatgpt_account_id?: string;
+  chatgpt_account_is_fedramp?: boolean;
+}
+
 interface ResponsesAPIOutputItem {
   type: string;
   id?: string;
@@ -93,8 +102,26 @@ export class CodexTransformer implements Transformer {
     if (context?.req?.body) {
       context.req.body.stream = true;
     }
-    const tokenData = await getValidAccessToken();
-    const token = tokenData.access_token;
+    // Determine auth method: api_key starting with "at-" → PAT, anything else → OAuth
+    const apiKey = typeof provider?.apiKey === "string"
+      ? provider.apiKey.trim()
+      : provider?.apiKey;
+    const isPat = typeof apiKey === "string" && apiKey.startsWith("at-");
+
+    let token: string;
+    let accountId: string | undefined;
+    let isFedramp = false;
+
+    if (isPat) {
+      token = apiKey;
+      const patInfo = await this.resolvePatAuth(apiKey);
+      accountId = patInfo.accountId;
+      isFedramp = patInfo.isFedramp;
+    } else {
+      const tokenData = await getValidAccessToken();
+      token = tokenData.access_token;
+      accountId = tokenData.account_id;
+    }
 
     delete request.temperature;
     delete request.max_tokens;
@@ -290,8 +317,11 @@ export class CodexTransformer implements Transformer {
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
     };
 
-    if (tokenData.account_id) {
-      headers["ChatGPT-Account-ID"] = tokenData.account_id;
+    if (accountId) {
+      headers["ChatGPT-Account-ID"] = accountId;
+    }
+    if (isFedramp) {
+      headers["X-OpenAI-Fedramp"] = "true";
     }
 
     const baseUrl = provider?.baseUrl || "https://chatgpt.com/backend-api/codex";
@@ -309,14 +339,36 @@ export class CodexTransformer implements Transformer {
     _request: any,
     provider: any
   ): Promise<any> {
-    const tokenData = await getValidAccessToken();
+    const apiKey = typeof provider?.apiKey === "string"
+      ? provider.apiKey.trim()
+      : provider?.apiKey;
+    const isPat = typeof apiKey === "string" && apiKey.startsWith("at-");
+
+    let token: string;
+    let accountId: string | undefined;
+    let isFedramp = false;
+
+    if (isPat) {
+      token = apiKey;
+      const patInfo = await this.resolvePatAuth(apiKey);
+      accountId = patInfo.accountId;
+      isFedramp = patInfo.isFedramp;
+    } else {
+      const tokenData = await getValidAccessToken();
+      token = tokenData.access_token;
+      accountId = tokenData.account_id;
+    }
+
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${tokenData.access_token}`,
+      Authorization: `Bearer ${token}`,
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
     };
 
-    if (tokenData.account_id) {
-      headers["ChatGPT-Account-ID"] = tokenData.account_id;
+    if (accountId) {
+      headers["ChatGPT-Account-ID"] = accountId;
+    }
+    if (isFedramp) {
+      headers["X-OpenAI-Fedramp"] = "true";
     }
 
     const baseUrl = provider?.baseUrl || "https://chatgpt.com/backend-api/codex";
@@ -327,6 +379,41 @@ export class CodexTransformer implements Transformer {
         headers,
       },
     };
+  }
+
+  private async resolvePatAuth(pat: string): Promise<{ accountId: string; isFedramp: boolean }> {
+    const cached = whoamiCache.get(pat);
+    if (cached) return cached;
+
+    const response = await fetch(
+      "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
+      {
+        headers: { Authorization: `Bearer ${pat}` },
+      }
+    );
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(
+        `Codex PAT whoami failed (${response.status}): ${text}. ` +
+        "Verify the api_key contains a valid PAT, or remove it to use OAuth authentication."
+      );
+    }
+
+    const data: WhoamiResponse = await response.json();
+    if (!data.chatgpt_account_id) {
+      throw new Error(
+        "Codex PAT whoami response missing chatgpt_account_id. " +
+        "The PAT may not have Codex access. Run `ccr codex-auth` for OAuth as a fallback."
+      );
+    }
+
+    const result = {
+      accountId: data.chatgpt_account_id,
+      isFedramp: data.chatgpt_account_is_fedramp === true,
+    };
+    whoamiCache.set(pat, result);
+    return result;
   }
 
   async transformResponseOut(response: Response): Promise<Response> {
