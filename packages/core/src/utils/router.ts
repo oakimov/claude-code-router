@@ -334,6 +334,22 @@ export const searchProjectBySession = async (
   }
 
   try {
+    const projectsDirStat = await stat(CLAUDE_PROJECTS_DIR);
+    if (!projectsDirStat.isDirectory()) {
+      sessionProjectCache.set(sessionId, '');
+      return null;
+    }
+  } catch (error: any) {
+    if (error?.code === "ENOENT") {
+      sessionProjectCache.set(sessionId, '');
+      return null;
+    }
+    (logger?.error ?? console.error)("Error checking Claude projects directory:", error);
+    sessionProjectCache.set(sessionId, '');
+    return null;
+  }
+
+  try {
     const dir = await opendir(CLAUDE_PROJECTS_DIR);
     const folderNames: string[] = [];
 
