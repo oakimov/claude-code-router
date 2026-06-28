@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { UnifiedChatRequest, MessageContent } from "@/types/llm";
 import { Transformer } from "@/types/transformer";
 import { validateOpenAIToolCalls, injectPromptCaching } from "../utils/openai.util";
@@ -89,6 +90,106 @@ interface ResponsesStreamEvent {
   part?: any;
 }
 
+interface CodexTurnMetadata {
+  session_id: string;
+  thread_id: string;
+  turn_id: string;
+  window_id: string;
+  request_kind: "turn";
+  turn_started_at_unix_ms: number;
+}
+
+const CODEX_TURN_METADATA_HEADER = "x-codex-turn-metadata";
+const CODEX_WINDOW_ID_HEADER = "x-codex-window-id";
+const CODEX_PARENT_THREAD_ID_HEADER = "x-codex-parent-thread-id";
+const CODEX_SESSION_ID_KEY = "session_id";
+const CODEX_THREAD_ID_KEY = "thread_id";
+const CODEX_TURN_ID_KEY = "turn_id";
+const CODEX_WINDOW_ID_KEY = "window_id";
+
+function buildCodexTurnMetadata(sessionId: string): CodexTurnMetadata {
+  return {
+    session_id: sessionId,
+    thread_id: sessionId,
+    turn_id: randomUUID(),
+    window_id: `${sessionId}:0`,
+    request_kind: "turn",
+    turn_started_at_unix_ms: Date.now(),
+  };
+}
+
+function buildCodexClientMetadata(turnMetadata: CodexTurnMetadata): Record<string, string> {
+  return {
+    [CODEX_SESSION_ID_KEY]: turnMetadata.session_id,
+    [CODEX_THREAD_ID_KEY]: turnMetadata.thread_id,
+    [CODEX_TURN_ID_KEY]: turnMetadata.turn_id,
+    [CODEX_WINDOW_ID_KEY]: turnMetadata.window_id,
+    [CODEX_TURN_METADATA_HEADER]: JSON.stringify(turnMetadata),
+  };
+}
+
+function mergeClientMetadata(
+  existing: unknown,
+  additions: Record<string, string>
+): Record<string, string> {
+  if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+    return { ...additions };
+  }
+
+  return {
+    ...(existing as Record<string, string>),
+    ...additions,
+  };
+}
+
+function buildCodexCompatibilityHeaders(turnMetadata: CodexTurnMetadata): Record<string, string> {
+  return {
+    [CODEX_WINDOW_ID_HEADER]: turnMetadata.window_id,
+    [CODEX_TURN_METADATA_HEADER]: JSON.stringify(turnMetadata),
+    [CODEX_PARENT_THREAD_ID_HEADER]: turnMetadata.thread_id,
+  };
+}
+
+function inferSessionIdFromMetadata(request: UnifiedChatRequest): string | undefined {
+  const userId = (request as any)?.metadata?.user_id;
+  if (typeof userId !== "string" || !userId) {
+    return undefined;
+  }
+
+  const parts = userId.split("_session_");
+  if (parts.length > 1 && parts[1]) {
+    return parts[1];
+  }
+
+  try {
+    const parsed = JSON.parse(userId);
+    if (parsed && typeof parsed.session_id === "string" && parsed.session_id) {
+      return parsed.session_id;
+    }
+  } catch {
+    // Ignore non-JSON user_id formats.
+  }
+
+  return undefined;
+}
+
+function getCodexSessionId(context: any, request: UnifiedChatRequest): string | undefined {
+  return context?.req?.sessionId || inferSessionIdFromMetadata(request);
+}
+
+function applyCodexTurnMetadata(request: UnifiedChatRequest, headers: Record<string, string>, sessionId?: string): void {
+  if (!sessionId) {
+    return;
+  }
+
+  const turnMetadata = buildCodexTurnMetadata(sessionId);
+  (request as any).client_metadata = mergeClientMetadata(
+    (request as any).client_metadata,
+    buildCodexClientMetadata(turnMetadata)
+  );
+  Object.assign(headers, buildCodexCompatibilityHeaders(turnMetadata));
+}
+
 export class CodexTransformer implements Transformer {
   name = "codex";
   logger?: any;
@@ -131,12 +232,17 @@ export class CodexTransformer implements Transformer {
     const effort = (request as any).reasoning?.effort || provider?.reasoningEffort;
     if (effort) {
       const reasoning: Record<string, any> = { effort };
-      // Summary is opt-in: model default is "none", and "detailed" wastes output tokens
-      // on a stream Claude Code does not surface.
       const VALID_SUMMARIES = ["auto", "detailed", "none"];
       const summary = provider?.reasoningSummary;
-      if (summary && VALID_SUMMARIES.includes(summary) && summary !== "none") {
-        reasoning.summary = summary;
+      if (summary && VALID_SUMMARIES.includes(summary)) {
+        if (summary !== "none") {
+          reasoning.summary = summary;
+        }
+      } else {
+        // Default to detailed reasoning summaries when effort is enabled so
+        // Claude Code reliably receives visible thinking unless the provider
+        // explicitly disables them with reasoningSummary: "none".
+        reasoning.summary = "detailed";
       }
       (request as any).reasoning = reasoning;
     } else {
@@ -323,6 +429,8 @@ export class CodexTransformer implements Transformer {
     if (isFedramp) {
       headers["X-OpenAI-Fedramp"] = "true";
     }
+
+    applyCodexTurnMetadata(request, headers, getCodexSessionId(context, request));
 
     const baseUrl = provider?.baseUrl || "https://chatgpt.com/backend-api/codex";
 

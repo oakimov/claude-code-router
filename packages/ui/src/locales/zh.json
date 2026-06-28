@@ -102,10 +102,26 @@
     "import_from_template": "从模板导入",
     "no_templates_found": "未找到模板",
     "select_template": "选择一个模板...",
+    "current_provider_summary": "当前供应商摘要",
+    "no_providers_configured": "未配置供应商",
+    "invalid_provider": "无效的供应商",
+    "provider_data_missing": "供应商数据缺失",
+    "no_api_url": "无 API 地址",
+    "unnamed_provider": "未命名供应商",
+    "unnamed_model": "未命名模型",
+    "more_models": "还有 +{{count}} 个",
     "api_key_required": "API 密钥为必填项",
     "name_required": "名称为必填项",
     "name_duplicate": "已存在同名供应商",
-    "search": "搜索供应商..."
+    "search": "搜索供应商...",
+    "auth_hint": {
+      "claude_oauth": "Claude 订阅 OAuth",
+      "qwen_jwt": "Qwen JWT 认证",
+      "codex_pat": "Codex PAT 认证",
+      "codex_oauth": "Codex OAuth 认证",
+      "missing_api_key": "缺少 API 密钥",
+      "env_auth": "环境变量认证"
+    }
 
   },
   "router": {

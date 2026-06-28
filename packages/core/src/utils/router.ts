@@ -215,15 +215,31 @@ export interface RouterFallbackConfig {
   webSearch?: string[];
 }
 
+const parseSessionId = (userId: unknown): string | undefined => {
+  if (typeof userId !== "string" || !userId) {
+    return undefined;
+  }
+
+  const parts = userId.split("_session_");
+  if (parts.length > 1 && parts[1]) {
+    return parts[1];
+  }
+
+  try {
+    const parsed = JSON.parse(userId);
+    if (parsed && typeof parsed.session_id === "string" && parsed.session_id) {
+      return parsed.session_id;
+    }
+  } catch {
+    // Ignore non-JSON user_id formats.
+  }
+
+  return undefined;
+};
+
 export const router = async (req: any, _res: any, context: RouterContext) => {
   const { configService, event } = context;
-  // Parse sessionId from metadata.user_id
-  if (req.body.metadata?.user_id) {
-    const parts = req.body.metadata.user_id.split("_session_");
-    if (parts.length > 1) {
-      req.sessionId = parts[1];
-    }
-  }
+  req.sessionId = parseSessionId(req.body.metadata?.user_id);
   const lastMessageUsage = sessionUsageCache.get(req.sessionId);
   const { messages, system = [], tools }: MessageCreateParamsBase = req.body;
   const rewritePrompt = configService.get("REWRITE_SYSTEM_PROMPT");

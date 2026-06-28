@@ -394,6 +394,72 @@ export async function transformResponseOut(
                 encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
               );
             } else if (
+              chunk.type === "content_block_delta" &&
+              chunk.delta?.type === "thinking_delta"
+            ) {
+              const res = {
+                choices: [
+                  {
+                    delta: {
+                      thinking: {
+                        content: chunk.delta.thinking || "",
+                      },
+                    },
+                    finish_reason: null,
+                    index: 0,
+                    logprobs: null,
+                  },
+                ],
+                created: parseInt(new Date().getTime() / 1000 + "", 10),
+                id: chunk.id || "",
+                model: chunk.model || "",
+                object: "chat.completion.chunk",
+                system_fingerprint: "fp_a49d71b8a1",
+                usage: {
+                  completion_tokens: chunk.usage?.output_tokens || 0,
+                  prompt_tokens: chunk.usage?.input_tokens || 0,
+                  total_tokens:
+                    (chunk.usage?.input_tokens || 0) +
+                    (chunk.usage?.output_tokens || 0),
+                },
+              };
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
+              );
+            } else if (
+              chunk.type === "content_block_delta" &&
+              chunk.delta?.type === "signature_delta"
+            ) {
+              const res = {
+                choices: [
+                  {
+                    delta: {
+                      thinking: {
+                        signature: chunk.delta.signature || "",
+                      },
+                    },
+                    finish_reason: null,
+                    index: 0,
+                    logprobs: null,
+                  },
+                ],
+                created: parseInt(new Date().getTime() / 1000 + "", 10),
+                id: chunk.id || "",
+                model: chunk.model || "",
+                object: "chat.completion.chunk",
+                system_fingerprint: "fp_a49d71b8a1",
+                usage: {
+                  completion_tokens: chunk.usage?.output_tokens || 0,
+                  prompt_tokens: chunk.usage?.input_tokens || 0,
+                  total_tokens:
+                    (chunk.usage?.input_tokens || 0) +
+                    (chunk.usage?.output_tokens || 0),
+                },
+              };
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
+              );
+            } else if (
               chunk.type === "content_block_start" &&
               chunk.content_block?.type === "tool_use"
             ) {

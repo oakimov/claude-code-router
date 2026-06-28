@@ -102,10 +102,26 @@
     "import_from_template": "Import from template",
     "no_templates_found": "No templates found",
     "select_template": "Select a template...",
+    "current_provider_summary": "Current provider summary",
+    "no_providers_configured": "No providers configured",
+    "invalid_provider": "Invalid Provider",
+    "provider_data_missing": "Provider data is missing",
+    "no_api_url": "No API URL",
+    "unnamed_provider": "Unnamed Provider",
+    "unnamed_model": "Unnamed Model",
+    "more_models": "+{{count}} more",
     "api_key_required": "API Key is required",
     "name_required": "Name is required",
     "name_duplicate": "A provider with this name already exists",
-    "search": "Search providers..."
+    "search": "Search providers...",
+    "auth_hint": {
+      "claude_oauth": "Claude subscription OAuth",
+      "qwen_jwt": "Qwen JWT auth",
+      "codex_pat": "Codex PAT auth",
+      "codex_oauth": "Codex OAuth auth",
+      "missing_api_key": "Missing API key",
+      "env_auth": "Environment variable auth"
+    }
 
   },
   "router": {

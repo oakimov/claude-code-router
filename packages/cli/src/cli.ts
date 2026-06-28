@@ -12,7 +12,7 @@ import { runModelGet } from "./utils/modelGet";
 import { activateCommand } from "./utils/activateCommand";
 import { readConfigFile } from "./utils";
 import { version } from "../package.json";
-import { spawn, exec } from "child_process";
+import { spawn } from "child_process";
 import {getPresetDir, loadConfigFromManifest, PID_FILE, readPresetFile, REFERENCE_COUNT_FILE} from "@CCR/shared";
 import fs, { existsSync, readFileSync } from "fs";
 import { join } from "path";
@@ -188,7 +188,7 @@ async function main() {
       if (shouldStartServer && !isRunning) {
         console.log("Service not running, starting service...");
         const cliPath = join(__dirname, "cli.js");
-        const startProcess = spawn("node", [cliPath, "start"], {
+        const startProcess = spawn(process.execPath, [cliPath, "start"], {
           detached: true,
           stdio: "ignore",
         });
@@ -352,7 +352,7 @@ async function main() {
       if (!isRunning) {
         console.log("Service not running, starting service...");
         const cliPath = join(__dirname, "cli.js");
-        const startProcess = spawn("node", [cliPath, "start"], {
+        const startProcess = spawn(process.execPath, [cliPath, "start"], {
           detached: true,
           stdio: "ignore",
         });
@@ -383,7 +383,7 @@ async function main() {
       if (!isRunning) {
         console.log("Service not running, starting service...");
         const cliPath = join(__dirname, "cli.js");
-        const startProcess = spawn("node", [cliPath, "start"], {
+        const startProcess = spawn(process.execPath, [cliPath, "start"], {
           detached: true,
           stdio: "ignore",
         });
@@ -474,28 +474,36 @@ async function main() {
 
       // Open URL in browser based on platform
       const platform = process.platform;
-      let openCommand = "";
+      let openResult;
 
       if (platform === "win32") {
-        // Windows
-        openCommand = `start ${uiUrl}`;
+        // Use cmd /c start with an empty window title so URLs and paths with
+        // spaces are handled correctly on Windows.
+        openResult = spawn(process.env.ComSpec || process.env.COMSPEC || "cmd.exe", ["/d", "/c", "start", "", uiUrl], {
+          detached: true,
+          stdio: "ignore",
+          windowsVerbatimArguments: true,
+        });
       } else if (platform === "darwin") {
-        // macOS
-        openCommand = `open ${uiUrl}`;
+        openResult = spawn("open", [uiUrl], {
+          detached: true,
+          stdio: "ignore",
+        });
       } else if (platform === "linux") {
-        // Linux
-        openCommand = `xdg-open ${uiUrl}`;
+        openResult = spawn("xdg-open", [uiUrl], {
+          detached: true,
+          stdio: "ignore",
+        });
       } else {
         console.error("Unsupported platform for opening browser");
         process.exit(1);
       }
 
-      exec(openCommand, (error) => {
-        if (error) {
-          console.error("Failed to open browser:", error.message);
-          process.exit(1);
-        }
+      openResult.on("error", (error) => {
+        console.error("Failed to open browser:", error.message);
+        process.exit(1);
       });
+      openResult.unref();
       break;
     case "-v":
     case "version":

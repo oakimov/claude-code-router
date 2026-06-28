@@ -202,7 +202,8 @@ export const run = async (args: string[] = []) => {
 
   app.post("/api/restart", async () => {
     setTimeout(async () => {
-      spawn("ccr", ["restart"], {
+      const cliPath = path.join(__dirname, "cli.js");
+      spawn(process.execPath, [cliPath, "restart"], {
         detached: true,
         stdio: "ignore",
       }).unref();
@@ -237,7 +238,7 @@ export const restartService = async () => {
   // Start the service again in the background
   console.log("Starting claude code router service...");
   const cliPath = path.join(__dirname, "cli.js");
-  const startProcess = spawn("node", [cliPath, "start"], {
+  const startProcess = spawn(process.execPath, [cliPath, "start"], {
     detached: true,
     stdio: "ignore",
   });
