@@ -27,6 +27,13 @@ interface ResponsesAPIOutputItem {
     image_url?: string;
     mime_type?: string;
     image_base64?: string;
+    annotations?: Array<{
+      type?: string;
+      url?: string;
+      title?: string;
+      start_index?: number;
+      end_index?: number;
+    }>;
   }>;
   reasoning?: string;
 }
@@ -193,15 +200,35 @@ function applyCodexTurnMetadata(request: UnifiedChatRequest, headers: Record<str
 export class CodexTransformer implements Transformer {
   name = "codex";
   logger?: any;
+  // Per-request streaming intent. The codex API requires stream:true, so the
+  // outgoing call is always streaming — but we need to know whether the
+  // caller wants streaming or non-streaming so transformResponseOut can
+  // return the right shape. Non-streaming callers (e.g. the Anthropic SDK's
+  // client.beta.messages.create with stream:false, used by Claude Code CLI's
+  // model-validator) get a single JSON ChatCompletion back instead of an SSE
+  // stream the SDK can't accumulate into a flat BetaMessage.
+  private streamIntent: Map<string, boolean> = new Map();
 
   async transformRequestIn(
     request: UnifiedChatRequest,
     provider: any,
     context?: any
   ): Promise<Record<string, any>> {
-    // Codex API requires streaming — propagate to original request body so formatResponse streams
-    if (context?.req?.body) {
-      context.req.body.stream = true;
+    const reqId = context?.req?.id;
+    if (reqId) {
+      // Record the caller's streaming intent. The codex upstream only supports
+      // streaming, so the outgoing call is always stream:true (set on `request`
+      // below at `(request as any).stream = true`). But when the caller did
+      // NOT ask for a stream — e.g. the Anthropic SDK's non-streaming
+      // client.beta.messages.create used by Claude Code's model-validator,
+      // which omits `stream` entirely — transformResponseOut must convert the
+      // SSE stream back into a flat JSON ChatCompletion so the SDK receives a
+      // parseable BetaMessage. Streaming is opt-in (=== true): an omitted
+      // `stream` field is a non-streaming request, matching the Anthropic SDK
+      // default. We must NOT mutate context.req.body.stream here — that object
+      // is the original request body read by formatResponse, and forcing it to
+      // true would send a flat JSON body with text/event-stream headers.
+      this.streamIntent.set(reqId, request.stream === true);
     }
     // Determine auth method: api_key starting with "at-" → PAT, anything else → OAuth
     const apiKey = typeof provider?.apiKey === "string"
@@ -524,14 +551,126 @@ export class CodexTransformer implements Transformer {
     return result;
   }
 
-  async transformResponseOut(response: Response): Promise<Response> {
+  async transformResponseOut(
+    response: Response,
+    context?: { req?: { id?: string } }
+  ): Promise<Response> {
     const contentType = response.headers.get("Content-Type") || "";
     const codexTransformer = this;
+    const reqId = context?.req?.id;
+    // Wrap the body in try/finally to guarantee streamIntent cleanup on any
+    // unexpected throw (e.g. response.json() parse error, downstream buffer
+    // failure). Without this, an exception mid-flow would leak the per-request
+    // entry in the map for the lifetime of the process.
+    const prevIntent = reqId ? this.streamIntent.get(reqId) : undefined;
+    try {
+      return await this.transformResponseOutInner(response, contentType, codexTransformer, reqId, prevIntent);
+    } finally {
+      if (reqId) this.streamIntent.delete(reqId);
+    }
+  }
+
+  private async transformResponseOutInner(
+    response: Response,
+    contentType: string,
+    codexTransformer: CodexTransformer,
+    reqId: string | undefined,
+    prevIntent: boolean | undefined,
+  ): Promise<Response> {
+    const wantsStream = reqId ? prevIntent !== false : true;
+
+    // Codex streams omit the `model` field on every chunk except the final
+    // `response.completed` event. Downstream consumers (notably Claude Code
+    // CLI's post-call model validator) read `message_start.message.model` and
+    // throw when it's "unknown". Track the model as soon as we see it so
+    // every chunk we forward can carry a real value.
+    let observedModel: string | undefined = undefined;
+    const resolveModel = (eventModel: string | undefined): string | undefined => {
+      if (eventModel) {
+        observedModel = eventModel;
+        return eventModel;
+      }
+      return observedModel;
+    };
 
     // Cloudflare strips Content-Type from SSE responses — treat missing content-type as SSE
     if (!contentType || contentType.includes("text/event-stream")) {
       if (!response.body) {
         return response;
+      }
+
+      // The codex API occasionally returns a single JSON object
+      // (chat.completion or ResponsesAPIPayload) with text/event-stream
+      // Content-Type — e.g. for short completions it skips streaming and
+      // returns a flat JSON. Peek at the first non-whitespace character of
+      // a clone of the body: a real SSE stream starts with `data:` or
+      // `event:`, while a raw JSON object starts with `{` or `[`. (Model
+      // message text is always inside a JSON event's `delta` field, never
+      // as raw stream text, so this disambiguation is unambiguous.)
+      const peek = await this.readBodyAndPeek(response.clone().body!);
+      if (peek && (peek.firstChar === "{" || peek.firstChar === "[")) {
+        // Codex returned a flat JSON object (chat.completion or
+        // ResponsesAPIPayload) instead of an SSE stream — it does this for
+        // short/trivial completions even when stream:true was requested.
+        // Normalize it to an OpenAI ChatCompletion, then dispatch by the
+        // caller's streaming intent: non-streaming callers get the flat JSON
+        // (the SDK reads a single JSON object); streaming callers get that
+        // same ChatCompletion re-emitted as a one-shot SSE stream so their
+        // SSE parser stays happy.
+        let parsed: any;
+        try {
+          parsed = JSON.parse(peek.text);
+        } catch {
+          if (!wantsStream) {
+            return new Response(peek.text, {
+              status: response.status,
+              statusText: response.statusText,
+              headers: new Headers({ "Content-Type": "application/json" }),
+            });
+          }
+          return new Response(this.jsonToSseStream(peek.text), {
+            status: response.status,
+            statusText: response.statusText,
+            headers: new Headers({ "Content-Type": "text/event-stream" }),
+          });
+        }
+        const chatCompletion =
+          parsed?.object === "response" && parsed.output
+            ? this.convertResponseToChat(parsed)
+            : parsed;
+        const bodyJson = JSON.stringify(chatCompletion);
+        if (!wantsStream) {
+          return new Response(bodyJson, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: new Headers({ "Content-Type": "application/json" }),
+          });
+        }
+        return new Response(this.jsonToSseStream(bodyJson), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: new Headers({ "Content-Type": "text/event-stream" }),
+        });
+      }
+
+      // Non-streaming caller (e.g. Anthropic SDK's client.beta.messages.create
+      // with stream:false, used by Claude Code CLI's model-validator): the
+      // codex API only streams, so consume the full SSE stream and assemble
+      // a single OpenAI ChatCompletion JSON so the SDK can parse it.
+      if (!wantsStream) {
+        try {
+          const completion = await this.collectSseIntoChatCompletion(
+            response,
+            resolveModel
+          );
+          return new Response(JSON.stringify(completion), {
+            status: response.status,
+            statusText: response.statusText,
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          throw e;
+        }
       }
 
       let isStreamEnded = false;
@@ -546,7 +685,7 @@ export class CodexTransformer implements Transformer {
         return currentIndex;
       };
 
-      return createSSEStreamReader(
+      const reader = createSSEStreamReader(
         response,
         (line: string, ctx: StreamContext) => {
           if (!line.trim()) return;
@@ -563,7 +702,10 @@ export class CodexTransformer implements Transformer {
 
             try {
               const data: ResponsesStreamEvent = JSON.parse(dataStr);
-              const chunk = codexTransformer.convertStreamEvent(data, getCurrentIndex);
+              if (data.response?.model) {
+                observedModel = data.response.model;
+              }
+              const chunk = codexTransformer.convertStreamEvent(data, getCurrentIndex, resolveModel);
               if (chunk) {
                 ctx.controller.enqueue(encodeSSEData(JSON.stringify(chunk), ctx.encoder));
               }
@@ -575,6 +717,94 @@ export class CodexTransformer implements Transformer {
           }
         }
       );
+      // Ensure cleanup if the stream is cancelled before [DONE]. Preserve the
+      // text/event-stream Content-Type (createSSEStreamReader's Response carried
+      // it; the codex upstream's headers have no content-type since Cloudflare
+      // strips it, so re-using response.headers here would make the downstream
+      // anthropic transformer take the JSON branch and break streaming).
+      const liveStream = reader.body!;
+      // Track the stream reader for cleanup. The original stream from
+      // createSSEStreamReader handles cancel, but our wrapping Response
+      // won't fire [DONE] cleanup on disconnect — add a cancel handler
+      // directly to the returned ReadableStream, and propagate the cancel
+      // upstream so we don't leak the inner reader. The pump must also
+      // guard against enqueue/close on an already-closed controller (which
+      // throws "Controller is already closed" and would surface as an
+      // unhandled promise rejection).
+      let cancelled = false;
+      let innerReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      const trackedStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          innerReader = liveStream.getReader();
+          const safeEnqueue = (value: Uint8Array) => {
+            if (cancelled) return;
+            try {
+              controller.enqueue(value);
+            } catch {
+              // controller was closed (e.g. by upstream cancel); stop pumping
+              cancelled = true;
+            }
+          };
+          const safeClose = () => {
+            if (cancelled) return;
+            try {
+              controller.close();
+            } catch {
+              // already closed
+            }
+          };
+          const safeError = (err: any) => {
+            if (cancelled) return;
+            try {
+              controller.error(err);
+            } catch {
+              // already closed
+            }
+          };
+          const pump = () => {
+            if (cancelled || !innerReader) return;
+            innerReader.read().then(({ done, value }) => {
+              if (done) {
+                safeClose();
+                return;
+              }
+              if (value) safeEnqueue(value);
+              pump();
+            }).catch((err) => {
+              if (cancelled) return;
+              safeError(err);
+              // The outer try/finally in transformResponseOut already deleted
+              // the streamIntent entry; no need to clean up here.
+            });
+          };
+          pump();
+        },
+        cancel() {
+          cancelled = true;
+          // Propagate cancel upstream so the inner reader's read() resolves
+          // with done=true instead of hanging or erroring. The outer
+          // try/finally in transformResponseOut already deleted the
+          // streamIntent entry by the time this fires, so no cleanup here.
+          if (innerReader) {
+            try {
+              innerReader.cancel().catch(() => {
+                // best-effort — the stream may already be closed
+              });
+            } catch {
+              // already released
+            }
+          }
+        },
+      });
+      return new Response(trackedStream, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
     } else if (contentType.includes("application/json")) {
       const jsonResponse: any = await response.json();
 
@@ -594,7 +824,10 @@ export class CodexTransformer implements Transformer {
         const stream = new ReadableStream({
           start(controller) {
             for (const event of jsonResponse) {
-              const chunk = codexTransformer.convertStreamEvent(event, getCurrentIndex);
+              if (event?.response?.model) {
+                observedModel = event.response.model;
+              }
+              const chunk = codexTransformer.convertStreamEvent(event, getCurrentIndex, resolveModel);
               if (chunk) {
                 controller.enqueue(
                   encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`)
@@ -618,27 +851,35 @@ export class CodexTransformer implements Transformer {
         return new Response(JSON.stringify(chatResponse), {
           status: response.status,
           statusText: response.statusText,
-          headers: response.headers,
+          headers: new Headers({ "Content-Type": "application/json" }),
         });
       }
 
       return new Response(JSON.stringify(jsonResponse), {
         status: response.status,
         statusText: response.statusText,
-        headers: response.headers,
+        headers: new Headers({ "Content-Type": "application/json" }),
       });
     }
 
     return response;
   }
 
-  private convertStreamEvent(data: ResponsesStreamEvent, getCurrentIndex: (type: string) => number): any | null {
+  private convertStreamEvent(
+    data: ResponsesStreamEvent,
+    getCurrentIndex: (type: string) => number,
+    resolveModel?: (eventModel: string | undefined) => string | undefined
+  ): any | null {
+    const fallback = (eventModel: string | undefined): string | undefined =>
+      resolveModel ? resolveModel(eventModel) : eventModel;
+    const modelForChunk = (eventModel: string | undefined) =>
+      eventModel || fallback(undefined);
     if (data.type === "response.output_text.delta") {
       return {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: data.response?.model,
+        model: modelForChunk(data.response?.model),
         choices: [
           {
             index: getCurrentIndex(data.type),
@@ -656,7 +897,7 @@ export class CodexTransformer implements Transformer {
         id: data.item.call_id || data.item.id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: data.response?.model || "gpt-5-codex-",
+        model: modelForChunk(data.response?.model),
         choices: [
           {
             index: getCurrentIndex(data.type),
@@ -702,7 +943,7 @@ export class CodexTransformer implements Transformer {
           id: data.item.id || "chatcmpl-" + Date.now(),
           object: "chat.completion.chunk",
           created: Math.floor(Date.now() / 1000),
-          model: data.response?.model,
+          model: modelForChunk(data.response?.model),
           choices: [
             {
               index: getCurrentIndex(data.type),
@@ -720,7 +961,7 @@ export class CodexTransformer implements Transformer {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: data.response?.model || "gpt-5-codex",
+        model: modelForChunk(data.response?.model),
         choices: [
           {
             index: getCurrentIndex(data.type),
@@ -749,7 +990,7 @@ export class CodexTransformer implements Transformer {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: data.response?.model || "gpt-5-codex-",
+        model: modelForChunk(data.response?.model),
         choices: [
           {
             index: getCurrentIndex(data.type),
@@ -780,7 +1021,7 @@ export class CodexTransformer implements Transformer {
         id: data.response?.id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: data.response?.model || "gpt-5-codex-",
+        model: modelForChunk(data.response?.model),
         choices: [
           {
             index: 0,
@@ -806,7 +1047,7 @@ export class CodexTransformer implements Transformer {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: data.response?.model,
+        model: modelForChunk(data.response?.model),
         choices: [
           {
             index: getCurrentIndex(data.type),
@@ -826,7 +1067,7 @@ export class CodexTransformer implements Transformer {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: data.response?.model,
+        model: modelForChunk(data.response?.model),
         choices: [
           {
             index: getCurrentIndex(data.type),
@@ -846,7 +1087,7 @@ export class CodexTransformer implements Transformer {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: data.response?.model,
+        model: modelForChunk(data.response?.model),
         choices: [
           {
             index: getCurrentIndex(data.type),
@@ -862,7 +1103,7 @@ export class CodexTransformer implements Transformer {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: data.response?.model,
+        model: modelForChunk(data.response?.model),
         choices: [
           {
             index: getCurrentIndex(data.type),
@@ -874,6 +1115,324 @@ export class CodexTransformer implements Transformer {
     }
 
     return null;
+  }
+
+  /**
+   * Consume a Codex SSE response fully and return a single OpenAI
+   * ChatCompletion JSON. Used for non-streaming Anthropic SDK calls
+   * (e.g. client.beta.messages.create with stream:false) where the
+   * SDK expects a flat BetaMessage. The SDK accumulates the response
+   * by reading a single JSON object, not by parsing SSE, so we
+   * have to materialize the response here.
+   */
+
+  /**
+   * Re-emit a single OpenAI ChatCompletion JSON as a one-shot SSE stream of
+   * `chat.completion.chunk` events, so a streaming caller (which expects SSE)
+   * still receives the content when codex returned a flat JSON instead of a
+   * stream. The downstream anthropic transformer's stream reader parses each
+   * `data:` line as a chunk, so we split the full message into proper delta
+   * chunks (text content first, then a final chunk with finish_reason + usage)
+   * — emitting the raw chat.completion would put the text under `message`
+   * instead of `delta` and the content would be dropped.
+   */
+  private jsonToSseStream(chatCompletionJson: string): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder();
+    let parsed: any;
+    try {
+      parsed = JSON.parse(chatCompletionJson);
+    } catch {
+      parsed = null;
+    }
+    const emit = (obj: any) => encoder.encode(`data: ${JSON.stringify(obj)}\n\n`);
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (!parsed) {
+          controller.close();
+          return;
+        }
+        const base = {
+          id: parsed.id || "chatcmpl-" + Date.now(),
+          object: "chat.completion.chunk",
+          created: parsed.created || Math.floor(Date.now() / 1000),
+          model: parsed.model || "unknown",
+        };
+        const choice = parsed.choices?.[0];
+        if (choice) {
+          const message = choice.message || {};
+          // Content chunk(s)
+          if (typeof message.content === "string" && message.content) {
+            controller.enqueue(emit({
+              ...base,
+              choices: [{
+                index: 0,
+                delta: { role: "assistant", content: message.content },
+                finish_reason: null,
+              }],
+            }));
+          }
+          if (message.thinking?.content) {
+            controller.enqueue(emit({
+              ...base,
+              choices: [{
+                index: 0,
+                delta: { thinking: { content: message.thinking.content } },
+                finish_reason: null,
+              }],
+            }));
+          }
+          if (Array.isArray(message.tool_calls)) {
+            for (const tc of message.tool_calls) {
+              controller.enqueue(emit({
+                ...base,
+                choices: [{
+                  index: 0,
+                  delta: {
+                    role: "assistant",
+                    tool_calls: [{
+                      index: 0,
+                      id: tc.id,
+                      type: "function",
+                      function: { name: tc.function?.name || "", arguments: tc.function?.arguments || "" },
+                    }],
+                  },
+                  finish_reason: null,
+                }],
+              }));
+            }
+          }
+          // Final chunk with finish_reason + usage
+          const finalChunk: any = {
+            ...base,
+            choices: [{
+              index: 0,
+              delta: {},
+              finish_reason: choice.finish_reason || "stop",
+            }],
+          };
+          if (parsed.usage) {
+            finalChunk.usage = {
+              prompt_tokens: parsed.usage.prompt_tokens || 0,
+              completion_tokens: parsed.usage.completion_tokens || 0,
+              total_tokens: parsed.usage.total_tokens || 0,
+            };
+          }
+          controller.enqueue(emit(finalChunk));
+        }
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+  }
+
+  /**
+   * Peek at the first non-whitespace character of a cloned response body to
+   * distinguish a real SSE stream (starts with `data:` or `event:`, first
+   * char `d` or `e`) from a flat JSON body (first char `{` or `[`) that the
+   * codex API sometimes returns even with text/event-stream Content-Type.
+   *
+   * - **For flat JSON** (`{` / `[`): reads the full clone body and returns
+   *   `{ firstChar, text }` so the caller can parse and handle it.
+   * - **For SSE** (anything else): returns `null` immediately after reading
+   *   only the first chunk from the clone. The original `response.body` on
+   *   the other side of the tee is untouched and can still be streamed live
+   *   by the SSE reader — avoiding buffering the entire response.
+   *
+   * Callers must pass `response.clone().body!` so the original body is not
+   * consumed by the peek.
+   */
+  private async readBodyAndPeek(
+    body: ReadableStream<Uint8Array>
+  ): Promise<{ firstChar: string; text: string } | null> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    // Wrap all early returns so the reader lock is always released on the
+    // clone's body — otherwise the clone is left in a locked state and the
+    // GC can't reclaim it. The original response.body (on the other side of
+    // response.clone()) is independent and unaffected.
+    const releaseReader = () => {
+      try {
+        reader.releaseLock();
+      } catch {
+        // already released
+      }
+    };
+    let firstRead: { done: boolean; value?: Uint8Array };
+    try {
+      firstRead = await reader.read();
+    } catch (err) {
+      releaseReader();
+      throw err;
+    }
+    if (firstRead.done) {
+      releaseReader();
+      return null;
+    }
+    const firstChunk = decoder.decode(firstRead.value!, { stream: true });
+    const trimmed = firstChunk.trimStart();
+    const firstChar = trimmed.charAt(0) || "";
+    // SSE starts with "d" (data:) or "e" (event:) — not JSON → bail fast
+    if (firstChar !== "{" && firstChar !== "[") {
+      releaseReader();
+      return null;
+    }
+    // Flat JSON — drain the rest of the clone body
+    let buffer = firstChunk;
+    try {
+      while (true) {
+        const r = await reader.read();
+        if (r.done) break;
+        buffer += decoder.decode(r.value, { stream: true });
+      }
+    } finally {
+      buffer += decoder.decode();
+      releaseReader();
+    }
+    return { firstChar, text: buffer };
+  }
+
+  private async collectSseIntoChatCompletion(
+    response: Response,
+    resolveModel: (eventModel: string | undefined) => string | undefined,
+  ): Promise<any> {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let model = "unknown";
+    let id = "chatcmpl-" + Date.now();
+    let created = Math.floor(Date.now() / 1000);
+
+    // Accumulator state — mirrors convertStreamEvent output shape
+    let contentText = "";
+    let reasoningText = "";
+    let annotations: any[] = [];
+    const toolCallsMap = new Map<number, any>();
+    let finishReason: string | null = null;
+    let usage: any = undefined;
+
+    let currentIndex = -1;
+    let lastEventType = "";
+
+    const getCurrentIndex = (eventType: string) => {
+      if (eventType !== lastEventType) {
+        currentIndex++;
+        lastEventType = eventType;
+      }
+      return currentIndex;
+    };
+
+    const finalize = (): any => {
+      const message: any = { role: "assistant" };
+      if (reasoningText) {
+        message.thinking = { content: reasoningText, signature: "" };
+      }
+      const toolCalls = Array.from(toolCallsMap.values());
+      if (toolCalls.length) {
+        message.tool_calls = toolCalls;
+      }
+      if (annotations.length) {
+        message.annotations = annotations;
+      }
+      if (contentText) {
+        message.content = contentText;
+      } else if (toolCalls.length === 0 && !reasoningText) {
+        message.content = null;
+      } else {
+        message.content = contentText || null;
+      }
+
+      const choice: any = {
+        index: 0,
+        message,
+        logprobs: null,
+        finish_reason: toolCalls.length ? "tool_calls" : (finishReason || "stop"),
+      };
+
+      const completion: any = {
+        id,
+        object: "chat.completion",
+        created,
+        model: model || "unknown",
+        choices: [choice],
+        usage: usage || null,
+      };
+      return completion;
+    };
+
+    const processChunk = (chunk: any) => {
+      if (!chunk) return;
+      if (chunk.id) id = chunk.id;
+      if (chunk.model) model = chunk.model;
+      if (chunk.created) created = chunk.created;
+      if (chunk.usage) usage = chunk.usage;
+
+      const choice = chunk.choices?.[0];
+      if (!choice) return;
+
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice.delta || {};
+      if (delta.role) {
+        // First chunk — already set
+      }
+      if (typeof delta.content === "string" && delta.content) {
+        contentText += delta.content;
+      }
+      if (delta.thinking?.content) {
+        reasoningText += delta.thinking.content;
+      }
+      if (delta.thinking?.signature) {
+        // signature carried through message.thinking
+      }
+      if (Array.isArray(delta.annotations)) {
+        for (const a of delta.annotations) {
+          annotations.push(a);
+        }
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          const existing = toolCallsMap.get(idx) || {
+            index: idx,
+            id: tc.id,
+            type: "function",
+            function: { name: tc.function?.name || "", arguments: "" },
+          };
+          if (tc.id) existing.id = tc.id;
+          if (tc.function?.name) existing.function.name = tc.function.name;
+          if (typeof tc.function?.arguments === "string") {
+            existing.function.arguments =
+              (existing.function.arguments || "") + tc.function.arguments;
+          }
+          toolCallsMap.set(idx, existing);
+        }
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const dataStr = line.slice(5).trim();
+        if (!dataStr || dataStr === "[DONE]") continue;
+        try {
+          const event = JSON.parse(dataStr) as ResponsesStreamEvent;
+          if (event.response?.model) {
+            const resolved = resolveModel(event.response.model);
+            if (resolved) model = resolved;
+          }
+          const chunk = this.convertStreamEvent(event, getCurrentIndex, resolveModel);
+          processChunk(chunk);
+        } catch {
+          // ignore malformed line
+        }
+      }
+    }
+    return finalize();
   }
 
   private normalizeRequestContent(content: any, role: string | undefined) {

@@ -514,6 +514,7 @@ export class AnthropicTransformer implements Transformer {
                 const fallbackUsage: Record<string, any> = {
                   input_tokens: 0,
                   output_tokens: 0,
+                  cache_creation_input_tokens: 0,
                   cache_read_input_tokens: 0,
                 };
                 if (webSearchRequestCount > 0) {
@@ -636,6 +637,8 @@ export class AnthropicTransformer implements Transformer {
                       usage: {
                         input_tokens: 0,
                         output_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0,
                       },
                     },
                   };
@@ -664,6 +667,7 @@ export class AnthropicTransformer implements Transformer {
                           (chunk.usage?.prompt_tokens_details?.cached_tokens ||
                             0),
                         output_tokens: chunk.usage?.completion_tokens || 0,
+                        cache_creation_input_tokens: 0,
                         cache_read_input_tokens:
                           chunk.usage?.prompt_tokens_details?.cached_tokens ||
                           0,
@@ -674,8 +678,9 @@ export class AnthropicTransformer implements Transformer {
                       input_tokens:
                         (chunk.usage?.prompt_tokens || 0) -
                         (chunk.usage?.prompt_tokens_details?.cached_tokens ||
-                          0),
+                            0),
                       output_tokens: chunk.usage?.completion_tokens || 0,
+                      cache_creation_input_tokens: 0,
                       cache_read_input_tokens:
                         chunk.usage?.prompt_tokens_details?.cached_tokens || 0,
                     };
@@ -1100,6 +1105,11 @@ export class AnthropicTransformer implements Transformer {
           }
           safeClose();
         } catch (error) {
+          // Ensure clients (e.g. Claude Code CLI's model-validator) still
+          // observe a well-formed message_delta with a usage block even when
+          // the upstream stream errors out before the normal close path.
+          // Otherwise the validator hits `undefined.usage.input_tokens`.
+          safeClose();
           if (!isClosed) {
             try {
               controller.error(error);
