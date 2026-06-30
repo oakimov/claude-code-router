@@ -34,6 +34,12 @@ interface MessageCreateParamsBase {
 
 const enc = get_encoding("cl100k_base");
 
+// disallowed_special: [] treats literal special-token-like substrings
+// (e.g. "<|fim_prefix|>") in arbitrary message/tool content as plain
+// text instead of throwing, since this is just counting tokens, not
+// feeding the result back into the model.
+const encodeSafe = (text: string) => enc.encode(text, undefined, []);
+
 export const calculateTokenCount = (
   messages: MessageParam[],
   system: any,
@@ -43,15 +49,15 @@ export const calculateTokenCount = (
   if (Array.isArray(messages)) {
     messages.forEach((message) => {
       if (typeof message.content === "string") {
-        tokenCount += enc.encode(message.content).length;
+        tokenCount += encodeSafe(message.content).length;
       } else if (Array.isArray(message.content)) {
         message.content.forEach((contentPart: any) => {
           if (contentPart.type === "text") {
-            tokenCount += enc.encode(contentPart.text).length;
+            tokenCount += encodeSafe(contentPart.text).length;
           } else if (contentPart.type === "tool_use") {
-            tokenCount += enc.encode(JSON.stringify(contentPart.input)).length;
+            tokenCount += encodeSafe(JSON.stringify(contentPart.input)).length;
           } else if (contentPart.type === "tool_result") {
-            tokenCount += enc.encode(
+            tokenCount += encodeSafe(
               typeof contentPart.content === "string"
                 ? contentPart.content
                 : JSON.stringify(contentPart.content)
@@ -62,15 +68,15 @@ export const calculateTokenCount = (
     });
   }
   if (typeof system === "string") {
-    tokenCount += enc.encode(system).length;
+    tokenCount += encodeSafe(system).length;
   } else if (Array.isArray(system)) {
     system.forEach((item: any) => {
       if (item.type !== "text") return;
       if (typeof item.text === "string") {
-        tokenCount += enc.encode(item.text).length;
+        tokenCount += encodeSafe(item.text).length;
       } else if (Array.isArray(item.text)) {
         item.text.forEach((textPart: any) => {
-          tokenCount += enc.encode(textPart || "").length;
+          tokenCount += encodeSafe(textPart || "").length;
         });
       }
     });
@@ -78,10 +84,10 @@ export const calculateTokenCount = (
   if (tools) {
     tools.forEach((tool: Tool) => {
       if (tool.description) {
-        tokenCount += enc.encode(tool.name + tool.description).length;
+        tokenCount += encodeSafe(tool.name + tool.description).length;
       }
       if (tool.input_schema) {
-        tokenCount += enc.encode(JSON.stringify(tool.input_schema)).length;
+        tokenCount += encodeSafe(JSON.stringify(tool.input_schema)).length;
       }
     });
   }
@@ -196,7 +202,9 @@ const getUseModel = async (
     req.log.info(`Using think model for ${req.body.thinking}`);
     return { model: Router.think, scenarioType: 'think' };
   }
-  return { model: Router?.default, scenarioType: 'default' };
+  // No scenario matched and no default route is configured: keep the
+  // caller's original model instead of wiping it out.
+  return { model: Router?.default || req.body.model, scenarioType: 'default' };
 };
 
 export interface RouterContext {
@@ -307,7 +315,9 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
   } catch (error: any) {
     req.log.error(`Error in router middleware: ${error.message}`);
     const Router = configService.get("Router");
-    req.body.model = Router?.default;
+    // Fall back to the caller's original model rather than wiping it out
+    // when no default route is configured.
+    req.body.model = Router?.default || req.body.model;
     req.scenarioType = 'default';
   }
   return;

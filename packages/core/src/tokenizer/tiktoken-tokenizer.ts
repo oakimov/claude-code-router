@@ -31,6 +31,11 @@ export class TiktokenTokenizer implements ITokenizer {
     if (!encoding) {
       throw new Error("Encoding not initialized");
     }
+    // disallowed_special: [] treats literal special-token-like substrings
+    // (e.g. "<|fim_prefix|>") in arbitrary message/tool content as plain
+    // text instead of throwing, since this is just counting tokens, not
+    // feeding the result back into the model.
+    const encode = (text: string) => this.encoding!.encode(text, undefined, []);
 
     let tokenCount = 0;
     const { messages, system, tools } = request;
@@ -39,13 +44,13 @@ export class TiktokenTokenizer implements ITokenizer {
     if (Array.isArray(messages)) {
       messages.forEach((message) => {
         if (typeof message.content === "string") {
-          tokenCount += encoding.encode(message.content).length;
+          tokenCount += encode(message.content).length;
         } else if (Array.isArray(message.content)) {
           message.content.forEach((contentPart: any) => {
             if (contentPart.type === "text") {
-              tokenCount += encoding.encode(contentPart.text).length;
+              tokenCount += encode(contentPart.text).length;
             } else if (contentPart.type === "tool_use") {
-              tokenCount += encoding.encode(
+              tokenCount += encode(
                 JSON.stringify(contentPart.input)
               ).length;
             } else if (contentPart.type === "tool_result") {
@@ -53,7 +58,7 @@ export class TiktokenTokenizer implements ITokenizer {
                 typeof contentPart.content === "string"
                   ? contentPart.content
                   : JSON.stringify(contentPart.content);
-              tokenCount += encoding.encode(content).length;
+              tokenCount += encode(content).length;
             }
           });
         }
@@ -62,15 +67,15 @@ export class TiktokenTokenizer implements ITokenizer {
 
     // Count system
     if (typeof system === "string") {
-      tokenCount += encoding.encode(system).length;
+      tokenCount += encode(system).length;
     } else if (Array.isArray(system)) {
       system.forEach((item: any) => {
         if (item.type !== "text") return;
         if (typeof item.text === "string") {
-          tokenCount += encoding.encode(item.text).length;
+          tokenCount += encode(item.text).length;
         } else if (Array.isArray(item.text)) {
           item.text.forEach((textPart: any) => {
-            tokenCount += encoding.encode(textPart || "").length;
+            tokenCount += encode(textPart || "").length;
           });
         }
       });
@@ -80,12 +85,12 @@ export class TiktokenTokenizer implements ITokenizer {
     if (tools) {
       tools.forEach((tool: any) => {
         if (tool.description) {
-          tokenCount += encoding.encode(
+          tokenCount += encode(
             tool.name + tool.description
           ).length;
         }
         if (tool.input_schema) {
-          tokenCount += encoding.encode(
+          tokenCount += encode(
             JSON.stringify(tool.input_schema)
           ).length;
         }
@@ -107,7 +112,7 @@ export class TiktokenTokenizer implements ITokenizer {
     if (!encoding) {
       throw new Error("Encoding not initialized");
     }
-    return Array.from(encoding.encode(text));
+    return Array.from(encoding.encode(text, undefined, []));
   }
 
   dispose(): void {
