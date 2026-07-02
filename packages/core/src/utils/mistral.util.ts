@@ -105,24 +105,19 @@ function transformToolChoice(toolChoice: UnifiedChatRequest["tool_choice"]): any
 }
 
 /**
- * Helper to transform reasoning parameter to Mistral's reasoning_effort format
+ * Helper to transform reasoning parameter to Mistral's reasoning_effort format.
+ * Mistral only supports "low" | "medium" | "high", so higher Claude effort
+ * levels (xhigh, max) are mapped to "high".
  */
 function transformReasoning(reasoning: any): string | undefined {
-  if (reasoning.effort) {
-    const effort = reasoning.effort.toLowerCase();
-    if (effort === "low" || effort === "medium" || effort === "high") {
-      return effort;
-    }
-  }
+  const effort = reasoning.effort?.toLowerCase();
+  if (!effort || effort === "none") return undefined;
 
-  if (reasoning.max_tokens) {
-    const tokens = reasoning.max_tokens;
-    if (tokens < 1000) return "low";
-    if (tokens < 5000) return "medium";
-    return "high";
+  if (effort === "low" || effort === "medium" || effort === "high") {
+    return effort;
   }
-
-  return "medium";
+  // Map Claude-level efforts beyond Mistral's range to its highest level
+  return "high";
 }
 
 const NON_REASONING = new Set([
