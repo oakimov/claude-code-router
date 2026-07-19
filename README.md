@@ -5,7 +5,7 @@
 ## ✨ Features
 
 - **Model Routing**: Route requests to different models based on your needs (e.g., background tasks, thinking, long context).
-- **Multi-Provider Support**: Supports various model providers like OpenRouter, DeepSeek, Ollama, Gemini, Volcengine, and SiliconFlow.
+- **Multi-Provider Support**: Supports various model providers like OpenRouter, DeepSeek, Ollama, Gemini, Volcengine, SiliconFlow, Codex, Claude subscription, Qwen, Chrome On-Device, and Cursor (SDK).
 - **Request/Response Transformation**: Customize requests and responses for different providers using transformers.
 - **Dynamic Model Switching**: Switch models on-the-fly within Claude Code using the `/model` command.
 - **CLI Model Management**: Manage models and providers directly from the terminal with `ccr model`.
@@ -23,6 +23,7 @@ This fork is based on [claude-code-router](https://github.com/musistudio/claude-
 - **Code Quality**: Localized codebase (English comments), improved error handling, and addressed Copilot review feedback.
 - **Gemini Stability & Tool Use Fixes**: Corrected `thoughtSignature` placement in Gemini request bodies (must be a standalone `thought: true` part, not attached to text/function-call parts); filtered synthetic `ccr_` placeholder signatures from outgoing Gemini requests to prevent Gemini 500 errors; fixed `tool_result` content-array serialization in the Anthropic transformer so models receive plain text instead of JSON-wrapped arrays (resolves "Error editing file" in Claude Code); fixed Fastify `onSend` hook to prevent `invalid type 'object'` unhandled rejections on error responses.
 - **Codex (ChatGPT) Integration**: Added Codex transformer for the ChatGPT backend API (Responses API), supporting both OAuth-based authentication (`ccr codex-auth`) and PAT auth via `api_key: "at-..."`, plus SSE streaming, reasoning/thinking content, tool calls with web search, and image handling.
+- **Cursor SDK Integration**: Added `cursor-sdk` transformer that runs Cursor models in-process via `@cursor/sdk`. Default **bridge** mode keeps Claude Code as the tool host (Cursor built-ins denied); supports `plan` / `agent` modes, `crsr_` / `CURSOR_API_KEY` auth, `ccr model get cursor` model discovery, and Docker runtime install of the SDK native packages.
 - **Claude Subscription Integration**: Added `claude-auth` support for routing through a Claude Pro or Max subscription via OAuth (`ccr claude-auth`), using the `claude-auth` + `Anthropic` transformer chain.
 - **Qwen Chat Integration**: Added `qwen-auth` transformer for the Qwen Chat backend (`qwen.aikit.club/v1/chat/completions`), supporting JWT-based authentication (`ccr qwen-auth`) where the user pastes a token copied from `chat.qwen.ai` localStorage, automatic token rotation, and stripping of the trailing `<details>...</details>` metadata block Qwen injects into responses.
 - **DeepSeek Reasoning Replay**: Implemented mandatory reasoning replay for DeepSeek models (e.g., via OpenCode/ZenGo). DeepSeek requires previous assistant reasoning content to be included in subsequent requests — the `reasoning` transformer automatically replays reasoning output from prior turns.
@@ -40,7 +41,7 @@ This fork is based on [claude-code-router](https://github.com/musistudio/claude-
 
 Before you begin, ensure you have the following installed on your system:
 - **Docker & Docker Compose** (Recommended): The primary way to run the router. See [Docker Install Guide](https://docs.docker.com/get-docker/).
-- **Node.js** (Optional): Only required if you want to use the **Chrome On-Device** bridge or run the project from source. Requires v18.0.0 or higher. See [Node.js Download](https://nodejs.org/).
+- **Node.js** (Optional): Required to run from source, publish packages, or use the **Chrome On-Device** bridge. This fork requires **Node.js ≥ 22.13.0** (needed by `@cursor/sdk`). See [Node.js Download](https://nodejs.org/).
 - **Claude Code**: See the [official quickstart guide](https://code.claude.com/docs/en/quickstart) for installation instructions.
 
 #### Quick Start with Docker
@@ -416,6 +417,40 @@ If your provider `api_key` starts with `at-`, CCR treats it as a Codex Personal 
 On the first request, CCR resolves the required account headers from OpenAI and caches the result in memory. If `api_key` is not a PAT, CCR falls back to OAuth tokens from `~/.claude-code-router/codex_auth.json`.
 
 > **See also**: Full Codex setup and troubleshooting are documented in `docs/docs/server/guides/codex.md`.
+
+#### Cursor Provider Authentication
+
+The Cursor provider uses the official `@cursor/sdk` (no browser OAuth CLI). Auth resolve order:
+
+1. Provider `api_key` starting with `crsr_` (Cursor dashboard API key)
+2. Otherwise `CURSOR_API_KEY` from the environment
+
+Example provider:
+
+```json
+{
+  "name": "cursor",
+  "api_base_url": "https://cursor.com",
+  "api_key": "$CURSOR_API_KEY",
+  "models": ["composer-2"],
+  "transformer": {
+    "use": [
+      [
+        "cursor-sdk",
+        {
+          "cursorMode": "bridge"
+        }
+      ]
+    ]
+  }
+}
+```
+
+- **bridge** (default): Claude Code hosts tools; Cursor built-ins are denied in an isolated workspace under `~/.claude-code-router/cursor-sdk-workspaces/`
+- Discover models with `ccr model get cursor` (lists via `Cursor.models.list`, not REST `/models`)
+- Docker Compose passes `CURSOR_API_KEY` into the container when set; local Cursor sandboxing is forced off in Docker
+
+> **See also**: Full Cursor setup is documented in `docs/docs/server/guides/cursor.md`.
 
 #### Claude Subscription Authentication
 

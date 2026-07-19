@@ -109,6 +109,31 @@ sidebar_position: 2
 }
 ```
 
+### Cursor（SDK）
+
+通过 `@cursor/sdk` 路由到 Cursor 模型。认证使用以 `crsr_` 开头的控制台密钥，或环境变量 `CURSOR_API_KEY`。
+
+```json
+{
+  "name": "cursor",
+  "api_base_url": "https://cursor.com",
+  "api_key": "$CURSOR_API_KEY",
+  "models": ["composer-2", "claude-opus-4-8", "gpt-5.4"],
+  "transformer": {
+    "use": [
+      [
+        "cursor-sdk",
+        {
+          "cursorMode": "bridge"
+        }
+      ]
+    ]
+  }
+}
+```
+
+使用 `ccr model get cursor` 发现模型。详见 [Cursor SDK 集成指南](/docs/server/guides/cursor)。
+
 ### Qwen Chat
 
 需要通过 `ccr qwen-auth` 完成 JWT 认证。

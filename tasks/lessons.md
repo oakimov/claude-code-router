@@ -122,6 +122,11 @@
 - **Token File Path Matches Codex Convention**: `~/.claude-code-router/qwen_auth.json` with mode `0o600`. Same security posture as `codex_auth.json` — server and CLI both read/write the same path, no cross-process IPC needed.
 - **Auth Page Is Server-Hosted, Not Bookmarklet**: Unlike codex's OAuth redirect, the Qwen auth UX is a plain HTML form served by the running CCR server at `/qwen/auth`. The CLI just prints the URL and reads the local file after the user confirms via Enter. The CLI never makes an HTTP call to the CCR server during auth, so no `APIKEY` is required — the `/qwen/*` routes must be whitelisted in `packages/server/src/middleware/auth.ts`.
 
+## LLM Provider Integration (Cursor SDK)
+- **Per-request usage, not Cursor cumulative**: `@cursor/sdk` emits `usage` only at true turn end, and `run.usage` / SDK `TokenUsage` are cumulative across the held-open agent session. Parking `customTools.execute` for Claude Code finishes the CCR SSE turn *before* that event, so finish chunks had `usage: null` → Anthropic `message_delta.input_tokens: 0`. End-of-turn finishes that *did* get SDK totals (hundreds of thousands) poisoned Claude Code context accounting.
+  - **Fix**: Mirror cursor-opencode-provider — estimate host-facing usage with `chars/4` from the current CCR request (messages + tools) and this turn's emitted text/thinking/tool args. Keep raw SDK usage as debug diagnostics only; never pass it through as OpenAI/Anthropic request usage.
+  - **Symptoms**: Claude Code context % stuck near empty during tool loops, or suddenly jumps to absurd values on `end_turn` after a long Cursor session. Inspect `cursor-sdk` finish chunks for missing `usage` or huge `prompt_tokens` that dwarf the Claude Code transcript.
+
 ## Development & Tooling
 - **Dependency Scoping**: `pino` is provided by Fastify in the server package but is not a direct dependency of the `core` package. Direct imports of `pino` in `core` will cause build failures; use the passed-in `logger` instance or native `fs` for separate log files.
 - **Response Cloning**: When implementing background logging for responses, use `response.clone()` to avoid consuming the original stream, which would otherwise prevent the transformer from processing the output.

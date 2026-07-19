@@ -195,9 +195,41 @@ Authenticates requests to Anthropic's API using your Claude Pro or Max subscript
 - Converts Anthropic streaming responses back into Claude Code-compatible output
 - Intended to be used together with `Anthropic` in the provider chain
 
+### cursor-sdk
+
+Runs Cursor models in-process via `@cursor/sdk` (no HTTP fetch to `api_base_url`).
+
+```json
+{
+  "name": "cursor",
+  "api_base_url": "https://cursor.com",
+  "api_key": "$CURSOR_API_KEY",
+  "models": ["composer-2"],
+  "transformer": {
+    "use": [
+      [
+        "cursor-sdk",
+        {
+          "cursorMode": "bridge"
+        }
+      ]
+    ]
+  }
+}
+```
+
+**Features:**
+- Owns the upstream Agent create/send/stream call and returns OpenAI-compatible SSE/JSON via `__providerResponse`
+- Default `cursorMode: "bridge"` — Claude Code hosts tools; Cursor built-ins are denied
+- Optional modes: `plan` (text/reasoning only), `agent` (with optional `cursorCwd`)
+- Auth: provider `api_key` starting with `crsr_`, or `CURSOR_API_KEY`
+- Model list via `ccr model get` using `Cursor.models.list`
+- Optional `sandboxEnabled` (opt-in; forced off in Docker)
+
 See also:
 - [Codex integration guide](/docs/server/guides/codex)
 - [Claude subscription guide](/docs/server/guides/claude-auth)
+- [Cursor SDK integration guide](/docs/server/guides/cursor)
 - [CLI auth commands](/docs/cli/commands/auth)
 
 ### deepseek

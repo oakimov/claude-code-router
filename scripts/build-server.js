@@ -15,19 +15,25 @@ try {
     fs.mkdirSync(distDir, { recursive: true });
   }
 
+  // Prefer package-local bins so a newer global/root TypeScript cannot break the build.
+  const localBin = path.join(serverDir, 'node_modules', '.bin');
+  const pathEnv = `${localBin}${path.delimiter}${process.env.PATH || ''}`;
+
   // Generate type declaration files
   console.log('Generating type declaration files...');
   execSync('tsc --emitDeclarationOnly', {
     stdio: 'inherit',
-    cwd: serverDir
+    cwd: serverDir,
+    env: { ...process.env, PATH: pathEnv },
   });
 
   // Build the server application
   console.log('Building server application...');
   // Use minify and tree-shaking to optimize size
-  execSync('esbuild src/index.ts --bundle --platform=node --minify --tree-shaking=true --outfile=dist/index.js', {
+  execSync('esbuild src/index.ts --bundle --platform=node --minify --tree-shaking=true --external:@cursor/sdk --external:@cursor/sdk/* --outfile=dist/index.js', {
     stdio: 'inherit',
-    cwd: serverDir
+    cwd: serverDir,
+    env: { ...process.env, PATH: pathEnv },
   });
 
   // Copy the tiktoken WASM file

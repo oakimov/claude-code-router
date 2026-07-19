@@ -44,11 +44,17 @@ try {
     fs.mkdirSync(cliDistDir, { recursive: true });
   }
 
+  // Prefer package-local bins (and server's esbuild) over a missing/global PATH.
+  const cliLocalBin = path.join(cliDir, 'node_modules', '.bin');
+  const serverLocalBin = path.join(serverDir, 'node_modules', '.bin');
+  const pathEnv = `${cliLocalBin}${path.delimiter}${serverLocalBin}${path.delimiter}${process.env.PATH || ''}`;
+
   // Step 4: Build the CLI application
   console.log('Building CLI application...');
-  execSync('esbuild src/cli.ts --bundle --platform=node --minify --tree-shaking=true --outfile=dist/cli.js', {
+  execSync('esbuild src/cli.ts --bundle --platform=node --minify --tree-shaking=true --external:@cursor/sdk --external:@cursor/sdk/* --outfile=dist/cli.js', {
     stdio: 'inherit',
-    cwd: cliDir
+    cwd: cliDir,
+    env: { ...process.env, PATH: pathEnv },
   });
 
   // Step 5: Copy tiktoken WASM file from server dist to CLI dist

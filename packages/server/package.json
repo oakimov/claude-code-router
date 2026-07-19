@@ -17,6 +17,7 @@
   "author": "musistudio",
   "license": "MIT",
   "dependencies": {
+    "@cursor/sdk": "^1.0.23",
     "@fastify/multipart": "^9.0.0",
     "@fastify/static": "^8.2.0",
     "@musistudio/llms": "workspace:*",

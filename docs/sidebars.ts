@@ -110,6 +110,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'server/guides/claude-auth',
             'server/guides/codex',
+            'server/guides/cursor',
             'server/guides/qwen',
             'server/guides/chrome-on-device',
             'server/guides/deepseek-reasoning',

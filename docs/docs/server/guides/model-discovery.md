@@ -53,6 +53,8 @@ Model discovery works with any provider that exposes a `GET /models` endpoint re
 - OpenRouter
 - Custom providers with RESTful model APIs
 
+**Cursor** is a special case: when the provider uses `cursor-sdk` (or is named `cursor`), `ccr model get` calls `Cursor.models.list` from `@cursor/sdk` instead of HTTP. Authenticate with a `crsr_` key or `CURSOR_API_KEY`. See [Cursor SDK integration](/docs/server/guides/cursor).
+
 ## Troubleshooting
 
 **No models found**: The provider may not expose a model listing endpoint, or the response format differs from what's expected. Check the provider's API documentation for the correct model listing path.

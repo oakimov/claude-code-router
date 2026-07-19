@@ -299,7 +299,7 @@ ui (standalone frontend application)
 
 ## Development Notes
 
-1. **Node.js version**: Requires >= 18.0.0
+1. **Node.js version**: Requires >= 22.13.0 (needed by `@cursor/sdk`)
 2. **Package manager**: Uses pnpm (monorepo depends on workspace protocol)
 3. **TypeScript**: All packages use TypeScript, but UI package is ESM module
 4. **Build tools**:

@@ -53,6 +53,8 @@ ccr model get <provider-name>
 - OpenRouter
 - 自定义具有 RESTful 模型 API 的提供商
 
+**Cursor** 是特例：当提供商使用 `cursor-sdk`（或名为 `cursor`）时，`ccr model get` 会调用 `@cursor/sdk` 的 `Cursor.models.list`，而不是 HTTP。使用 `crsr_` 密钥或 `CURSOR_API_KEY` 认证。详见 [Cursor SDK 集成](/docs/server/guides/cursor)。
+
 ## 故障排除
 
 **未找到模型**：提供商可能未公开模型列表端点，或响应格式与预期不同。请查看提供商的 API 文档以获取正确的模型列表路径。

@@ -29,7 +29,18 @@ const baseConfig: esbuild.BuildOptions = {
       baseUrl,
     }),
   ],
-  external: ["fastify", "dotenv", "@fastify/cors", "undici", "tiktoken", "@CCR/shared", "lru-cache"],
+  external: [
+    "fastify",
+    "dotenv",
+    "@fastify/cors",
+    "undici",
+    "tiktoken",
+    "@CCR/shared",
+    "lru-cache",
+    // Native/platform runtime — must resolve from node_modules at runtime.
+    "@cursor/sdk",
+    "@cursor/sdk/*",
+  ],
 };
 
 // Generate type declarations with resolved path aliases

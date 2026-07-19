@@ -31,8 +31,25 @@ interface ConfigWithProviders {
 }
 
 interface ResolvedEndpoint {
-  kind: "openai" | "gemini" | "codex";
+  kind: "openai" | "gemini" | "codex" | "cursor";
   url: string;
+}
+
+function isCursorProvider(provider: ProviderConfig): boolean {
+  if (normalizeProviderName(provider.name) === "cursor") {
+    return true;
+  }
+
+  const use = provider.transformer?.use;
+  if (!Array.isArray(use)) {
+    return false;
+  }
+
+  return use.some(
+    (entry: unknown) =>
+      entry === "cursor-sdk" ||
+      (Array.isArray(entry) && entry[0] === "cursor-sdk")
+  );
 }
 
 if (!READABLE_CONFIG_FILE) {
@@ -112,6 +129,25 @@ function getRequestApiKey(provider: ProviderConfig): string | undefined {
     return getCodexAccessToken(); // OAuth fallback
   }
 
+  if (isCursorProvider(provider)) {
+    const apiKey = getProviderApiKey(provider)?.trim();
+    // Mirror server resolveCursorApiKey: only concrete crsr_ keys from config;
+    // unresolved ${ENV} placeholders are already stripped by getProviderApiKey.
+    if (
+      apiKey &&
+      apiKey.startsWith("crsr_") &&
+      !apiKey.includes("${") &&
+      !apiKey.includes("$CURSOR_API_KEY")
+    ) {
+      return apiKey;
+    }
+    const fromEnv = process.env.CURSOR_API_KEY?.trim();
+    if (fromEnv) {
+      return fromEnv;
+    }
+    return undefined;
+  }
+
   return getProviderApiKey(provider);
 }
 
@@ -119,6 +155,11 @@ function getMissingApiKeyMessage(provider: ProviderConfig): string {
   if (normalizeProviderName(provider.name) === "codex") {
     return "Codex authentication unavailable. No valid api_key (PAT) and no OAuth tokens found. " +
            "Set api_key to a PAT, or run `ccr codex-auth` for OAuth.";
+  }
+
+  if (isCursorProvider(provider)) {
+    return "Cursor authentication unavailable. Set Providers[].api_key to a crsr_ key, " +
+           "or export CURSOR_API_KEY.";
   }
 
   return `Provider \"${provider.name}\" does not have a usable API key configured.`;
@@ -185,6 +226,10 @@ function deriveOpenAIModelsUrl(apiBaseUrl: string): string {
 
 function resolveModelsEndpoint(provider: ProviderConfig): ResolvedEndpoint {
   const normalizedName = normalizeProviderName(provider.name);
+
+  if (isCursorProvider(provider)) {
+    return { kind: "cursor", url: "Cursor.models.list (@cursor/sdk)" };
+  }
 
   if (normalizedName === "gemini") {
     const url = provider.models_api_url || "https://generativelanguage.googleapis.com/v1beta/models";
@@ -321,6 +366,36 @@ async function fetchCodexModels(apiKey: string, url: string): Promise<string[]> 
     .filter(Boolean);
 }
 
+async function fetchCursorModels(apiKey: string): Promise<string[]> {
+  let Cursor: { models: { list: (opts?: { apiKey?: string }) => Promise<any[]> } };
+  try {
+    ({ Cursor } = await import("@cursor/sdk"));
+  } catch (error: any) {
+    throw new Error(
+      `Failed to load @cursor/sdk for Cursor model discovery: ${error?.message || error}`
+    );
+  }
+
+  let models: any[];
+  try {
+    models = await Cursor.models.list({ apiKey });
+  } catch (error: any) {
+    const message = error?.message || String(error);
+    if (/auth|unauthorized|api.?key|401|403/i.test(message)) {
+      throw new Error(`Invalid API key or insufficient permissions: ${message}`);
+    }
+    throw new Error(`Cursor.models.list failed: ${message}`);
+  }
+
+  if (!Array.isArray(models)) {
+    throw new Error("Unsupported Cursor SDK response: expected a models array");
+  }
+
+  return models
+    .map((model: any) => (typeof model?.id === "string" ? model.id.trim() : ""))
+    .filter(Boolean);
+}
+
 async function fetchCustomModels(apiKey: string, url: string, format: any, kind: string): Promise<string[]> {
   const headers: Record<string, string> = {};
   let finalUrl = url;
@@ -367,6 +442,10 @@ async function fetchCustomModels(apiKey: string, url: string, format: any, kind:
 }
 
 async function fetchRemoteModels(apiKey: string, provider: ProviderConfig, endpoint: ResolvedEndpoint): Promise<string[]> {
+  if (endpoint.kind === "cursor") {
+    return fetchCursorModels(apiKey);
+  }
+
   if (provider.models_response_format) {
     return fetchCustomModels(apiKey, endpoint.url, provider.models_response_format, endpoint.kind);
   }
@@ -387,6 +466,10 @@ function getEndpointHelpText(provider: ProviderConfig, endpoint: ResolvedEndpoin
     return `Codex parsing uses models[].slug for provider \"${provider.name}\".`;
   }
 
+  if (endpoint.kind === "cursor") {
+    return `Cursor discovery uses Cursor.models.list and writes ids into Providers[].models (no cursor-models.json side cache).`;
+  }
+
   return undefined;
 }
 
@@ -404,6 +487,16 @@ function printAuthSource(provider: ProviderConfig): void {
       console.log(`${BOLDCYAN}Auth source:${RESET} api_key (PAT)`);
     } else {
       console.log(`${BOLDCYAN}Auth source:${RESET} ${CODEX_AUTH_FILE}`);
+    }
+    return;
+  }
+
+  if (isCursorProvider(provider)) {
+    const apiKey = getProviderApiKey(provider);
+    if (apiKey && apiKey.startsWith("crsr_")) {
+      console.log(`${BOLDCYAN}Auth source:${RESET} api_key (crsr_...)`);
+    } else {
+      console.log(`${BOLDCYAN}Auth source:${RESET} CURSOR_API_KEY`);
     }
   }
 }
@@ -440,7 +533,11 @@ function hasRemoteModels(models: string[]): boolean {
 
 function printSuccess(provider: ProviderConfig, endpoint: ResolvedEndpoint, models: string[]): void {
   console.log(`\n${BOLDCYAN}Provider:${RESET} ${provider.name}`);
-  console.log(`${BOLDCYAN}Endpoint:${RESET} ${maskApiKeyInUrl(endpoint.url)}`);
+  console.log(
+    `${BOLDCYAN}Endpoint:${RESET} ${
+      endpoint.kind === "cursor" ? endpoint.url : maskApiKeyInUrl(endpoint.url)
+    }`
+  );
   console.log(`${BOLDCYAN}Remote models:${RESET} ${models.length}`);
   console.log(`${GREEN}✓ API key validated successfully${RESET}\n`);
   printRemoteModels(provider, endpoint, models);

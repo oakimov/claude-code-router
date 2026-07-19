@@ -141,6 +141,31 @@ Codex supports **two auth modes**:
 
 If `api_key` starts with `at-`, CCR uses PAT auth. Otherwise it falls back to OAuth tokens from `~/.claude-code-router/codex_auth.json`.
 
+### Cursor (SDK)
+
+Routes through Cursor models via `@cursor/sdk`. Auth uses a dashboard key starting with `crsr_`, or the `CURSOR_API_KEY` environment variable.
+
+```json
+{
+  "name": "cursor",
+  "api_base_url": "https://cursor.com",
+  "api_key": "$CURSOR_API_KEY",
+  "models": ["composer-2", "claude-opus-4-8", "gpt-5.4"],
+  "transformer": {
+    "use": [
+      [
+        "cursor-sdk",
+        {
+          "cursorMode": "bridge"
+        }
+      ]
+    ]
+  }
+}
+```
+
+Discover models with `ccr model get cursor`. See the [Cursor SDK guide](/docs/server/guides/cursor).
+
 ### Claude Subscription
 
 Claude subscription auth uses OAuth via `ccr claude-auth` and requires the `claude-auth` + `Anthropic` transformer chain.
@@ -202,6 +227,7 @@ For example:
 ```
 deepseek,deepseek-chat
 codex,gpt-5
+cursor,composer-2
 claude-subscription,claude-sonnet-4-6
 chrome-nano,gemini-nano
 ```
@@ -210,6 +236,7 @@ chrome-nano,gemini-nano
 
 - **Standard API providers** usually use a normal API key in `api_key`
 - **Codex** can use either OAuth (`ccr codex-auth`) or a PAT in `api_key`
+- **Cursor** uses a `crsr_` key in `api_key` or `CURSOR_API_KEY` (no OAuth CLI)
 - **Claude subscription** uses OAuth tokens managed by `ccr claude-auth`; `api_key` is just a placeholder marker
 - **Qwen** uses a JWT managed by `ccr qwen-auth`
 - **Chrome on-device** uses a local bridge, so `api_key` is only a placeholder
@@ -217,6 +244,7 @@ chrome-nano,gemini-nano
 ## Related Docs
 
 - [Codex integration guide](/docs/server/guides/codex)
+- [Cursor SDK integration guide](/docs/server/guides/cursor)
 - [Claude subscription guide](/docs/server/guides/claude-auth)
 - [CLI auth commands](/docs/cli/commands/auth)
 - [Transformers configuration](/docs/server/config/transformers)

@@ -37,3 +37,13 @@ ccr model get deepseek
 ```bash
 ccr model get groq
 ```
+
+### Discover Cursor models
+
+Cursor providers are detected when the provider name is `cursor` or when `transformer.use` includes `cursor-sdk`. Models are listed via `@cursor/sdk` (`Cursor.models.list`), not a REST `/models` URL.
+
+```bash
+ccr model get cursor
+```
+
+Auth uses a provider `api_key` starting with `crsr_`, or `CURSOR_API_KEY`. See the [Cursor SDK guide](/docs/server/guides/cursor).

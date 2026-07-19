@@ -175,6 +175,38 @@ interface UnifiedMessage {
 - 支持思考/推理内容块
 - 管理流式响应
 
+### cursor-sdk
+
+通过 `@cursor/sdk` 在进程内运行 Cursor 模型（不会对 `api_base_url` 发起 HTTP fetch）。
+
+```json
+{
+  "name": "cursor",
+  "api_base_url": "https://cursor.com",
+  "api_key": "$CURSOR_API_KEY",
+  "models": ["composer-2"],
+  "transformer": {
+    "use": [
+      [
+        "cursor-sdk",
+        {
+          "cursorMode": "bridge"
+        }
+      ]
+    ]
+  }
+}
+```
+
+**功能：**
+- 拥有上游 Agent create/send/stream 调用，并通过 `__providerResponse` 返回 OpenAI 兼容 SSE/JSON
+- 默认 `cursorMode: "bridge"` — Claude Code 托管工具，拒绝 Cursor 内置工具
+- 可选模式：`plan`、`agent`（可配 `cursorCwd`）
+- 认证：以 `crsr_` 开头的 `api_key`，或 `CURSOR_API_KEY`
+- 通过 `ccr model get` 使用 `Cursor.models.list` 发现模型
+
+详见 [Cursor SDK 集成指南](/docs/server/guides/cursor)。
+
 ### deepseek
 
 专门用于 DeepSeek API 的转换器：

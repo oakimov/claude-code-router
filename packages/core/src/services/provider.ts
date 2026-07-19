@@ -47,15 +47,17 @@ export class ProviderService {
                   if (Array.isArray(transformer) && typeof transformer[0] === 'string') {
                     const Constructor = this.transformerService.getTransformer(transformer[0]);
                     if (Constructor) {
-                      return new (Constructor as TransformerConstructor)(transformer[1]);
+                      return this.attachTransformerLogger(
+                        new (Constructor as TransformerConstructor)(transformer[1])
+                      );
                     }
                   }
                   if (typeof transformer === 'string') {
                     const transformerInstance = this.transformerService.getTransformer(transformer);
                     if (typeof transformerInstance === 'function') {
-                      return new transformerInstance();
+                      return this.attachTransformerLogger(new transformerInstance());
                     }
-                    return transformerInstance;
+                    return this.attachTransformerLogger(transformerInstance);
                   }
                 }).filter((transformer) => typeof transformer !== 'undefined');
               }
@@ -68,15 +70,17 @@ export class ProviderService {
                     if (Array.isArray(transformer) && typeof transformer[0] === 'string') {
                       const Constructor = this.transformerService.getTransformer(transformer[0]);
                       if (Constructor) {
-                        return new (Constructor as TransformerConstructor)(transformer[1]);
+                        return this.attachTransformerLogger(
+                          new (Constructor as TransformerConstructor)(transformer[1])
+                        );
                       }
                     }
                     if (typeof transformer === 'string') {
                       const transformerInstance = this.transformerService.getTransformer(transformer);
                       if (typeof transformerInstance === 'function') {
-                        return new transformerInstance();
+                        return this.attachTransformerLogger(new transformerInstance());
                       }
-                      return transformerInstance;
+                      return this.attachTransformerLogger(transformerInstance);
                     }
                   }).filter((transformer) => typeof transformer !== 'undefined')
                 }
@@ -98,6 +102,14 @@ export class ProviderService {
         this.logger.error(`${providerConfig.name} provider registered error: ${error}`);
       }
     });
+  }
+
+  /** Match TransformerService: instances used in provider use[] need the service logger. */
+  private attachTransformerLogger<T>(instance: T): T {
+    if (instance && typeof instance === "object") {
+      (instance as any).logger = this.logger;
+    }
+    return instance;
   }
 
   registerProvider(request: RegisterProviderRequest): LLMProvider {

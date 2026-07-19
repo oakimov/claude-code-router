@@ -1,7 +1,7 @@
 # ===========================
 # Build Stage
 # ===========================
-FROM node:22-alpine AS builder
+FROM node:22.13-alpine AS builder
 
 WORKDIR /app
 
@@ -49,7 +49,8 @@ RUN pnpm build
 # ===========================
 # Production Stage
 # ===========================
-FROM node:22-alpine AS production
+# Pin >=22.13 to match @cursor/sdk engines (and builder).
+FROM node:22.13-alpine AS production
 
 # Install PM2, curl, and pm2-logrotate
 RUN apk add --no-cache curl && \
@@ -75,13 +76,34 @@ RUN chmod +x /app/packages/cli/dist/cli.js && \
 # Add CLI dist to PATH (for direct access)
 ENV PATH="/app/packages/cli/dist:$PATH"
 
-# Copy production dependencies
-COPY --from=builder /app/packages/server/node_modules ./packages/server/node_modules
-
 # Copy server bundle from build stage
 COPY --from=builder /app/packages/server/dist ./packages/server/dist
 # Copy locally pre-built UI assets to the same directory
 COPY --from=builder /app/packages/ui/dist/. ./packages/server/dist/
+
+# @cursor/sdk is externalized from the server/CLI bundles (native platform
+# packages). Workspace pnpm node_modules are symlink farms into
+# /app/node_modules/.pnpm, so copying only packages/server/node_modules leaves
+# those links broken in the runtime image. Install a real copy here instead
+# (into a clean prefix — do not use packages/server/package.json, which has
+# workspace:* deps that cannot resolve in the runtime stage).
+# Version is read from packages/server/package.json so it cannot silently drift
+# from the workspace declaration (still a separate npm install vs pnpm-lock).
+COPY --from=builder /app/packages/server/package.json /tmp/server-package.json
+RUN mkdir -p /tmp/cursor-sdk-runtime /app/packages/server/node_modules && \
+    CURSOR_SDK_VERSION="$(node -p "String(require('/tmp/server-package.json').dependencies['@cursor/sdk']||'').replace(/^[^0-9]*/, '')")" && \
+    test -n "$CURSOR_SDK_VERSION" && \
+    cd /tmp/cursor-sdk-runtime && \
+    npm init -y >/dev/null && \
+    npm install "@cursor/sdk@${CURSOR_SDK_VERSION}" --omit=dev && \
+    cp -a /tmp/cursor-sdk-runtime/node_modules/. /app/packages/server/node_modules/ && \
+    rm -rf /tmp/cursor-sdk-runtime /tmp/server-package.json /root/.npm
+
+# Expose the same install to the CLI bundle resolution path
+# (/app/packages/cli/dist → … → node_modules).
+RUN mkdir -p /app/packages/cli/node_modules /app/node_modules && \
+    ln -sfn /app/packages/server/node_modules/@cursor /app/packages/cli/node_modules/@cursor && \
+    ln -sfn /app/packages/server/node_modules/@cursor /app/node_modules/@cursor
 
 # Copy PM2 configuration file
 COPY packages/server/ecosystem.config.cjs /app/

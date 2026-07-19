@@ -315,6 +315,12 @@ async function sendRequestToProvider(
   transformer: any,
   context: any
 ) {
+  // Allow a transformer to own the full upstream call (non-fetch transports,
+  // agent SDKs, etc.) by returning a ready Response via __providerResponse.
+  if (config?.__providerResponse) {
+    return config.__providerResponse as Response;
+  }
+
   const url = config.url || new URL(provider.baseUrl);
 
   // Handle authentication in passthrough mode

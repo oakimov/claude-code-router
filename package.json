@@ -32,6 +32,9 @@
   ],
   "author": "musistudio",
   "license": "MIT",
+  "dependencies": {
+    "@cursor/sdk": "^1.0.23"
+  },
   "devDependencies": {
     "@types/node": "^24.0.15",
     "esbuild": "^0.25.1",
@@ -39,7 +42,7 @@
     "typescript": "^5.8.2"
   },
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=22.13.0",
     "pnpm": ">=8.0.0"
   }
 }

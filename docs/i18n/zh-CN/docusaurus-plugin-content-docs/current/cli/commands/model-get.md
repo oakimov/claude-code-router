@@ -37,3 +37,13 @@ ccr model get deepseek
 ```bash
 ccr model get groq
 ```
+
+### 发现 Cursor 模型
+
+当提供商名为 `cursor` 或 `transformer.use` 包含 `cursor-sdk` 时，会识别为 Cursor 提供商。模型通过 `@cursor/sdk`（`Cursor.models.list`）列出，而不是 REST `/models`。
+
+```bash
+ccr model get cursor
+```
+
+认证使用以 `crsr_` 开头的 `api_key`，或 `CURSOR_API_KEY`。详见 [Cursor SDK 集成指南](/docs/server/guides/cursor)。

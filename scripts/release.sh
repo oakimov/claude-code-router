@@ -101,11 +101,12 @@ publish_npm() {
     delete pkg.dependencies['@CCR/shared'];
     delete pkg.dependencies['@CCR/server'];
     pkg.dependencies['@musistudio/llms'] = require('../packages/server/package.json').dependencies['@musistudio/llms'];
+    pkg.dependencies['@cursor/sdk'] = require('../packages/server/package.json').dependencies['@cursor/sdk'];
     pkg.peerDependencies = {
-      'node': '>=18.0.0'
+      'node': '>=22.13.0'
     };
     pkg.engines = {
-      'node': '>=18.0.0'
+      'node': '>=22.13.0'
     };
     require('fs').writeFileSync('../packages/cli/package.publish.json', JSON.stringify(pkg, null, 2));
   "
