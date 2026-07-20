@@ -4,9 +4,9 @@ This repo publishes:
 
 | Package | Path | Published version |
 |---|---|---|
-| `@caeliq/ccr-shared` | `packages/shared` | `2.0.0` |
-| `@caeliq/llms` | `packages/core` | `1.0.54` |
-| `@caeliq/claude-code-router` | `packages/cli` | `2.0.0` |
+| `@caeliq/ccr-shared` | `packages/shared` | `2.0.1` |
+| `@caeliq/llms` | `packages/core` | `1.0.55` |
+| `@caeliq/claude-code-router` | `packages/cli` | `2.0.1` |
 
 GitHub repo used for provenance / trusted publishing: `oakimov/claude-code-router`  
 npm org: `caeliq`  
@@ -16,9 +16,9 @@ npm publisher: `oakimov`
 
 - [x] Manual first publish completed (2026-07-20)
 - [x] `.github/workflows/npm-publish.yml` pushed to GitHub `main`
-- [ ] Trusted Publisher (OIDC) configured on all three npm packages
-- [ ] Dry-run workflow_dispatch succeeded with Trusted Publisher configured
-- [ ] Tag-based publish verified on a new version
+- [x] Trusted Publisher (OIDC) configured on all three npm packages
+- [x] Dry-run workflow_dispatch succeeded
+- [ ] Tag-based publish with provenance verified (`v2.0.1`)
 
 ## 1. One-time npm org setup
 
