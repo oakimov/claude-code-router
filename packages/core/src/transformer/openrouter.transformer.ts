@@ -1,7 +1,7 @@
 import { UnifiedChatRequest } from "@/types/llm";
 import { Transformer, TransformerOptions } from "../types/transformer";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
-import { stripMessagesCacheControl } from "../utils/cacheControl";
+import { stripMessagesCacheControl, stripToolsCacheControl } from "../utils/cacheControl";
 import {
   createReasoningAccumulator,
   accumulateReasoning,
@@ -14,6 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 
 export class OpenrouterTransformer implements Transformer {
   static TransformerName = "openrouter";
+  logger?: any;
 
   constructor(private readonly options?: TransformerOptions) {}
 
@@ -22,6 +23,7 @@ export class OpenrouterTransformer implements Transformer {
   ): Promise<UnifiedChatRequest> {
     if (!request.model.includes("claude")) {
       request.messages = stripMessagesCacheControl(request.messages);
+      request.tools = stripToolsCacheControl(request.tools);
 
       // Handle non-HTTP image URLs for non-Claude models
       request.messages.forEach((msg) => {

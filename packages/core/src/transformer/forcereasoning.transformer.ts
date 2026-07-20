@@ -12,6 +12,7 @@ Your final answer must follow after the closing tag above.`;
 const MAX_INTERLEAVED_TIMES = 10;
 
 export class ForceReasoningTransformer implements Transformer {
+  logger?: any;
   name = "forcereasoning";
 
   async transformRequestIn(
@@ -96,7 +97,7 @@ export class ForceReasoningTransformer implements Transformer {
       const encoder = new TextEncoder();
 
       const stream = new ReadableStream({
-        async start(controller) {
+        start: async (controller) => {
           const reader = response.body!.getReader();
           let lineBuffer = "";
 

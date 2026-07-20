@@ -2,6 +2,7 @@ import Server, {
   calculateTokenCount,
   TokenizerService,
   isClientAbortError,
+  sanitizeHeadersForLog,
 } from "@caeliq/llms";
 import { readConfigFile, writeConfigFile, backupConfigFile } from "./utils";
 import { join } from "path";
@@ -38,38 +39,64 @@ export const createServer = async (config: any): Promise<any> => {
 
   // Intercept all fetch calls to log provider interactions
   const originalFetch = global.fetch;
+  const headersFromFetchArgs = (input: RequestInfo | URL, init?: RequestInit) => {
+    // Prefer init.headers; fall back to Request headers when input is a Request.
+    if (init?.headers) return init.headers;
+    if (input instanceof Request) return input.headers;
+    return undefined;
+  };
+  const methodFromFetchArgs = (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method) return init.method;
+    if (input instanceof Request) return input.method;
+    return "GET";
+  };
+
   global.fetch = async (...args) => {
-    const url = args[0] instanceof Request ? args[0].url : String(args[0]);
-    const options = args[1] || {};
+    const input = args[0] as RequestInfo | URL;
+    const init = args[1] as RequestInit | undefined;
+    const url = input instanceof Request ? input.url : String(input);
 
     // Filter out localhost/internal requests to reduce noise
-    if (url.includes('localhost') || url.includes('127.0.0.1')) {
+    if (url.includes("localhost") || url.includes("127.0.0.1")) {
       return originalFetch(...args);
     }
 
-    app.log.debug({
-      url,
-      method: options.method || 'GET',
-      headers: options.headers,
-    }, 'Upstream Provider Request');
+    const requestHeaders = sanitizeHeadersForLog(
+      headersFromFetchArgs(input, init) as any
+    );
+
+    app.log.debug(
+      {
+        url,
+        method: methodFromFetchArgs(input, init),
+        headers: requestHeaders,
+      },
+      "Upstream Provider Request"
+    );
 
     try {
       const response = await originalFetch(...args);
-      const clonedResponse = response.clone();
+      const responseHeaders = sanitizeHeadersForLog(response.headers);
 
-      app.log.debug({
-        url,
-        status: response.status,
-        headers: Object.fromEntries(clonedResponse.headers.entries()),
-      }, 'Upstream Provider Response');
-
-      if (response.status >= 400) {
-        const errorBody = await clonedResponse.text();
-        app.log.error({
+      app.log.debug(
+        {
           url,
           status: response.status,
-          body: errorBody,
-        }, 'Upstream Provider Error Body');
+          headers: responseHeaders,
+        },
+        "Upstream Provider Response"
+      );
+
+      if (response.status >= 400) {
+        const errorBody = await response.clone().text();
+        app.log.error(
+          {
+            url,
+            status: response.status,
+            body: errorBody,
+          },
+          "Upstream Provider Error Body"
+        );
       }
 
       return response;
@@ -81,10 +108,13 @@ export const createServer = async (config: any): Promise<any> => {
       if (isClientAbortError(error)) {
         app.log.debug({ url, error: message }, "Upstream provider fetch aborted");
       } else {
-        app.log.error({
-          url,
-          error: message,
-        }, "Upstream Provider Fetch Exception");
+        app.log.error(
+          {
+            url,
+            error: message,
+          },
+          "Upstream Provider Fetch Exception"
+        );
       }
       throw error;
     }

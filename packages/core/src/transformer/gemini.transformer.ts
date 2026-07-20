@@ -7,6 +7,7 @@ import {
 } from "../utils/gemini.util";
 
 export class GeminiTransformer implements Transformer {
+  logger?: any;
   name = "gemini";
 
   endPoint = "/v1beta/models/:modelAndAction";

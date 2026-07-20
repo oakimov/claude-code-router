@@ -147,19 +147,23 @@ export function buildRequestBody(request: UnifiedChatRequest): Record<string, an
     req.tool_choice = transformToolChoice(req.tool_choice);
   }
 
-  // 4. Tool Cleanup - normalize schemas and remove $schema
+  // 4. Tool Cleanup - normalize schemas, remove $schema and cache_control.
+  // Mistral rejects unknown fields; cache_control rides on tool definitions
+  // after the Anthropic → Unified round-trip, so strip it here alongside the
+  // message-level cleanup above.
   if (Array.isArray(req.tools)) {
     req.tools = req.tools.map((tool) => {
-      if (tool?.function?.parameters) {
+      const { cache_control, ...rest } = tool as any;
+      if (rest?.function?.parameters) {
         return {
-          ...tool,
+          ...rest,
           function: {
-            ...tool.function,
-            parameters: normalizeToolParameters(tool.function.parameters),
+            ...rest.function,
+            parameters: normalizeToolParameters(rest.function.parameters),
           },
         };
       }
-      return tool;
+      return rest;
     });
   }
 

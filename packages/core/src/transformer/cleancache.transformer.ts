@@ -18,6 +18,13 @@ export class CleancacheTransformer implements Transformer {
         }
       });
     }
+    if (Array.isArray(request.tools)) {
+      request.tools.forEach((tool) => {
+        if ((tool as any).cache_control) {
+          delete (tool as any).cache_control;
+        }
+      });
+    }
     return request;
   }
 }

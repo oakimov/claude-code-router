@@ -1,4 +1,4 @@
-import { UnifiedMessage, MessageContent, TextContent } from "../types/llm";
+import { UnifiedMessage, MessageContent, TextContent, UnifiedTool } from "../types/llm";
 
 /**
  * Strip cache_control from a single object (shallow clone).
@@ -35,5 +35,21 @@ export function stripMessagesCacheControl(
     }
 
     return cloned;
+  });
+}
+
+/**
+ * Strip cache_control from tool definitions. Anthropic → Unified preserves
+ * cache_control on tools so the Anthropic round-trip keeps prompt-cache hits,
+ * but non-Anthropic providers reject it on tool definitions.
+ */
+export function stripToolsCacheControl(
+  tools: UnifiedTool[] | undefined
+): UnifiedTool[] | undefined {
+  if (!Array.isArray(tools)) return tools;
+  return tools.map((tool) => {
+    if (!(tool as any).cache_control) return tool;
+    const { cache_control, ...rest } = tool as any;
+    return rest as UnifiedTool;
   });
 }

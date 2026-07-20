@@ -81,6 +81,9 @@ export interface UnifiedTool {
       $schema?: string;
     };
   };
+  cache_control?: {
+    type?: string;
+  };
 }
 
 export type ThinkLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";

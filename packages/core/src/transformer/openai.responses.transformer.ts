@@ -79,6 +79,7 @@ interface ResponsesStreamEvent {
 }
 
 export class OpenAIResponsesTransformer implements Transformer {
+  logger?: any;
   name = "openai-responses";
   endPoint = "/v1/responses";
 

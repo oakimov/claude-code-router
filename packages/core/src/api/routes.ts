@@ -14,7 +14,9 @@ import { ProviderService } from "@/services/provider";
 import { TransformerService } from "@/services/transformer";
 import { Transformer } from "@/types/transformer";
 import {
+  // diffHeadersForLog,
   sanitizeErrorForLog,
+  // sanitizeHeadersForLog,
   sanitizeUpstreamErrorText,
 } from "@/utils/redact";
 import {
@@ -68,6 +70,15 @@ async function handleTransformerEndpoint(
       "provider_not_found"
     );
   }
+
+  // req.log.debug(
+  //   {
+  //     reqId: req.id,
+  //     provider: providerName,
+  //     headers: sanitizeHeadersForLog(req.headers as Record<string, unknown>),
+  //   },
+  //   "client request headers"
+  // );
 
   try {
     // Process request transformer chain
@@ -482,6 +493,27 @@ async function sendRequestToProvider(
     }
   }
 
+  // const clientHeaders = context?.req?.headers as
+  //   | Record<string, unknown>
+  //   | undefined;
+  // context?.req?.log?.debug?.(
+  //   {
+  //     reqId: context?.req?.id,
+  //     provider: provider.name,
+  //     outboundHeaders: sanitizeHeadersForLog(requestHeaders),
+  //     clientHeaders: sanitizeHeadersForLog(clientHeaders),
+  //     headerDiff: {
+  //       direction: "client -> outbound",
+  //       ...diffHeadersForLog(clientHeaders, requestHeaders),
+  //     },
+  //   },
+  //   "provider request headers diff"
+  // );
+
+  // Keep requestHeaders construction intact above; only the verbose header diff
+  // logging is disabled here to reduce sensitive metadata in debug logs.
+
+
   const response = await sendUnifiedRequest(
     url,
     requestBody,
@@ -494,6 +526,19 @@ async function sendRequestToProvider(
     context,
     fastify.log
   );
+
+  // context?.req?.log?.debug?.(
+  //   {
+  //     reqId: context?.req?.id,
+  //     provider: provider.name,
+  //     status: response.status,
+  //     headers: sanitizeHeadersForLog(response.headers),
+  //   },
+  //   "provider response headers"
+  // );
+
+  // Keep status handling below active; only raw response header logging is
+  // disabled here.
 
   // Handle request errors
   if (!response.ok) {

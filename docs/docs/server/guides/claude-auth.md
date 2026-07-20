@@ -79,11 +79,47 @@ Two transformers are required:
 - `claude-auth` — converts the request from Unified (OpenAI) format to Anthropic format, injects `Authorization: Bearer <token>` (loading/refreshing the token from `~/.claude-code-router/claude_auth.json`), and converts the Anthropic SSE response back to Unified format
 - `Anthropic` — registers the `POST /v1/messages` route; it has no body conversion of its own in the provider chain so it acts as a no-op endpoint stub
 
-### OAuth beta header
+### Outbound headers
 
-Anthropic requires the `oauth-2025-04-20` beta for Claude subscription / Claude Code OAuth Bearer auth. The `claude-auth` transformer always includes `anthropic-beta: oauth-2025-04-20` and merges it with any feature betas (for example thinking / prompt-caching) when those features are used. Requests also use `?beta=true` on the Anthropic Messages URL.
+The `claude-auth` transformer builds the outbound request headers as follows. "Always set" means the header is present on every request regardless of the client; "conditionally set" means it is only forwarded when the client included it.
 
-You do not need to configure this beta yourself — it is applied automatically when the provider uses `claude-auth`.
+| Header | Condition | Value |
+|---|---|---|
+| `Authorization` | Always set | `Bearer <access_token>` from `claude_auth.json`; refreshed automatically on expiry |
+| `Content-Type` | Always set | `application/json` |
+| `anthropic-beta` | Always set | See [Beta header logic](#anthropic-beta-header-logic) below |
+| `anthropic-version` | Always set | Forwarded from client if present; falls back to `2023-06-01` |
+| `User-Agent` | Always set | Forwarded from client if present; falls back to `claude-cli/2.1.195 (external, cli)` |
+| `x-app` | Conditionally set | Forwarded verbatim (e.g. `cli`) |
+| `x-claude-code-session-id` | Conditionally set | Forwarded verbatim; used by Anthropic for session attribution |
+| `anthropic-dangerous-direct-browser-access` | Conditionally set | Forwarded verbatim when set by the client |
+
+Hop-by-hop headers (`connection`, `host`, `accept-encoding`, `content-length`) and SDK-internal headers (`x-stainless-*`) sent by the client are **not** forwarded.
+
+#### `anthropic-beta` header logic
+
+`oauth-2025-04-20` is always included — Anthropic requires it for subscription OAuth Bearer auth. The rest of the value depends on which client is sending the request:
+
+**Claude Code / Anthropic-native clients** (client sends `anthropic-beta`):  
+The client's beta tokens are preserved as-is and `oauth-2025-04-20` is appended if not already present. No tokens are added or removed. Example — client sends:
+
+```
+claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,effort-2025-11-24
+```
+
+Outbound:
+
+```
+claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,effort-2025-11-24,oauth-2025-04-20
+```
+
+**OpenAI-compatible clients** (client does not send `anthropic-beta`):  
+Feature betas are derived from the rebuilt Anthropic request body:
+- If the request uses extended thinking → `interleaved-thinking-2025-05-14,effort-2025-11-24,prompt-caching-scope-2026-01-05` are added
+- If any message or tool carries a `cache_control` block → same set is added
+- Otherwise → only `oauth-2025-04-20` is sent
+
+The URL also receives `?beta=true`. You do not need to configure any of this — it is applied automatically.
 
 ## Token Storage
 

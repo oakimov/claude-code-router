@@ -78,6 +78,27 @@ export function sanitizeErrorForLog(error: unknown): {
   };
 }
 
+
+const SENSITIVE_HEADER_NAME =
+  /^(?:authorization|x-api-key|api-key|cookie|set-cookie)$|token|secret|password|passwd/i;
+
+function isSensitiveHeaderName(name: string): boolean {
+  return SENSITIVE_HEADER_NAME.test(name);
+}
+
+/** Flatten Fastify/Node header values to a single string for logging. */
+export function normalizeHeaderValue(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (Array.isArray(value)) {
+    const parts = value
+      .filter((v) => v != null && String(v).length > 0)
+      .map((v) => String(v));
+    return parts.length ? parts.join(", ") : undefined;
+  }
+  const s = String(value);
+  return s.length ? s : undefined;
+}
+
 /** Strip auth headers from a headers object for debug logging. */
 export function sanitizeHeadersForLog(
   headers: Headers | Record<string, unknown> | undefined
@@ -92,21 +113,61 @@ export function sanitizeHeadersForLog(
       : Object.entries(headers as Record<string, unknown>);
 
   for (const [key, value] of entries) {
-    if (value == null) continue;
-    const lower = key.toLowerCase();
-    if (
-      lower === "authorization" ||
-      lower === "x-api-key" ||
-      lower === "api-key" ||
-      lower === "cookie" ||
-      lower === "set-cookie" ||
-      lower.includes("token") ||
-      lower.includes("secret")
-    ) {
+    const normalized = normalizeHeaderValue(value);
+    if (normalized == null) continue;
+    if (isSensitiveHeaderName(key)) {
       out[key] = "[redacted]";
       continue;
     }
-    out[key] = String(value);
+    out[key] = normalized;
   }
   return out;
+}
+
+/**
+ * Compare two header maps (case-insensitive names).
+ * Values are sanitized the same way as sanitizeHeadersForLog.
+ */
+export function diffHeadersForLog(
+  left: Headers | Record<string, unknown> | undefined,
+  right: Headers | Record<string, unknown> | undefined
+): {
+  onlyInLeft: Record<string, string>;
+  onlyInRight: Record<string, string>;
+  changed: Record<string, { from: string; to: string }>;
+  sameCount: number;
+} {
+  const a = sanitizeHeadersForLog(left);
+  const b = sanitizeHeadersForLog(right);
+  const aMap = new Map(
+    Object.entries(a).map(([k, v]) => [k.toLowerCase(), { key: k, value: v }])
+  );
+  const bMap = new Map(
+    Object.entries(b).map(([k, v]) => [k.toLowerCase(), { key: k, value: v }])
+  );
+
+  const onlyInLeft: Record<string, string> = {};
+  const onlyInRight: Record<string, string> = {};
+  const changed: Record<string, { from: string; to: string }> = {};
+  let sameCount = 0;
+
+  for (const [lk, { key, value }] of aMap) {
+    const other = bMap.get(lk);
+    if (!other) {
+      onlyInLeft[key] = value;
+      continue;
+    }
+    if (other.value === value) {
+      sameCount += 1;
+    } else {
+      changed[key] = { from: value, to: other.value };
+    }
+  }
+  for (const [rk, { key, value }] of bMap) {
+    if (!aMap.has(rk)) {
+      onlyInRight[key] = value;
+    }
+  }
+
+  return { onlyInLeft, onlyInRight, changed, sameCount };
 }

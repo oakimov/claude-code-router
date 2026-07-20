@@ -1,32 +1,14 @@
 import { UnifiedChatRequest } from "@/types/llm";
-import { Transformer } from "@/types/transformer";
+import { Transformer, TransformerContext } from "@/types/transformer";
 import { getValidAccessToken } from "../utils/claude-auth";
 import { transformResponseOut } from "../utils/vertex-claude.util";
 import { AnthropicTransformer } from "./anthropic.transformer";
 
 /** Anthropic beta required for Claude subscription / Claude Code OAuth Bearer auth. */
-const CLAUDE_OAUTH_REQUIRED_BETA = "oauth-2025-04-20";
+export const CLAUDE_OAUTH_REQUIRED_BETA = "oauth-2025-04-20";
 
-function hasCacheControl(value: unknown): boolean {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  if (Array.isArray(value)) {
-    return value.some((item) => hasCacheControl(item));
-  }
-
-  if ((value as Record<string, any>).cache_control) {
-    return true;
-  }
-
-  return Object.values(value as Record<string, unknown>).some((item) =>
-    hasCacheControl(item)
-  );
-}
-
-function mergeAnthropicBetaValues(
-  ...values: Array<string | undefined>
+export function mergeAnthropicBetaValues(
+  ...values: Array<string | undefined | null>
 ): string {
   const seen = new Set<string>();
   const merged: string[] = [];
@@ -34,12 +16,56 @@ function mergeAnthropicBetaValues(
     if (!value) continue;
     for (const part of value.split(",")) {
       const token = part.trim();
-      if (!token || seen.has(token)) continue;
-      seen.add(token);
+      if (!token) continue;
+      const key = token.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
       merged.push(token);
     }
   }
   return merged.join(",");
+}
+
+/** Read a named header value from a Fastify/Node headers object (case-insensitive). */
+export function readHeaderValue(
+  headers: Record<string, unknown> | undefined,
+  name: string
+): string | undefined {
+  if (!headers) return undefined;
+  const want = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== want) continue;
+    if (value == null) return undefined;
+    if (Array.isArray(value)) {
+      const parts = value.filter((v) => v != null && String(v).length > 0);
+      return parts.length ? parts.map(String).join(", ") : undefined;
+    }
+    const s = String(value);
+    return s.length ? s : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Build outbound anthropic-beta for Claude subscription OAuth.
+ *
+ * - If the client sent anthropic-beta (e.g. Claude Code), merge with
+ *   oauth-2025-04-20 (deduped, case-insensitive).
+ * - Otherwise, send only oauth-2025-04-20. Do not synthesise Claude Code
+ *   betas — Anthropic validates the attestation on claude-code-20250219
+ *   and subscription OAuth works without it for non-Claude-Code clients.
+ */
+export function resolveClaudeAuthAnthropicBeta(input: {
+  clientBeta?: string;
+}): string {
+  if (input.clientBeta?.trim()) {
+    return mergeAnthropicBetaValues(
+      input.clientBeta,
+      CLAUDE_OAUTH_REQUIRED_BETA
+    );
+  }
+
+  return CLAUDE_OAUTH_REQUIRED_BETA;
 }
 
 export class ClaudeAuthTransformer implements Transformer {
@@ -48,10 +74,12 @@ export class ClaudeAuthTransformer implements Transformer {
 
   async transformRequestIn(
     request: UnifiedChatRequest,
-    provider: any
+    provider: any,
+    context?: TransformerContext
   ): Promise<Record<string, any>> {
     const creds = await getValidAccessToken();
-    const baseUrl = provider?.api_base_url ?? provider?.baseUrl ?? "https://api.anthropic.com";
+    const baseUrl =
+      provider?.api_base_url ?? provider?.baseUrl ?? "https://api.anthropic.com";
     const url = baseUrl.endsWith("/v1/messages")
       ? baseUrl
       : `${baseUrl.replace(/\/$/, "")}/v1/messages`;
@@ -65,30 +93,54 @@ export class ClaudeAuthTransformer implements Transformer {
       this.logger
     );
 
+    const clientHeaders = context?.req?.headers as Record<string, unknown> | undefined || {};
+    const clientUserAgent = readHeaderValue(clientHeaders, "user-agent");
+    const isClaudeCode = clientUserAgent?.startsWith("claude-cli/") ?? false;
+
+    const clientBeta = isClaudeCode
+      ? readHeaderValue(clientHeaders, "anthropic-beta")
+      : undefined;
+    const anthropicBeta = resolveClaudeAuthAnthropicBeta({
+      clientBeta,
+    });
+
     const headers: Record<string, string> = {
       Authorization: `Bearer ${creds.access_token}`,
-      "anthropic-version": "2023-06-01",
       "Content-Type": "application/json",
-      "User-Agent": "claude-cli/2.1.195 (external, cli)",
+      "anthropic-version":
+        (isClaudeCode && readHeaderValue(clientHeaders, "anthropic-version")) ||
+        "2023-06-01",
+      "anthropic-beta": anthropicBeta,
     };
 
-    const usesThinking =
-      request.thinking?.type === "enabled" ||
-      request.thinking?.type === "adaptive" ||
-      request.enable_thinking ||
-      request.anthropic_thinking;
-    const usesPromptCaching = hasCacheControl(anthropicBody);
-
-    const featureBetas =
-      usesThinking || usesPromptCaching
-        ? "interleaved-thinking-2025-05-14,effort-2025-11-24,prompt-caching-scope-2026-01-05"
-        : undefined;
-
-    // Always declare OAuth subscription beta for Bearer auth; merge feature betas when needed.
-    headers["anthropic-beta"] = mergeAnthropicBetaValues(
-      featureBetas,
-      CLAUDE_OAUTH_REQUIRED_BETA
-    );
+    if (isClaudeCode) {
+      // Forward Claude Code identity headers verbatim.
+      for (const name of [
+        "user-agent",
+        "x-app",
+        "x-claude-code-session-id",
+        "anthropic-dangerous-direct-browser-access",
+        "x-anthropic-billing-header",
+        "x-client-request-id",
+        "x-stainless-arch",
+        "x-stainless-lang",
+        "x-stainless-os",
+        "x-stainless-package-version",
+        "x-stainless-retry-count",
+        "x-stainless-runtime",
+        "x-stainless-runtime-version",
+        "x-stainless-timeout",
+      ]) {
+        const value = readHeaderValue(clientHeaders, name);
+        if (value) headers[name] = value;
+      }
+    } else {
+      // Non-Claude-Code client: send only required headers.
+      // Do NOT synthesise Claude Code identity headers — Anthropic validates
+      // attestation tokens server-side, so mocked headers still get 429'd.
+      // The subscription OAuth Bearer token is sufficient for authentication.
+      if (clientUserAgent) headers["User-Agent"] = clientUserAgent;
+    }
 
     return {
       body: anthropicBody,

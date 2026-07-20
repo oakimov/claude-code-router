@@ -311,6 +311,7 @@ export class AnthropicTransformer implements Transformer {
           type: "tool_result",
           tool_use_id: msg.tool_call_id,
           content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+          ...(msg.cache_control ? { cache_control: msg.cache_control } : {}),
         };
         const last = messages[messages.length - 1];
         if (last?.role === "user" && Array.isArray(last.content)) {
@@ -373,6 +374,7 @@ export class AnthropicTransformer implements Transformer {
         name: tool.function.name,
         description: tool.function.description || "",
         input_schema: tool.function.parameters,
+        ...(tool.cache_control ? { cache_control: tool.cache_control } : {}),
       }));
     }
 
@@ -415,6 +417,7 @@ export class AnthropicTransformer implements Transformer {
         description: tool.description || "",
         parameters: tool.input_schema,
       },
+      ...(tool.cache_control ? { cache_control: tool.cache_control } : {}),
     }));
   }
 

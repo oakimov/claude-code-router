@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 
 export class VercelTransformer implements Transformer {
   static TransformerName = "vercel";
+  logger?: any;
   endPoint = "/v1/chat/completions";
 
   constructor(private readonly options?: TransformerOptions) {}
@@ -29,6 +30,13 @@ export class VercelTransformer implements Transformer {
           delete msg.cache_control;
         }
       });
+      if (Array.isArray(request.tools)) {
+        request.tools.forEach((tool) => {
+          if ((tool as any).cache_control) {
+            delete (tool as any).cache_control;
+          }
+        });
+      }
     } else {
       request.messages.forEach((msg) => {
         if (Array.isArray(msg.content)) {
@@ -70,7 +78,7 @@ export class VercelTransformer implements Transformer {
       let buffer = ""; // Buffer for incomplete data
 
       const stream = new ReadableStream({
-        async start(controller) {
+        start: async (controller) => {
           const reader = response.body!.getReader();
           const processBuffer = (
             buffer: string,

@@ -49,6 +49,18 @@ declare module "@caeliq/llms" {
   export const calculateTokenCount: (messages: any[], system: any, tools: any[]) => number;
   export const searchProjectBySession: (sessionId: string) => Promise<string | null>;
   export const isClientAbortError: (error: unknown) => boolean;
+  export const sanitizeHeadersForLog: (
+    headers: Headers | Record<string, unknown> | undefined
+  ) => Record<string, string>;
+  export const diffHeadersForLog: (
+    left: Headers | Record<string, unknown> | undefined,
+    right: Headers | Record<string, unknown> | undefined
+  ) => {
+    onlyInLeft: Record<string, string>;
+    onlyInRight: Record<string, string>;
+    changed: Record<string, { from: string; to: string }>;
+    sameCount: number;
+  };
 
   // Export services
   export class ConfigService {

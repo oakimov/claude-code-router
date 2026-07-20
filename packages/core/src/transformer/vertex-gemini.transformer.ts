@@ -27,6 +27,7 @@ async function getAccessToken(logger?: any): Promise<string> {
 }
 
 export class VertexGeminiTransformer implements Transformer {
+  logger?: any;
   name = "vertex-gemini";
 
   async transformRequestIn(

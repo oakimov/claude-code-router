@@ -2,6 +2,7 @@ import { Transformer } from "@/types/transformer";
 import { parseToolArguments } from "@/utils/toolArgumentsParser";
 
 export class EnhanceToolTransformer implements Transformer {
+  logger?: any;
   name = "enhancetool";
 
   async transformResponseOut(response: Response): Promise<Response> {
@@ -48,7 +49,7 @@ export class EnhanceToolTransformer implements Transformer {
       let buffer = ""; // used to buffer incomplete data
 
       const stream = new ReadableStream({
-        async start(controller) {
+        start: async (controller) => {
           const reader = response.body!.getReader();
           const processBuffer = (
             buffer: string,

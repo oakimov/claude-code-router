@@ -1,6 +1,6 @@
 import { ProxyAgent } from "undici";
 import { UnifiedChatRequest } from "../types/llm";
-import { sanitizeHeadersForLog } from "./redact";
+// import { diffHeadersForLog, sanitizeHeadersForLog } from "./redact";
 import { createApiError } from "../api/middleware";
 import {
   CLIENT_DISCONNECT_REASON,
@@ -165,16 +165,28 @@ export async function sendUnifiedRequest(
     );
   }
 
-  logger?.debug(
-    {
-      reqId: context?.req?.id,
-      method: fetchOptions.method,
-      headers: sanitizeHeadersForLog(headers),
-      requestUrl,
-      useProxy,
-    },
-    "final request"
-  );
+  // const clientHeaders = context?.req?.headers as
+  //   | Record<string, unknown>
+  //   | undefined;
+  // const outboundHeaders = sanitizeHeadersForLog(headers);
+  // logger?.debug(
+  //   {
+  //     reqId: context?.req?.id,
+  //     method: fetchOptions.method,
+  //     headers: outboundHeaders,
+  //     clientHeaders: sanitizeHeadersForLog(clientHeaders),
+  //     headerDiff: {
+  //       direction: "client -> outbound",
+  //       ...diffHeadersForLog(clientHeaders, headers),
+  //     },
+  //     requestUrl,
+  //     useProxy,
+  //   },
+  //   "final request"
+  // );
+
+  // Keep the request execution unchanged below; only verbose header logging is
+  // disabled here.
 
   try {
     return await fetch(requestUrl, fetchOptions);

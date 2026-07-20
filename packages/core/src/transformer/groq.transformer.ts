@@ -1,7 +1,7 @@
 import { UnifiedChatRequest } from "@/types/llm";
 import { Transformer } from "../types/transformer";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
-import { stripMessagesCacheControl } from "../utils/cacheControl";
+import { stripMessagesCacheControl, stripToolsCacheControl } from "../utils/cacheControl";
 import { normalizeToolParameters } from "../utils/schema";
 import { v4 as uuidv4 } from "uuid";
 
@@ -10,6 +10,7 @@ export class GroqTransformer implements Transformer {
 
   async transformRequestIn(request: UnifiedChatRequest): Promise<UnifiedChatRequest> {
     request.messages = stripMessagesCacheControl(request.messages);
+    request.tools = stripToolsCacheControl(request.tools);
 
     if (Array.isArray(request.tools)) {
       request.tools.forEach(tool => {
