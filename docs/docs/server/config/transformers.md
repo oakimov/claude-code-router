@@ -191,6 +191,7 @@ Authenticates requests to Anthropic's API using your Claude Pro or Max subscript
 **Features:**
 - Rebuilds the Anthropic request body from the unified request
 - Injects `Authorization: Bearer <token>` using tokens from `~/.claude-code-router/claude_auth.json`
+- Always sends the Anthropic `oauth-2025-04-20` beta (merged with feature betas when needed) so subscription OAuth Bearer auth is accepted
 - Refreshes expired OAuth access tokens automatically
 - Converts Anthropic streaming responses back into Claude Code-compatible output
 - Intended to be used together with `Anthropic` in the provider chain

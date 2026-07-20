@@ -45,6 +45,25 @@ export function createSseHelpers(model: string, encoder: TextEncoder) {
         ],
       };
     },
+    /**
+     * Claude Code / Anthropic expecting extended-thinking streams require a
+     * signature_delta before the thinking block is closed. Cursor SDK has no
+     * provider signature, so emit a synthetic one (same pattern as reasoning /
+     * forcereasoning transformers). Without this, thinking_deltas are on the
+     * wire but the UI often never surfaces them.
+     */
+    thinkingSignature(signature = `ccr_cursor_${Date.now()}`) {
+      return {
+        ...base(),
+        choices: [
+          {
+            index: 0,
+            delta: { thinking: { signature } },
+            finish_reason: null,
+          },
+        ],
+      };
+    },
     toolCall(tool: { id: string; name: string; args: Record<string, unknown> }, index = 0) {
       return {
         ...base(),
@@ -120,6 +139,7 @@ export function accumulateChatCompletion(
 ): Record<string, unknown> {
   let content = "";
   let thinking = "";
+  let thinkingSignature = "";
   const toolCalls: any[] = [];
   let finishReason: string | null = "stop";
   let usage: any = null;
@@ -134,6 +154,9 @@ export function accumulateChatCompletion(
     const delta = choice.delta || {};
     if (typeof delta.content === "string") content += delta.content;
     if (delta.thinking?.content) thinking += coerceThinkingText(delta.thinking.content);
+    if (typeof delta.thinking?.signature === "string" && delta.thinking.signature) {
+      thinkingSignature = delta.thinking.signature;
+    }
     if (Array.isArray(delta.tool_calls)) {
       for (const tc of delta.tool_calls) {
         const idx = tc.index ?? toolCalls.length;
@@ -155,7 +178,14 @@ export function accumulateChatCompletion(
   }
 
   const message: Record<string, unknown> = { role: "assistant", content: content || null };
-  if (thinking) message.thinking = { content: thinking, signature: "" };
+  if (thinking) {
+    // Non-empty signature keeps AnthropicTransformer request replay from
+    // dropping the thinking block (`c.type === "thinking" && c.signature`).
+    message.thinking = {
+      content: thinking,
+      signature: thinkingSignature || `ccr_cursor_${created}`,
+    };
+  }
   if (toolCalls.length) {
     // Index-based assignment can leave sparse holes; JSON would serialize them as null.
     message.tool_calls = toolCalls.filter(Boolean);

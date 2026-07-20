@@ -2,9 +2,36 @@
 sidebar_position: 7
 ---
 
-# ccr codex-auth / ccr qwen-auth
+# ccr claude-auth / ccr codex-auth / ccr qwen-auth
 
 需要 OAuth 或 JWT 令牌的提供商后端的认证命令。
+
+## ccr claude-auth
+
+通过 OAuth 与 PKCE，使用你的 Claude Pro 或 Max 订阅认证 Anthropic API。
+
+```bash
+ccr claude-auth
+```
+
+### 工作原理
+
+1. CLI 生成 PKCE 挑战并输出来自 `claude.ai` 的授权 URL
+2. 在浏览器中打开该 URL，登录你的 Claude 账户
+3. Claude 重定向到 `http://localhost:1455/callback`，由 CCR 服务器用授权码交换令牌
+4. 令牌保存到 `~/.claude-code-router/claude_auth.json`
+5. 回到终端并按 Enter — CLI 会确认令牌已保存
+6. `claude-auth` 转换器读取该令牌用于 API 请求
+7. 令牌即将过期时，自动使用刷新令牌续期
+
+### 前置要求
+
+- [Claude Pro 或 Max](https://claude.ai) 订阅
+- CCR 服务器必须正在运行（它在端口 1455 上托管 OAuth 回调）
+
+另见：[Claude 订阅集成指南](/zh/docs/server/guides/claude-auth)。`claude-auth` 转换器会自动发送 Anthropic 的 `oauth-2025-04-20` beta，以便订阅 OAuth Bearer 令牌被接受。
+
+---
 
 ## ccr codex-auth
 

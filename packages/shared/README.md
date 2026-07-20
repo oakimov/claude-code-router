@@ -61,7 +61,7 @@ Create and configure your `~/.claude-code-router/config.json` file. For more det
 
 The `config.json` file has several key sections:
 
-- **`PROXY_URL`** (optional): You can set a proxy for API requests, for example: `"PROXY_URL": "http://127.0.0.1:7890"`.
+- **`PROXY_URL`** (optional): You can set a proxy for API requests, for example: `"PROXY_URL": "http://127.0.0.1:7890"`. Loopback targets (`localhost`, `127.0.0.1`, `::1`) always bypass the proxy. Hosts listed in the `NO_PROXY` / `no_proxy` environment variables also bypass it (comma-separated hosts, `.domain` / `*.domain`, CIDR, optional `:port`).
 - **`LOG`** (optional): You can enable logging by setting it to `true`. When set to `false`, no log files will be created. Default is `true`.
 - **`LOG_LEVEL`** (optional): Set the logging level. Available options are: `"fatal"`, `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`. Default is `"debug"`.
 - **Logging Systems**: The Claude Code Router uses two separate logging systems:
@@ -866,7 +866,7 @@ Two transformers are required in the chain:
 - `claude-auth` — converts the request from Unified (OpenAI) format to Anthropic format, injects `Authorization: Bearer <token>` (loading/refreshing the token from `~/.claude-code-router/claude_auth.json`), and converts the Anthropic SSE response back to Unified format.
 - `Anthropic` — registers the `POST /v1/messages` route. It has no body conversion in the provider chain, so it acts as a no-op endpoint stub.
 
-> **Note**: The `api_key` field is a placeholder — actual authentication is handled via OAuth tokens stored in `~/.claude-code-router/claude_auth.json`. Run `ccr claude-auth` to authenticate before using this provider.
+> **Note**: The `api_key` field is a placeholder — actual authentication is handled via OAuth tokens stored in `~/.claude-code-router/claude_auth.json`. Run `ccr claude-auth` to authenticate before using this provider. The transformer automatically sends Anthropic's `oauth-2025-04-20` beta so subscription OAuth Bearer tokens are accepted.
 
 **DeepSeek via OpenCode (Mandatory Reasoning Replay):**
 
@@ -966,13 +966,22 @@ module.exports = async function router(req, config) {
 
 ##### Subagent Routing
 
-For routing within subagents, you must specify a particular provider and model by including `<CCR-SUBAGENT-MODEL>provider,model</CCR-SUBAGENT-MODEL>` at the **beginning** of the subagent's prompt. This allows you to direct specific subagent tasks to designated models.
+Claude Code subagent requests can be routed with:
+
+1. An explicit `<CCR-SUBAGENT-MODEL>provider,model</CCR-SUBAGENT-MODEL>` tag in system or message text (the tag is stripped before the upstream request). `provider/model` is also accepted.
+2. Or the `CLAUDE_CODE_SUBAGENT_MODEL=provider,model` environment variable when Claude Code marks the turn as a subagent.
+
+Tag takes priority over the environment variable. If neither is set, normal Router rules apply.
 
 **Example:**
 
 ```
 <CCR-SUBAGENT-MODEL>openrouter,anthropic/claude-3.5-sonnet</CCR-SUBAGENT-MODEL>
 Please help me analyze this code snippet for potential optimizations...
+```
+
+```bash
+export CLAUDE_CODE_SUBAGENT_MODEL="openrouter,anthropic/claude-3.5-sonnet"
 ```
 
 ## Status Line (Beta)

@@ -4,6 +4,9 @@ import { getValidAccessToken } from "../utils/claude-auth";
 import { transformResponseOut } from "../utils/vertex-claude.util";
 import { AnthropicTransformer } from "./anthropic.transformer";
 
+/** Anthropic beta required for Claude subscription / Claude Code OAuth Bearer auth. */
+const CLAUDE_OAUTH_REQUIRED_BETA = "oauth-2025-04-20";
+
 function hasCacheControl(value: unknown): boolean {
   if (!value || typeof value !== "object") {
     return false;
@@ -20,6 +23,23 @@ function hasCacheControl(value: unknown): boolean {
   return Object.values(value as Record<string, unknown>).some((item) =>
     hasCacheControl(item)
   );
+}
+
+function mergeAnthropicBetaValues(
+  ...values: Array<string | undefined>
+): string {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const value of values) {
+    if (!value) continue;
+    for (const part of value.split(",")) {
+      const token = part.trim();
+      if (!token || seen.has(token)) continue;
+      seen.add(token);
+      merged.push(token);
+    }
+  }
+  return merged.join(",");
 }
 
 export class ClaudeAuthTransformer implements Transformer {
@@ -59,11 +79,16 @@ export class ClaudeAuthTransformer implements Transformer {
       request.anthropic_thinking;
     const usesPromptCaching = hasCacheControl(anthropicBody);
 
-    // Add anthropic-beta when the rebuilt Anthropic payload uses beta-only features.
-    if (usesThinking || usesPromptCaching) {
-      headers["anthropic-beta"] =
-        "interleaved-thinking-2025-05-14,effort-2025-11-24,prompt-caching-scope-2026-01-05";
-    }
+    const featureBetas =
+      usesThinking || usesPromptCaching
+        ? "interleaved-thinking-2025-05-14,effort-2025-11-24,prompt-caching-scope-2026-01-05"
+        : undefined;
+
+    // Always declare OAuth subscription beta for Bearer auth; merge feature betas when needed.
+    headers["anthropic-beta"] = mergeAnthropicBetaValues(
+      featureBetas,
+      CLAUDE_OAUTH_REQUIRED_BETA
+    );
 
     return {
       body: anthropicBody,

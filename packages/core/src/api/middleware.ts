@@ -1,4 +1,9 @@
 import { FastifyRequest, FastifyReply } from "fastify";
+import {
+  sanitizeErrorForLog,
+  sanitizeUpstreamErrorText,
+} from "../utils/redact";
+import { isClientAbortError } from "../utils/retry";
 
 export interface ApiError extends Error {
   statusCode?: number;
@@ -14,7 +19,7 @@ export function createApiError(
   type: string = "api_error",
   headers?: Record<string, string>
 ): ApiError {
-  const error = new Error(message) as ApiError;
+  const error = new Error(sanitizeUpstreamErrorText(message) || message) as ApiError;
   error.statusCode = statusCode;
   error.code = code;
   error.type = type;
@@ -27,12 +32,32 @@ export async function errorHandler(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
-  request.log.error(error);
+  // Client disconnects are expected; avoid noisy error responses/logs.
+  if (isClientAbortError(error) || reply.raw.destroyed || reply.sent) {
+    request.log.debug(sanitizeErrorForLog(error), "request aborted or already closed");
+    if (!reply.sent && !reply.raw.destroyed && !reply.raw.headersSent) {
+      // Must reset Content-Type: formatResponse may already have set
+      // text/event-stream, and Fastify rejects object payloads for that type.
+      reply.type("application/json");
+      return reply.code(499).send({
+        error: {
+          message: "Client closed request",
+          type: "api_error",
+          code: "client_aborted",
+        },
+      });
+    }
+    return;
+  }
+
+  request.log.error(sanitizeErrorForLog(error), "request error");
 
   const statusCode = error.statusCode || 500;
   const response = {
     error: {
-      message: error.message + (error.stack ? "\n" + error.stack : ""),
+      message:
+        sanitizeUpstreamErrorText(error.message || "Internal error") ||
+        "Internal error",
       type: error.type || "api_error",
       code: error.code || "internal_error",
     },
@@ -45,7 +70,7 @@ export async function errorHandler(
   // Reset Content-Type to application/json to prevent "invalid payload type" errors
   // when the reply previously had Content-Type set to a non-JSON value (e.g., text/event-stream
   // from a streaming response that failed before the stream was sent).
-  reply.header("Content-Type", "application/json");
+  reply.type("application/json");
 
   return reply.code(statusCode).send(response);
 }

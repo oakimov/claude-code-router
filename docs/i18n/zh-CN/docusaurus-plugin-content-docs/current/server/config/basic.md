@@ -89,6 +89,18 @@ sidebar_position: 1
 
 同时支持 `$VAR_NAME` 和 `${VAR_NAME}` 语法。
 
+### 代理（Proxy）
+
+- **`PROXY_URL`**（可选）：用于出站提供商请求的 HTTP(S) 代理，例如 `"PROXY_URL": "http://127.0.0.1:7890"`。
+- 发往回环地址（`localhost`、`127.0.0.1`、`::1`）的请求始终绕过代理。
+- 进程环境变量 **`NO_PROXY`** / **`no_proxy`** 中列出的主机也会绕过代理。该列表以逗号分隔，支持主机名、`.domain` / `*.domain` 后缀、CIDR，以及可选的 `:port`。
+
+示例：
+
+```bash
+export NO_PROXY="api.anthropic.com,.internal,10.0.0.0/8,localhost"
+```
+
 ## 完整示例
 
 ```json
@@ -147,7 +159,7 @@ ccr restart
 - **PORT**: 服务器端口号（默认：3456）
 - **APIKEY**: API 密钥，用于身份验证
 - **HOST**: 服务器监听地址（默认：127.0.0.1，如果配置了 Providers 且没有设置 APIKEY，则强制为 127.0.0.1）
-- **PROXY_URL**: 代理服务器地址
+- **PROXY_URL**: 代理服务器地址。回环地址与 `NO_PROXY`/`no_proxy` 匹配的主机不会走代理
 - **LOG**: 是否启用日志（默认：true）
 - **LOG_LEVEL**: 日志级别（fatal/error/warn/info/debug/trace）
 - **API_TIMEOUT_MS**: API 请求超时时间（毫秒）

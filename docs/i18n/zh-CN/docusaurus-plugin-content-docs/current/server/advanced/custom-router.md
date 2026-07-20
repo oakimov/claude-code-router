@@ -133,13 +133,22 @@ tail -f ~/.claude-code-router/claude-code-router.log
 
 ## 子代理路由
 
-对于子代理内的路由，您必须在子代理提示词的**开头**包含 `<CCR-SUBAGENT-MODEL>provider,model</CCR-SUBAGENT-MODEL>` 来指定特定的提供商和模型。
+Claude Code 子代理请求可通过以下方式路由：
+
+1. 在 system 或 message 文本中使用显式标签 `<CCR-SUBAGENT-MODEL>provider,model</CCR-SUBAGENT-MODEL>`（发送上游前会移除该标签）。也支持 `provider/model`。
+2. 或在 Claude Code 将请求标记为子代理时，使用环境变量 `CLAUDE_CODE_SUBAGENT_MODEL=provider,model`。
+
+标签优先于环境变量。若两者都未设置，则继续使用常规 Router 规则。
 
 **示例：**
 
 ```
 <CCR-SUBAGENT-MODEL>openrouter,anthropic/claude-3.5-sonnet</CCR-SUBAGENT-MODEL>
 请帮我分析这段代码是否存在潜在的优化空间...
+```
+
+```bash
+export CLAUDE_CODE_SUBAGENT_MODEL="openrouter,anthropic/claude-3.5-sonnet"
 ```
 
 ## 下一步

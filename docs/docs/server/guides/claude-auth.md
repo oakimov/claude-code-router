@@ -79,6 +79,12 @@ Two transformers are required:
 - `claude-auth` — converts the request from Unified (OpenAI) format to Anthropic format, injects `Authorization: Bearer <token>` (loading/refreshing the token from `~/.claude-code-router/claude_auth.json`), and converts the Anthropic SSE response back to Unified format
 - `Anthropic` — registers the `POST /v1/messages` route; it has no body conversion of its own in the provider chain so it acts as a no-op endpoint stub
 
+### OAuth beta header
+
+Anthropic requires the `oauth-2025-04-20` beta for Claude subscription / Claude Code OAuth Bearer auth. The `claude-auth` transformer always includes `anthropic-beta: oauth-2025-04-20` and merges it with any feature betas (for example thinking / prompt-caching) when those features are used. Requests also use `?beta=true` on the Anthropic Messages URL.
+
+You do not need to configure this beta yourself — it is applied automatically when the provider uses `claude-auth`.
+
 ## Token Storage
 
 Tokens are stored in `~/.claude-code-router/claude_auth.json` (mode 0600):

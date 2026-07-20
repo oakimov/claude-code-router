@@ -277,3 +277,4 @@ export { TransformerService } from "./services/transformer";
 export { TokenizerService } from "./services/tokenizer";
 export { pluginManager, tokenSpeedPlugin, getTokenSpeedStats, getGlobalTokenSpeedStats, CCRPlugin, CCRPluginOptions, PluginMetadata } from "./plugins";
 export { SSEParserTransform, SSESerializerTransform, rewriteStream } from "./utils/sse";
+export { isClientAbortError } from "./utils/retry";

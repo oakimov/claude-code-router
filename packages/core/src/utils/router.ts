@@ -40,6 +40,206 @@ const enc = get_encoding("cl100k_base");
 // feeding the result back into the model.
 const encodeSafe = (text: string) => enc.encode(text, undefined, []);
 
+const CCR_SUBAGENT_MODEL_OPEN_TAG = "<CCR-SUBAGENT-MODEL>";
+const CCR_SUBAGENT_MODEL_CLOSE_TAG = "</CCR-SUBAGENT-MODEL>";
+const CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX = "x-anthropic-billing-header";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+/** Normalize `provider/model` or `provider,model` into our `provider,model` form. */
+export function normalizeModelSelector(
+  value: string | undefined | null
+): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.includes(",")) return trimmed;
+  const slash = trimmed.indexOf("/");
+  if (slash > 0) {
+    return `${trimmed.slice(0, slash)},${trimmed.slice(slash + 1)}`;
+  }
+  return trimmed;
+}
+
+function claudeCodeBillingMetadataIsSubagent(text: string): boolean {
+  const prefix = `${CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX}:`;
+  if (!text.startsWith(prefix)) return false;
+  const payload = text.slice(prefix.length).trim();
+  if (!payload) return false;
+
+  if (payload.startsWith("{")) {
+    try {
+      const metadata = JSON.parse(payload) as unknown;
+      return isRecord(metadata) && metadata.cc_is_subagent === true;
+    } catch {
+      return false;
+    }
+  }
+
+  const values = payload
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .flatMap((part) => {
+      const separator = part.indexOf("=");
+      if (
+        separator < 0 ||
+        part.slice(0, separator).trim() !== "cc_is_subagent"
+      ) {
+        return [];
+      }
+      return [part.slice(separator + 1).trim()];
+    });
+  return values.length === 1 && values[0] === "true";
+}
+
+/**
+ * Strip Claude Code's billing helper system block.
+ * Returns true when that block marks the request as a subagent.
+ */
+export function removeClaudeCodeBillingSystemHeader(body: any): boolean {
+  const system = body?.system;
+  if (!Array.isArray(system) || system.length === 0) return false;
+
+  const firstBlock = system[0];
+  const firstText =
+    typeof firstBlock === "string"
+      ? firstBlock
+      : isRecord(firstBlock) &&
+          firstBlock.type === "text" &&
+          typeof firstBlock.text === "string"
+        ? firstBlock.text
+        : undefined;
+
+  if (!firstText?.startsWith(CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX)) {
+    return false;
+  }
+
+  const isSubagent = claudeCodeBillingMetadataIsSubagent(firstText);
+  system.shift();
+  if (system.length === 0) {
+    delete body.system;
+  }
+  return isSubagent;
+}
+
+function extractAndRemoveSubagentModelTagFromText(
+  text: string,
+  replace: (next: string) => void
+): string | undefined {
+  const openIndex = text.indexOf(CCR_SUBAGENT_MODEL_OPEN_TAG);
+  if (openIndex < 0) return undefined;
+  const modelStart = openIndex + CCR_SUBAGENT_MODEL_OPEN_TAG.length;
+  const closeIndex = text.indexOf(CCR_SUBAGENT_MODEL_CLOSE_TAG, modelStart);
+  if (closeIndex < 0) return undefined;
+
+  const model = normalizeModelSelector(text.slice(modelStart, closeIndex));
+  if (!model) return undefined;
+
+  replace(
+    `${text.slice(0, openIndex)}${text.slice(
+      closeIndex + CCR_SUBAGENT_MODEL_CLOSE_TAG.length
+    )}`
+  );
+  return model;
+}
+
+function extractAndRemoveSubagentModelTagFromContentBlock(
+  block: unknown,
+  replace: (next: string) => void
+): string | undefined {
+  if (typeof block === "string") {
+    return extractAndRemoveSubagentModelTagFromText(block, replace);
+  }
+  if (!isRecord(block) || typeof block.text !== "string") {
+    return undefined;
+  }
+  return extractAndRemoveSubagentModelTagFromText(block.text, replace);
+}
+
+function extractAndRemoveSystemSubagentModelTag(
+  body: any
+): string | undefined {
+  const system = body?.system;
+  if (typeof system === "string") {
+    return extractAndRemoveSubagentModelTagFromText(system, (text) => {
+      body.system = text;
+    });
+  }
+  if (!Array.isArray(system)) return undefined;
+
+  for (let index = 0; index < system.length; index += 1) {
+    const block = system[index];
+    const model = extractAndRemoveSubagentModelTagFromContentBlock(
+      block,
+      (text) => {
+        if (typeof block === "string") {
+          system[index] = text;
+        } else if (isRecord(block)) {
+          block.text = text;
+        }
+      }
+    );
+    if (model) return model;
+  }
+  return undefined;
+}
+
+function extractAndRemoveSubagentModelTagFromMessage(
+  message: Record<string, unknown>
+): string | undefined {
+  if (typeof message.content === "string") {
+    return extractAndRemoveSubagentModelTagFromText(
+      message.content,
+      (text) => {
+        message.content = text;
+      }
+    );
+  }
+  if (!Array.isArray(message.content)) return undefined;
+
+  const content = message.content;
+  for (let index = 0; index < content.length; index += 1) {
+    const block = content[index];
+    const model = extractAndRemoveSubagentModelTagFromContentBlock(
+      block,
+      (text) => {
+        if (typeof block === "string") {
+          content[index] = text;
+        } else if (isRecord(block)) {
+          block.text = text;
+        }
+      }
+    );
+    if (model) return model;
+  }
+  return undefined;
+}
+
+function extractAndRemoveMessageSubagentModelTag(
+  body: any
+): string | undefined {
+  if (!Array.isArray(body?.messages)) return undefined;
+  const limit = Math.min(body.messages.length, 2);
+  for (let index = 0; index < limit; index += 1) {
+    const message = body.messages[index];
+    if (!isRecord(message) || message.role !== "user") continue;
+    const model = extractAndRemoveSubagentModelTagFromMessage(message);
+    if (model) return model;
+  }
+  return undefined;
+}
+
+/** Prefer system tag, then early user-message tag; strip whichever matched. */
+export function extractAndRemoveClaudeCodeSubagentModelTag(
+  body: any
+): string | undefined {
+  return (
+    extractAndRemoveSystemSubagentModelTag(body) ||
+    extractAndRemoveMessageSubagentModelTag(body)
+  );
+}
+
 export const calculateTokenCount = (
   messages: MessageParam[],
   system: any,
@@ -164,21 +364,27 @@ const getUseModel = async (
     );
     return { model: Router.longContext, scenarioType: 'longContext' };
   }
-  if (
-    req.body?.system?.length > 1 &&
-    req.body?.system[1]?.text?.startsWith("<CCR-SUBAGENT-MODEL>")
-  ) {
-    const model = req.body?.system[1].text.match(
-      /<CCR-SUBAGENT-MODEL>(.*?)<\/CCR-SUBAGENT-MODEL>/s
+
+  // Claude Code subagent signals: strip billing helper system text, then prefer
+  // explicit <CCR-SUBAGENT-MODEL> tag, else CLAUDE_CODE_SUBAGENT_MODEL env.
+  const isClaudeCodeSubagent = removeClaudeCodeBillingSystemHeader(req.body);
+  const taggedSubagentModel = extractAndRemoveClaudeCodeSubagentModelTag(req.body);
+  if (taggedSubagentModel) {
+    req.log.info(`Using CCR subagent tag model: ${taggedSubagentModel}`);
+    return { model: taggedSubagentModel, scenarioType: 'subagent' };
+  }
+  if (isClaudeCodeSubagent) {
+    const envModel = normalizeModelSelector(
+      process.env.CLAUDE_CODE_SUBAGENT_MODEL
     );
-    if (model) {
-      req.body.system[1].text = req.body.system[1].text.replace(
-        `<CCR-SUBAGENT-MODEL>${model[1]}</CCR-SUBAGENT-MODEL>`,
-        ""
+    if (envModel) {
+      req.log.info(
+        `Using CLAUDE_CODE_SUBAGENT_MODEL for Claude Code subagent: ${envModel}`
       );
-      return { model: model[1], scenarioType: 'default' };
+      return { model: envModel, scenarioType: 'subagent' };
     }
   }
+
   // Use the background model for any Claude Haiku variant
   const globalRouter = configService.get("Router");
   if (
@@ -213,7 +419,13 @@ export interface RouterContext {
   event?: any;
 }
 
-export type RouterScenarioType = 'default' | 'background' | 'think' | 'longContext' | 'webSearch';
+export type RouterScenarioType =
+  | 'default'
+  | 'background'
+  | 'think'
+  | 'longContext'
+  | 'webSearch'
+  | 'subagent';
 
 export interface RouterFallbackConfig {
   default?: string[];
@@ -221,6 +433,7 @@ export interface RouterFallbackConfig {
   think?: string[];
   longContext?: string[];
   webSearch?: string[];
+  subagent?: string[];
 }
 
 const parseSessionId = (userId: unknown): string | undefined => {

@@ -86,6 +86,18 @@ Use environment variables in your configuration:
 
 Both `$VAR_NAME` and `${VAR_NAME}` syntax are supported.
 
+### Proxy
+
+- **`PROXY_URL`** (optional): HTTP(S) proxy used for outbound provider requests, for example `"PROXY_URL": "http://127.0.0.1:7890"`.
+- Requests to loopback addresses (`localhost`, `127.0.0.1`, `::1`) always bypass the proxy.
+- Hosts listed in the process environment variables **`NO_PROXY`** / **`no_proxy`** also bypass the proxy. The list is comma-separated and supports bare hosts, `.domain` / `*.domain` suffixes, CIDR ranges, and optional `:port` entries.
+
+Example:
+
+```bash
+export NO_PROXY="api.anthropic.com,.internal,10.0.0.0/8,localhost"
+```
+
 ## Complete Example
 
 ```json

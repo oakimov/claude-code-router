@@ -357,13 +357,13 @@ async function getServer(options: RunOptions = {}) {
               }
               return data
             }catch (error: any) {
-              serverInstance.app.log.error('Unexpected error in stream processing:', error);
-
-              // Handle premature stream closure error
-              if (error.code === 'ERR_STREAM_PREMATURE_CLOSE') {
+              // Premature close is expected on client disconnect.
+              if (error.code === 'ERR_STREAM_PREMATURE_CLOSE' || error.name === 'AbortError') {
                 abortController.abort();
                 return undefined;
               }
+
+              serverInstance.app.log.error('Unexpected error in stream processing:', error);
 
               // Re-throw other errors
               throw error;
@@ -391,7 +391,8 @@ async function getServer(options: RunOptions = {}) {
             }
           } catch (readError: any) {
             if (readError.name === 'AbortError' || readError.code === 'ERR_STREAM_PREMATURE_CLOSE') {
-              serverInstance.app.log.error('Background read stream closed prematurely');
+              // Client disconnect / stream teardown — expected, keep quiet.
+              serverInstance.app.log.debug('Background read stream closed prematurely');
             } else {
               serverInstance.app.log.error('Error in background stream reading:', readError);
             }

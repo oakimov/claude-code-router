@@ -7,7 +7,12 @@ import {
 import type { UnifiedChatRequest } from "@/types/llm";
 import { resolveCursorApiKey } from "@/utils/cursor-auth";
 import { accumulateChatCompletion, createSseHelpers } from "./events-to-sse";
-import { extractTrailingToolResults, toSdkPrompt } from "./prompt";
+import {
+  extractTrailingToolResults,
+  progressOnlyContinuationPrompt,
+  shouldContinueProgressOnlyTurn,
+  toSdkPrompt,
+} from "./prompt";
 import {
   buildSessionKey,
   cancelActiveRun,
@@ -250,6 +255,13 @@ export async function runCursor(
   // prior turns. Prefer a slim follow-up (trailing tool results / last user turn)
   // over re-embedding the full CCR transcript as plain text.
   const followUpOnly = session.hasSentPrompt;
+  const customTools =
+    mode === "bridge" ? toCustomTools(request, session) : undefined;
+  const sdkSendOptions = {
+    model,
+    mode: mode === "plan" ? ("plan" as const) : ("agent" as const),
+    local: customTools ? { customTools } : undefined,
+  };
 
   if (shouldSendNewPrompt) {
     if (followUpOnly && toolResults.length && !session.streamIterator) {
@@ -270,8 +282,6 @@ export async function runCursor(
         });
       }
 
-      const customTools =
-        mode === "bridge" ? toCustomTools(request, session) : undefined;
       const prompt = toSdkPrompt(request, {
         mode,
         workspaceDir: session.workspaceDir,
@@ -279,11 +289,7 @@ export async function runCursor(
       });
 
       try {
-        const run = await session.agent.send(prompt, {
-          model,
-          mode: mode === "plan" ? "plan" : "agent",
-          local: customTools ? { customTools } : undefined,
-        });
+        const run = await session.agent.send(prompt, sdkSendOptions);
         session.run = run;
         session.streamIterator = run.stream()[Symbol.asyncIterator]();
         session.hasSentPrompt = true;
@@ -350,97 +356,146 @@ export async function runCursor(
         // Cursor can emit more thinking after assistant text; dropping those
         // late deltas avoids "Content block is not a thinking block".
         let allowThinking = true;
+        let emittedThinking = false;
+        let thinkingSigned = false;
+        let currentRunAssistantText = "";
+        let progressContinuationAttempts = 0;
 
-        for await (const event of streamSessionEvents(session, mode)) {
-          // Keep the session out of idle/LRU eviction while SSE is live.
-          touchSession(session);
-          if (event.kind === "host_tool") {
-            if (mode !== "bridge") continue;
-            allowThinking = false;
-            noteOutput(event.tool.name);
-            noteOutput(JSON.stringify(event.tool.args ?? {}));
-            enqueue(helpers.toolCall(event.tool, emittedHostTools));
-            emittedHostTools += 1;
+        const flushThinkingSignature = () => {
+          if (!emittedThinking || thinkingSigned) return;
+          enqueue(helpers.thinkingSignature());
+          thinkingSigned = true;
+          allowThinking = false;
+        };
 
-            // Emit all currently pending host tools, then finish this CCR turn.
-            while (session.pendingEmit.length) {
-              const tool = session.pendingEmit.shift()!;
-              noteOutput(tool.name);
-              noteOutput(JSON.stringify(tool.args ?? {}));
-              enqueue(helpers.toolCall(tool, emittedHostTools));
+        while (true) {
+          let continuedProgressTurn = false;
+          for await (const event of streamSessionEvents(session, mode)) {
+            // Keep the session out of idle/LRU eviction while SSE is live.
+            touchSession(session);
+            if (event.kind === "host_tool") {
+              if (mode !== "bridge") continue;
+              flushThinkingSignature();
+              allowThinking = false;
+              noteOutput(event.tool.name);
+              noteOutput(JSON.stringify(event.tool.args ?? {}));
+              enqueue(helpers.toolCall(event.tool, emittedHostTools));
               emittedHostTools += 1;
-            }
-            emitFinish("tool_calls");
-            if (wantsStream) controller.enqueue(helpers.encodeDone());
-            controller.close();
-            return;
-          }
 
-          if (event.kind === "end") {
-            emitFinish("stop");
-            if (wantsStream) controller.enqueue(helpers.encodeDone());
-            controller.close();
-            session.streamIterator = undefined;
-            session.run = undefined;
-            return;
-          }
-
-          const message = event.message;
-          if (!message) continue;
-
-          if (message.type === "assistant") {
-            for (const block of message.message?.content || []) {
-              if (block.type === "text" && block.text) {
-                allowThinking = false;
-                sawAssistantText = true;
-                noteOutput(block.text);
-                enqueue(helpers.content(block.text));
+              // Emit all currently pending host tools, then finish this CCR turn.
+              while (session.pendingEmit.length) {
+                const tool = session.pendingEmit.shift()!;
+                noteOutput(tool.name);
+                noteOutput(JSON.stringify(tool.args ?? {}));
+                enqueue(helpers.toolCall(tool, emittedHostTools));
+                emittedHostTools += 1;
               }
-              // tool_use blocks for custom tools are handled via parkHostTool emit path
+              emitFinish("tool_calls");
+              if (wantsStream) controller.enqueue(helpers.encodeDone());
+              controller.close();
+              return;
             }
-          } else if (message.type === "thinking") {
-            if (!allowThinking) continue;
-            const text = coerceThinkingText((message as any).text);
-            if (text) {
-              noteOutput(text);
-              enqueue(helpers.thinking(text));
-            }
-          } else if (message.type === "usage") {
-            // Keep for diagnostics / logs only — do not surface as request usage.
-            sdkUsageRaw = usageFromSdk(message);
-          } else if (message.type === "status") {
-            if (message.status === "ERROR" || message.status === "CANCELLED") {
-              throw Object.assign(
-                new Error(
-                  message.message || `Cursor run ${message.status.toLowerCase()}`
-                ),
-                {
-                  statusCode: 502,
-                  code: "provider_response_error",
-                  type: "api_error",
-                }
-              );
-            }
-            if (message.status === "FINISHED" && !emittedHostTools) {
+
+            if (event.kind === "end") {
+              session.streamIterator = undefined;
+              session.run = undefined;
+
+              if (
+                shouldContinueProgressOnlyTurn({
+                  mode,
+                  assistantText: currentRunAssistantText,
+                  emittedHostTools,
+                  continuationAttempts: progressContinuationAttempts,
+                })
+              ) {
+                progressContinuationAttempts += 1;
+                logger?.warn?.(
+                  {
+                    assistantText: currentRunAssistantText,
+                    attempt: progressContinuationAttempts,
+                  },
+                  "cursor-sdk continuing progress-only terminal turn"
+                );
+                const run = await withSessionSendLock(session, () =>
+                  session.agent.send(
+                    progressOnlyContinuationPrompt(),
+                    sdkSendOptions
+                  )
+                );
+                session.run = run;
+                session.streamIterator = run.stream()[Symbol.asyncIterator]();
+                session.hasSentPrompt = true;
+                currentRunAssistantText = "";
+                continuedProgressTurn = true;
+                break;
+              }
+
+              flushThinkingSignature();
               emitFinish("stop");
               if (wantsStream) controller.enqueue(helpers.encodeDone());
               controller.close();
-              session.streamIterator = undefined;
-              session.run = undefined;
               return;
             }
-          } else if (message.type === "tool_call" && mode !== "bridge") {
-            // plan/agent: ignore or narrate lightly in agent mode
-            if (mode === "agent" && message.name) {
-              allowThinking = false;
-              const narrate = `\n[cursor tool ${message.status || "running"}: ${message.name}]\n`;
-              noteOutput(narrate);
-              enqueue(helpers.content(narrate));
+
+            const message = event.message;
+            if (!message) continue;
+
+            if (message.type === "assistant") {
+              for (const block of message.message?.content || []) {
+                if (block.type === "text" && block.text) {
+                  flushThinkingSignature();
+                  allowThinking = false;
+                  sawAssistantText = true;
+                  currentRunAssistantText += block.text;
+                  noteOutput(block.text);
+                  enqueue(helpers.content(block.text));
+                }
+                // tool_use blocks for custom tools are handled via parkHostTool emit path
+              }
+            } else if (message.type === "thinking") {
+              if (!allowThinking) continue;
+              const text = coerceThinkingText((message as any).text);
+              if (text) {
+                emittedThinking = true;
+                noteOutput(text);
+                enqueue(helpers.thinking(text));
+              }
+            } else if (message.type === "usage") {
+              // Keep for diagnostics / logs only — do not surface as request usage.
+              sdkUsageRaw = usageFromSdk(message);
+            } else if (message.type === "status") {
+              if (message.status === "ERROR" || message.status === "CANCELLED") {
+                throw Object.assign(
+                  new Error(
+                    message.message ||
+                      `Cursor run ${message.status.toLowerCase()}`
+                  ),
+                  {
+                    statusCode: 502,
+                    code: "provider_response_error",
+                    type: "api_error",
+                  }
+                );
+              }
+              // Drain the SDK iterator after FINISHED. The SDK emits this status
+              // before it persists terminal metadata and closes the event buffer;
+              // the `end` branch above is the safe point for completion/recovery.
+            } else if (message.type === "tool_call" && mode !== "bridge") {
+              // plan/agent: ignore or narrate lightly in agent mode
+              if (mode === "agent" && message.name) {
+                flushThinkingSignature();
+                allowThinking = false;
+                const narrate = `\n[cursor tool ${message.status || "running"}: ${message.name}]\n`;
+                noteOutput(narrate);
+                enqueue(helpers.content(narrate));
+              }
             }
           }
+          if (!continuedProgressTurn) break;
         }
 
         if (!sawAssistantText && !emittedHostTools) {
+          flushThinkingSignature();
           emitFinish("stop");
         }
         if (wantsStream) controller.enqueue(helpers.encodeDone());

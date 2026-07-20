@@ -205,7 +205,11 @@ interface UnifiedMessage {
 - 认证：以 `crsr_` 开头的 `api_key`，或 `CURSOR_API_KEY`
 - 通过 `ccr model get` 使用 `Cursor.models.list` 发现模型
 
-详见 [Cursor SDK 集成指南](/docs/server/guides/cursor)。
+另见：
+- [Codex 集成指南](/zh/docs/server/guides/codex)
+- [Claude 订阅集成指南](/zh/docs/server/guides/claude-auth)
+- [Cursor SDK 集成指南](/zh/docs/server/guides/cursor)
+- [CLI 认证命令](/zh/docs/cli/commands/auth)
 
 ### deepseek
 

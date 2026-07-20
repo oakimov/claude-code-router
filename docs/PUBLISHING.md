@@ -4,9 +4,9 @@ This repo publishes:
 
 | Package | Path | Published version |
 |---|---|---|
-| `@caeliq/ccr-shared` | `packages/shared` | `2.0.1` |
-| `@caeliq/llms` | `packages/core` | `1.0.55` |
-| `@caeliq/claude-code-router` | `packages/cli` | `2.0.1` |
+| `@caeliq/ccr-shared` | `packages/shared` | `2.0.2` |
+| `@caeliq/llms` | `packages/core` | `1.0.56` |
+| `@caeliq/claude-code-router` | `packages/cli` | `2.0.2` |
 
 GitHub repo used for provenance / trusted publishing: `oakimov/claude-code-router`  
 npm org: `caeliq`  
@@ -91,7 +91,7 @@ Workflow: `.github/workflows/npm-publish.yml`
 
 Triggers:
 
-- Push of a version tag: `v*.*.*` (example: `v2.0.1`)
+- Push of a version tag: `v*.*.*` (example: `v2.0.2`)
 - Manual **workflow_dispatch** (optional dry-run)
 
 It builds with pnpm, then runs `scripts/release.sh npm` with:
@@ -112,8 +112,8 @@ It builds with pnpm, then runs `scripts/release.sh npm` with:
 2. Commit and push to `github` (`main`)
 3. Tag and push (prefer matching the CLI version):
    ```bash
-   git tag v2.0.1
-   git push github v2.0.1
+   git tag v2.0.2
+   git push github v2.0.2
    ```
 4. Watch **Actions → Publish npm packages**
 
@@ -121,11 +121,12 @@ Publish order inside the script is always: shared → llms → CLI.
 
 ## 6. Later releases
 
-1. Bump versions:
-   - shared / CLI when those packages change (`packages/shared`, `packages/cli`)
-   - `@caeliq/llms` independently when core changes
-2. Ensure `packages/core` still depends on a published `@caeliq/ccr-shared` version range that exists
-3. Tag `vX.Y.Z` and push to GitHub
+1. Bump versions in `package.json` files before tagging:
+   - Always bump `@caeliq/ccr-shared` and the CLI (and usually root / UI to match) — `scripts/release.sh` publishes shared every run and will fail if that version already exists on npm
+   - Bump `@caeliq/llms` whenever core changes
+   - `@caeliq/ccr-server` is not published to npm; its code ships inside the CLI bundle
+2. Ensure `packages/core` still depends on a published `@caeliq/ccr-shared` version range that exists (`workspace:*` is rewritten to `^<shared version>` at publish time)
+3. Commit, push to GitHub `main`, then tag `vX.Y.Z` (prefer matching the CLI version) and `git push github vX.Y.Z`
 
 ## Troubleshooting
 

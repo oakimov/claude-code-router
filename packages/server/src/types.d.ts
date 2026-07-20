@@ -48,6 +48,7 @@ declare module "@caeliq/llms" {
   // Export utilities
   export const calculateTokenCount: (messages: any[], system: any, tools: any[]) => number;
   export const searchProjectBySession: (sessionId: string) => Promise<string | null>;
+  export const isClientAbortError: (error: unknown) => boolean;
 
   // Export services
   export class ConfigService {

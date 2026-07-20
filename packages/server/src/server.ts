@@ -1,4 +1,8 @@
-import Server, { calculateTokenCount, TokenizerService } from "@caeliq/llms";
+import Server, {
+  calculateTokenCount,
+  TokenizerService,
+  isClientAbortError,
+} from "@caeliq/llms";
 import { readConfigFile, writeConfigFile, backupConfigFile } from "./utils";
 import { join } from "path";
 import fastifyStatic from "@fastify/static";
@@ -70,10 +74,18 @@ export const createServer = async (config: any): Promise<any> => {
 
       return response;
     } catch (error) {
-      app.log.error({
-        url,
-        error: error instanceof Error ? error.message : String(error),
-      }, 'Upstream Provider Fetch Exception');
+      const message = error instanceof Error ? error.message : String(error);
+      // Client disconnect aborts are expected (AbortSignal from SSE/socket close).
+      // Log at debug so OpenCode/Cursor noise does not look like provider 500s.
+      // Use shared classifier so timeouts stay as errors (not quiet disconnects).
+      if (isClientAbortError(error)) {
+        app.log.debug({ url, error: message }, "Upstream provider fetch aborted");
+      } else {
+        app.log.error({
+          url,
+          error: message,
+        }, "Upstream Provider Fetch Exception");
+      }
       throw error;
     }
   };
@@ -106,7 +118,7 @@ export const createServer = async (config: any): Promise<any> => {
         const tokenizerConfig = tokenizerService.getTokenizerConfigForModel(provider, modelName);
 
         if (!tokenizerConfig) {
-          req.log?.warn(`No tokenizer config found for ${provider},${modelName}, using default tiktoken`);
+          req.log?.debug(`No tokenizer config found for ${provider},${modelName}; using default tiktoken`);
         } else {
           req.log?.info(`Using tokenizer config: ${JSON.stringify(tokenizerConfig)}`);
         }

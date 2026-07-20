@@ -113,6 +113,9 @@ When a request fails, you can configure a list of backup models. The system will
     ],
     "webSearch": [
       "openrouter,anthropic/claude-sonnet-4"
+    ],
+    "subagent": [
+      "openrouter,anthropic/claude-sonnet-4"
     ]
   }
 }
@@ -120,11 +123,12 @@ When a request fails, you can configure a list of backup models. The system will
 
 ### How It Works
 
-1. **Trigger**: When a model request fails for a routing scenario (HTTP error response)
-2. **Auto-switch**: The system automatically checks the fallback configuration for that scenario
-3. **Sequential retry**: Tries each backup model in order
-4. **Success**: Once a model responds successfully, returns immediately
-5. **All failed**: If all backup models fail, returns the original error
+1. **Trigger**: When a model request fails for a routing scenario. Eligible failures include provider HTTP error responses and provider network/transport errors (for example connection reset or fetch failures). Client disconnects / aborts do **not** trigger fallback.
+2. **Backoff**: Before the first fallback attempt (and between later attempts), CCR waits using the upstream `Retry-After` header when present; otherwise it uses exponential backoff.
+3. **Auto-switch**: The system checks the fallback configuration for that scenario.
+4. **Sequential retry**: Tries each backup model in order. If the client disconnects during a wait or attempt, remaining fallbacks are cancelled.
+5. **Success**: Once a model responds successfully, returns immediately.
+6. **All failed**: If all backup models fail, returns the original error.
 
 ### Configuration Details
 
@@ -132,6 +136,8 @@ When a request fails, you can configure a list of backup models. The system will
 - **Validation**: Backup models must exist in the `Providers` configuration
 - **Flexibility**: Different scenarios can have different fallback lists
 - **Optional**: If a scenario doesn't need fallback, omit it or use an empty array
+- **Subagents**: `fallback.subagent` overrides fallback for subagent-routed requests. If omitted, subagents inherit `fallback.default` for backward compatibility.
+- **Abort-aware**: Closing the client mid-request cancels fallback waits and further attempts
 
 ### Use Cases
 
@@ -177,11 +183,15 @@ The system logs detailed fallback process:
 
 ```
 [warn] Request failed for default, trying 2 fallback models
+[info] Waiting 2000ms before first fallback attempt
 [info] Trying fallback model: aihubmix,Z/glm-4.5
 [warn] Fallback model aihubmix,Z/glm-4.5 failed: API rate limit exceeded
+[info] Waiting 4000ms before next fallback attempt
 [info] Trying fallback model: openrouter,anthropic/claude-sonnet-4
 [info] Fallback model openrouter,anthropic/claude-sonnet-4 succeeded
 ```
+
+Upstream failure details in logs and client error payloads are privacy-sanitized (hosts, IPs, bearer tokens, and API key material are redacted).
 
 ### Important Notes
 
@@ -189,6 +199,7 @@ The system logs detailed fallback process:
 2. **Performance differences**: Different models may have varying response speeds and quality
 3. **Quota management**: Ensure backup models have sufficient quotas
 4. **Testing**: Regularly test the availability of backup models
+5. **Retry-After**: When providers return `Retry-After`, fallback waits honor that delay before trying the next model
 
 ## Project-Level Routing
 
@@ -244,12 +255,24 @@ The router uses `tiktoken` (cl100k_base) to estimate request token count. This i
 
 ## Subagent Routing
 
-Specify models for subagents using special tags:
+Claude Code subagent requests can be routed in three ways (highest priority first):
+
+1. **Explicit tag** in system or message text (the tag is stripped before the upstream request):
 
 ```
 <CCR-SUBAGENT-MODEL>provider,model</CCR-SUBAGENT-MODEL>
 Please help me analyze this code...
 ```
+
+`provider/model` is also accepted and normalized to `provider,model`.
+
+2. **Environment variable** for Claude Code subagent turns (when Claude Code marks the request as a subagent, for example via its billing helper header):
+
+```bash
+export CLAUDE_CODE_SUBAGENT_MODEL="provider,model"
+```
+
+3. If neither tag nor env model is set, normal Router rules apply.
 
 ## Next Steps
 

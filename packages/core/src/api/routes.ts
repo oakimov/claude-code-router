@@ -13,6 +13,21 @@ import { ConfigService } from "@/services/config";
 import { ProviderService } from "@/services/provider";
 import { TransformerService } from "@/services/transformer";
 import { Transformer } from "@/types/transformer";
+import {
+  sanitizeErrorForLog,
+  sanitizeUpstreamErrorText,
+} from "@/utils/redact";
+import {
+  CLIENT_DISCONNECT_REASON,
+  createClientDisconnectSignal,
+  delay,
+  isClientAbortError,
+  isFallbackEligibleError,
+  isResponseSocketGone,
+  retryDelayAfterFailure,
+  selectFallbackModels,
+  toClientAbortError,
+} from "@/utils/retry";
 
 // Extend FastifyInstance to include custom services
 declare module "fastify" {
@@ -41,6 +56,9 @@ async function handleTransformerEndpoint(
   const body = req.body as any;
   const providerName = req.provider!;
   const provider = fastify.providerService.getProvider(providerName);
+  const disconnect = createClientDisconnectSignal(req, reply);
+  const clientSignal = disconnect.signal;
+  disconnect.arm();
 
   // Validate provider exists
   if (!provider) {
@@ -61,6 +79,7 @@ async function handleTransformerEndpoint(
       {
         req,
         provider,
+        signal: clientSignal,
       }
     );
 
@@ -74,6 +93,7 @@ async function handleTransformerEndpoint(
       transformer,
       {
         req,
+        signal: clientSignal,
       }
     );
 
@@ -86,17 +106,40 @@ async function handleTransformerEndpoint(
       bypass,
       {
         req,
+        signal: clientSignal,
       }
     );
 
-    // Format and return response
-    return await formatResponse(finalResponse, reply, body);
+    return await formatResponse(finalResponse, reply, body, clientSignal);
   } catch (error: any) {
-    // Handle fallback if error occurs
-    if (error.code === 'provider_response_error') {
-      const fallbackResult = await handleFallback(req, reply, fastify, transformer, error);
+    // Normalize string / mixed abort shapes from AbortSignal.any + fetch so
+    // errorHandler always takes the quiet 499 path (not HTTP 500).
+    if (isClientAbortError(error)) {
+      throw typeof error === "string" ? toClientAbortError(error) : error;
+    }
+    if (clientSignal.aborted) {
+      throw toClientAbortError(clientSignal.reason ?? error);
+    }
+    // Fallback on provider response errors and network/fetch failures.
+    if (isFallbackEligibleError(error)) {
+      const fallbackResult = await handleFallback(
+        req,
+        reply,
+        fastify,
+        transformer,
+        error,
+        clientSignal
+      );
       if (fallbackResult) {
         return fallbackResult;
+      }
+      // handleFallback returns null on client abort during backoff — surface an
+      // abort error so the handler takes the quiet/499 path instead of the
+      // original provider failure.
+      if (clientSignal.aborted) {
+        throw toClientAbortError(
+          clientSignal.reason ?? CLIENT_DISCONNECT_REASON
+        );
       }
     }
     throw error;
@@ -112,24 +155,55 @@ async function handleFallback(
   reply: FastifyReply,
   fastify: FastifyInstance,
   transformer: any,
-  error: any
+  error: any,
+  clientSignal?: AbortSignal
 ): Promise<any> {
   const scenarioType = (req as any).scenarioType || 'default';
   const fallbackConfig = fastify.configService.get<any>('fallback');
 
-  if (!fallbackConfig || !fallbackConfig[scenarioType]) {
+  const fallbackList = selectFallbackModels(fallbackConfig, scenarioType);
+  if (!fallbackList?.length) {
     return null;
   }
 
-  const fallbackList = fallbackConfig[scenarioType] as string[];
-  if (!Array.isArray(fallbackList) || fallbackList.length === 0) {
+  if (clientSignal?.aborted || isClientAbortError(error)) {
     return null;
   }
 
-  req.log.warn(`Request failed for ${(req as any).scenarioType}, trying ${fallbackList.length} fallback models`);
+  req.log.warn(
+    {
+      scenarioType,
+      fallbackCount: fallbackList.length,
+      error: sanitizeErrorForLog(error),
+    },
+    `Request failed for ${scenarioType}, trying ${fallbackList.length} fallback models`
+  );
+
+  let failedAttemptIndex = 0;
+  const initialDelayMs = retryDelayAfterFailure(
+    failedAttemptIndex,
+    error?.headers?.["Retry-After"] ?? error?.headers?.["retry-after"]
+  );
+  failedAttemptIndex += 1;
+  if (initialDelayMs > 0) {
+    req.log.info(`Waiting ${initialDelayMs}ms before first fallback attempt`);
+    try {
+      await delay(initialDelayMs, clientSignal);
+    } catch (waitError: any) {
+      if (isClientAbortError(waitError) || clientSignal?.aborted) {
+        return null;
+      }
+      throw waitError;
+    }
+  }
 
   // Try each fallback model in sequence
-  for (const fallbackModel of fallbackList) {
+  for (let i = 0; i < fallbackList.length; i += 1) {
+    if (clientSignal?.aborted) {
+      return null;
+    }
+
+    const fallbackModel = fallbackList[i];
     try {
       req.log.info(`Trying fallback model: ${fallbackModel}`);
 
@@ -157,7 +231,7 @@ async function handleFallback(
         provider,
         transformer,
         req.headers,
-        { req: newReq, provider }
+        { req: newReq, provider, signal: clientSignal }
       );
 
       // Send request to LLM provider
@@ -168,7 +242,7 @@ async function handleFallback(
         fastify,
         bypass,
         transformer,
-        { req: newReq }
+        { req: newReq, signal: clientSignal }
       );
 
       // Process response transformer chain
@@ -178,20 +252,58 @@ async function handleFallback(
         provider,
         transformer,
         bypass,
-        { req: newReq }
+        { req: newReq, signal: clientSignal }
       );
 
       req.log.info(`Fallback model ${fallbackModel} succeeded`);
 
       // Format and return response
-      return await formatResponse(finalResponse, reply, newBody);
+      return await formatResponse(finalResponse, reply, newBody, clientSignal);
     } catch (fallbackError: any) {
-      req.log.warn(`Fallback model ${fallbackModel} failed: ${fallbackError.message}`);
+      if (isClientAbortError(fallbackError)) {
+        throw fallbackError;
+      }
+      if (clientSignal?.aborted) {
+        throw toClientAbortError(
+          clientSignal.reason ?? CLIENT_DISCONNECT_REASON
+        );
+      }
+
+      req.log.warn(
+        {
+          fallbackModel,
+          error: sanitizeErrorForLog(fallbackError),
+        },
+        `Fallback model ${fallbackModel} failed`
+      );
+
+      const hasMore = i < fallbackList.length - 1;
+      if (hasMore) {
+        const waitMs = retryDelayAfterFailure(
+          failedAttemptIndex,
+          fallbackError?.headers?.["Retry-After"] ??
+            fallbackError?.headers?.["retry-after"]
+        );
+        failedAttemptIndex += 1;
+        if (waitMs > 0) {
+          req.log.info(
+            `Waiting ${waitMs}ms before next fallback attempt`
+          );
+          try {
+            await delay(waitMs, clientSignal);
+          } catch (waitError: any) {
+            if (isClientAbortError(waitError) || clientSignal?.aborted) {
+              return null;
+            }
+            throw waitError;
+          }
+        }
+      }
       continue;
     }
   }
 
-  req.log.error(`All fallback models failed for yichu ${scenarioType}`);
+  req.log.error(`All fallback models failed for ${scenarioType}`);
   return null;
 }
 
@@ -377,6 +489,7 @@ async function sendRequestToProvider(
       httpsProxy: fastify.configService.getHttpsProxy(),
       ...config,
       headers: JSON.parse(JSON.stringify(requestHeaders)),
+      signal: context?.signal ?? config.signal,
     },
     context,
     fastify.log
@@ -385,6 +498,7 @@ async function sendRequestToProvider(
   // Handle request errors
   if (!response.ok) {
     const errorText = await response.text();
+    const safeErrorText = sanitizeUpstreamErrorText(errorText) || errorText.slice(0, 240);
 
     let headers: Record<string, string> | undefined = undefined;
     const retryAfter = response.headers.get("retry-after");
@@ -409,22 +523,36 @@ async function sendRequestToProvider(
       }
     }
 
-    // Log parsed error details for observability
+    // Log parsed error details for observability (redacted)
     try {
       const errorJson = JSON.parse(errorText);
+      const safeMessage =
+        sanitizeUpstreamErrorText(
+          String(errorJson?.error?.message || errorText)
+        ) || safeErrorText;
       fastify.log.error(
-        { error: errorJson, status: response.status, provider: provider.name, model: requestBody.model },
-        `[provider_response_error] ${provider.name},${requestBody.model}: ${errorJson?.error?.message || errorText}`,
+        {
+          status: response.status,
+          provider: provider.name,
+          model: requestBody.model,
+          errorMessage: safeMessage,
+        },
+        `[provider_response_error] ${provider.name},${requestBody.model}: ${safeMessage}`,
       );
     } catch {
       fastify.log.error(
-        { errorText, status: response.status, provider: provider.name, model: requestBody.model },
-        `[provider_response_error] ${provider.name},${requestBody.model}: ${errorText}`,
+        {
+          status: response.status,
+          provider: provider.name,
+          model: requestBody.model,
+          errorText: safeErrorText,
+        },
+        `[provider_response_error] ${provider.name},${requestBody.model}: ${safeErrorText}`,
       );
     }
 
     throw createApiError(
-      `Error from provider(${provider.name},${requestBody.model}: ${response.status}): ${errorText}`,
+      `Error from provider(${provider.name},${requestBody.model}: ${response.status}): ${safeErrorText}`,
       response.status,
       "provider_response_error",
       "api_error",
@@ -501,7 +629,12 @@ async function processResponseTransformers(
  * Format and return response
  * Handle HTTP status codes, format streaming and regular responses
  */
-async function formatResponse(response: any, reply: FastifyReply, body: any) {
+async function formatResponse(
+  response: any,
+  reply: FastifyReply,
+  body: any,
+  clientSignal?: AbortSignal
+) {
   // Set HTTP status code
   if (!response.ok) {
     reply.code(response.status);
@@ -510,14 +643,121 @@ async function formatResponse(response: any, reply: FastifyReply, body: any) {
   // Handle streaming response
   const isStream = body.stream === true;
   if (isStream && response.ok) {
+    // Convert Web API ReadableStream to Node.js stream for Fastify
+    if (response.body && typeof response.body.getReader === "function") {
+      // fromWeb() locks response.body; destroy() cancels via that reader.
+      // Never call response.body.cancel() afterward — it rejects with
+      // ERR_INVALID_STATE ("ReadableStream is locked") as an unhandledRejection.
+      const nodeStream = Readable.fromWeb(response.body as any);
+      let cleanedUp = false;
+
+      const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        try {
+          if (!nodeStream.destroyed) {
+            nodeStream.destroy();
+          }
+        } catch {
+          // ignore
+        }
+      };
+
+      const detachAbort = () => {
+        if (clientSignal) {
+          clientSignal.removeEventListener("abort", cleanup);
+        }
+      };
+
+      const socketGone = isResponseSocketGone(reply);
+
+      // Only 499 when the TCP socket is actually gone. A disconnect signal
+      // alone is not proof — Cursor previously got false 499 JSON bodies
+      // while still connected ("cancle stream: null" then status 499).
+      if (socketGone) {
+        cleanup();
+        if (!reply.sent && !reply.raw.destroyed) {
+          reply.type("application/json");
+          return reply.code(499).send({
+            error: {
+              message: "Client closed request",
+              type: "api_error",
+              code: "client_aborted",
+            },
+          });
+        }
+        return reply;
+      }
+
+      if (clientSignal?.aborted) {
+        reply.log?.warn?.(
+          {
+            reason: String((clientSignal as any).reason ?? ""),
+            headersSent: reply.raw.headersSent,
+            writableEnded: reply.raw.writableEnded,
+          },
+          "disconnect signal fired but socket still open; continuing SSE"
+        );
+      }
+
+      reply.header("Content-Type", "text/event-stream");
+      reply.header("Cache-Control", "no-cache");
+      reply.header("Connection", "keep-alive");
+
+      if (clientSignal) {
+        clientSignal.addEventListener("abort", cleanup, { once: true });
+      }
+
+      // Client gone / broken pipe while streaming — abort upstream quietly.
+      reply.raw.on("error", (err: any) => {
+        if (
+          err?.code === "EPIPE" ||
+          err?.code === "ECONNRESET" ||
+          err?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+          isClientAbortError(err)
+        ) {
+          cleanup();
+        }
+      });
+      reply.raw.on("close", () => {
+        if (!reply.raw.writableEnded) {
+          cleanup();
+        }
+      });
+
+      nodeStream.on("error", (err: any) => {
+        if (
+          err?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+          err?.code === "ABORT_ERR" ||
+          isClientAbortError(err)
+        ) {
+          return;
+        }
+        reply.log?.error?.(
+          sanitizeErrorForLog(err),
+          "upstream stream error"
+        );
+      });
+
+      // After a normal stream end, response close no longer aborts (writableEnded),
+      // but drop the listener anyway so cleanup cannot run twice on teardown.
+      nodeStream.once("end", detachAbort);
+      nodeStream.once("close", detachAbort);
+
+      return reply.send(nodeStream);
+    }
+    // Web ReadableStream is not a valid Fastify payload for text/event-stream.
     reply.header("Content-Type", "text/event-stream");
     reply.header("Cache-Control", "no-cache");
     reply.header("Connection", "keep-alive");
-    // Convert Web API ReadableStream to Node.js stream for Fastify
-    if (response.body && typeof response.body.getReader === 'function') {
-      return reply.send(Readable.fromWeb(response.body));
+    if (response.body && typeof (response.body as any).pipe === "function") {
+      return reply.send(response.body);
     }
-    return reply.send(response.body);
+    throw createApiError(
+      "Streaming response body is not a readable stream",
+      502,
+      "provider_response_error"
+    );
   } else {
     // Handle regular JSON response (including error responses)
     const json = await response.json();

@@ -114,6 +114,9 @@ sidebar_position: 3
     ],
     "webSearch": [
       "openrouter,anthropic/claude-sonnet-4"
+    ],
+    "subagent": [
+      "openrouter,anthropic/claude-sonnet-4"
     ]
   }
 }
@@ -121,11 +124,12 @@ sidebar_position: 3
 
 ### 工作原理
 
-1. **触发条件**：当某个路由场景的模型请求失败时（HTTP 错误响应）
-2. **自动切换**：系统自动检查该场景的 fallback 配置
-3. **顺序尝试**：按照列表顺序依次尝试每个备用模型
-4. **成功返回**：一旦某个模型成功响应，立即返回结果
-5. **全部失败**：如果所有备用模型都失败，返回原始错误
+1. **触发条件**：当某个路由场景的模型请求失败时。符合条件的失败包括提供商 HTTP 错误响应，以及提供商网络/传输错误（例如连接重置或 fetch 失败）。客户端断开 / 取消**不会**触发 fallback。
+2. **退避等待**：在首次 fallback 尝试之前（以及后续尝试之间），CCR 会优先使用上游 `Retry-After` 响应头；若不存在，则使用指数退避。
+3. **自动切换**：系统检查该场景的 fallback 配置。
+4. **顺序尝试**：按照列表顺序依次尝试每个备用模型。如果在等待或尝试过程中客户端断开，剩余 fallback 会被取消。
+5. **成功返回**：一旦某个模型成功响应，立即返回结果。
+6. **全部失败**：如果所有备用模型都失败，返回原始错误。
 
 ### 配置说明
 
@@ -133,6 +137,8 @@ sidebar_position: 3
 - **验证**：备用模型必须在 `Providers` 配置中存在
 - **灵活性**：可以为不同场景配置不同的备用列表
 - **可选性**：如果某个场景不需要备用，可以不配置或使用空数组
+- **子代理**：`fallback.subagent` 可单独覆盖子代理路由的 fallback；若未设置，则为向后兼容自动继承 `fallback.default`。
+- **可中止**：客户端在请求中途关闭时，会取消 fallback 等待与后续尝试
 
 ### 使用场景
 
@@ -178,11 +184,15 @@ sidebar_position: 3
 
 ```
 [warn] Request failed for default, trying 2 fallback models
+[info] Waiting 2000ms before first fallback attempt
 [info] Trying fallback model: aihubmix,Z/glm-4.5
 [warn] Fallback model aihubmix,Z/glm-4.5 failed: API rate limit exceeded
+[info] Waiting 4000ms before next fallback attempt
 [info] Trying fallback model: openrouter,anthropic/claude-sonnet-4
 [info] Fallback model openrouter,anthropic/claude-sonnet-4 succeeded
 ```
+
+日志与返回给客户端的上游失败信息会做隐私脱敏（主机名、IP、Bearer token、API key 等会被脱敏）。
 
 ### 注意事项
 
@@ -190,6 +200,7 @@ sidebar_position: 3
 2. **性能差异**：不同模型的响应速度和质量可能有差异
 3. **配额管理**：确保备用模型有足够的配额
 4. **测试验证**：定期测试备用模型的可用性
+5. **Retry-After**：当提供商返回 `Retry-After` 时，fallback 会在尝试下一个模型前遵守该等待时间
 
 ## 项目级路由
 
@@ -243,12 +254,24 @@ module.exports = async function(req, config) {
 
 ## 子代理路由
 
-使用特殊标签为子代理指定模型：
+Claude Code 子代理请求可通过以下方式路由（优先级从高到低）：
+
+1. **显式标签**（可写在 system 或 message 文本中；发送上游前会移除该标签）：
 
 ```
 <CCR-SUBAGENT-MODEL>provider,model</CCR-SUBAGENT-MODEL>
 请帮我分析这段代码...
 ```
+
+也支持 `provider/model`，会规范化为 `provider,model`。
+
+2. **环境变量**，用于 Claude Code 子代理请求（当 Claude Code 将请求标记为子代理时，例如通过其 billing helper header）：
+
+```bash
+export CLAUDE_CODE_SUBAGENT_MODEL="provider,model"
+```
+
+3. 若未设置标签或环境变量模型，则继续使用常规 Router 规则。
 
 ## 动态模型切换
 

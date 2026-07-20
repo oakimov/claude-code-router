@@ -48,7 +48,7 @@ npm install -g @caeliq/claude-code-router
 创建并配置您的 `~/.claude-code-router/config.json` 文件。有关更多详细信息，您可以参考 `config.example.json`。
 
 `config.json` 文件有几个关键部分：
-- **`PROXY_URL`** (可选): 您可以为 API 请求设置代理，例如：`"PROXY_URL": "http://127.0.0.1:7890"`。
+- **`PROXY_URL`** (可选): 您可以为 API 请求设置代理，例如：`"PROXY_URL": "http://127.0.0.1:7890"`。回环地址（`localhost`、`127.0.0.1`、`::1`）始终绕过代理；环境变量 `NO_PROXY` / `no_proxy` 中列出的主机也会绕过代理（逗号分隔，支持主机名、`.domain` / `*.domain`、CIDR、可选 `:port`）。
 - **`LOG`** (可选): 您可以通过将其设置为 `true` 来启用日志记录。当设置为 `false` 时，将不会创建日志文件。默认值为 `true`。
 - **`LOG_LEVEL`** (可选): 设置日志级别。可用选项包括：`"fatal"`、`"error"`、`"warn"`、`"info"`、`"debug"`、`"trace"`。默认值为 `"debug"`。
 - **日志系统**: Claude Code Router 使用两个独立的日志系统：
@@ -360,6 +360,7 @@ Transformers 允许您修改请求和响应负载，以确保与不同提供商 
 **可用的内置 Transformer：**
 
 -   `Anthropic`: 如果你只使用这一个转换器，则会直接透传请求和响应(你可以用它来接入其他支持Anthropic端点的服务商)。
+-   `claude-auth`: 使用 Claude Pro/Max 订阅 OAuth 令牌访问 Anthropic API（需与 `Anthropic` 组成转换器链）。会自动发送 `oauth-2025-04-20` beta，以便订阅 OAuth Bearer 令牌被接受。先运行 `ccr claude-auth` 完成认证。
 -   `deepseek`: 适配 DeepSeek API 的请求/响应。
 -   `gemini`: 适配 Gemini API 的请求/响应。
 -   `openrouter`: 适配 OpenRouter API 的请求/响应。它还可以接受一个 `provider` 路由参数，以指定 OpenRouter 应使用哪些底层提供商。有关更多详细信息，请参阅 [OpenRouter 文档](https://openrouter.ai/docs/features/provider-routing)。请参阅下面的示例：
@@ -391,6 +392,29 @@ Transformers 允许您修改请求和响应负载，以确保与不同提供商 
 -   `vertex-gemini`: 处理使用 vertex 鉴权的 gemini api。
 -   `qwen-cli` (实验性): 通过 Qwen CLI [qwen-cli.js](https://gist.github.com/musistudio/f5a67841ced39912fd99e42200d5ca8b) 对 qwen3-coder-plus 的非官方支持。
 -   `rovo-cli` (experimental): 通过 Atlassian Rovo Dev CLI [rovo-cli.js](https://gist.github.com/SaseQ/c2a20a38b11276537ec5332d1f7a5e53) 对 GPT-5 的非官方支持。
+
+**Claude 订阅提供商配置：**
+
+`claude-auth` 转换器使用 Claude Pro 或 Max 订阅的 OAuth 令牌访问 Anthropic API，而不是静态 API Key。
+
+```json
+{
+  "name": "claude-subscription",
+  "api_base_url": "https://api.anthropic.com",
+  "api_key": "no-key",
+  "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+  "transformer": {
+    "use": ["claude-auth", "Anthropic"]
+  }
+}
+```
+
+转换器链需要两个转换器：
+
+- `claude-auth` — 将请求从 Unified（OpenAI）格式转换为 Anthropic 格式，注入 `Authorization: Bearer <token>`（从 `~/.claude-code-router/claude_auth.json` 加载/刷新令牌），并将 Anthropic SSE 响应转换回 Unified 格式。
+- `Anthropic` — 注册 `POST /v1/messages` 路由。在提供商链中自身不做 body 转换，仅作为端点桩。
+
+> **注意**：`api_key` 字段只是占位符 — 实际认证通过保存在 `~/.claude-code-router/claude_auth.json` 的 OAuth 令牌完成。使用前请先运行 `ccr claude-auth`。该转换器会自动发送 Anthropic 的 `oauth-2025-04-20` beta，以便订阅 OAuth Bearer 令牌被接受。
 
 **自定义 Transformer:**
 
@@ -466,13 +490,22 @@ module.exports = async function router(req, config) {
 
 ##### 子代理路由
 
-对于子代理内的路由，您必须在子代理提示词的**开头**包含 `<CCR-SUBAGENT-MODEL>provider,model</CCR-SUBAGENT-MODEL>` 来指定特定的提供商和模型。这样可以将特定的子代理任务定向到指定的模型。
+Claude Code 子代理请求可通过以下方式路由：
+
+1. 在 system 或 message 文本中使用显式标签 `<CCR-SUBAGENT-MODEL>provider,model</CCR-SUBAGENT-MODEL>`（发送上游前会移除该标签）。也支持 `provider/model`。
+2. 或在 Claude Code 将请求标记为子代理时，使用环境变量 `CLAUDE_CODE_SUBAGENT_MODEL=provider,model`。
+
+标签优先于环境变量。若两者都未设置，则继续使用常规 Router 规则。
 
 **示例：**
 
 ```
 <CCR-SUBAGENT-MODEL>openrouter,anthropic/claude-3.5-sonnet</CCR-SUBAGENT-MODEL>
 请帮我分析这段代码是否存在潜在的优化空间...
+```
+
+```bash
+export CLAUDE_CODE_SUBAGENT_MODEL="openrouter,anthropic/claude-3.5-sonnet"
 ```
 
 ## Status Line (Beta)

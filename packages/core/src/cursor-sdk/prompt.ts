@@ -60,9 +60,59 @@ export function buildBridgeSystemGuidance(
     `Host tools are exposed via MCP server "${CUSTOM_USER_TOOLS_SERVER}" using bare tool names.`,
     `Isolated agent cwd (do not treat as the user project): ${workspaceDir}`,
     "Pass absolute paths into host tools when referring to the user's real project files.",
+    "A progress update such as 'Checking...', 'Inspecting...', or 'Let me look...' is not a final answer.",
+    "After progress narration, call a host tool in the same turn; if no tool is needed, provide the complete user-facing answer before finishing.",
+    "Never end a turn with progress narration alone.",
     "Available host tools:",
     toolCatalog(request),
   ].join("\n");
+}
+
+const PROGRESS_ONLY_PATTERNS = [
+  /^(?:checking|inspecting|reviewing|examining|investigating|verifying|reading|searching)\s+(?:the|this|that|these|those|your|our|which|whether|for|how|why|what|where)\b/i,
+  /^looking\s+(?:at|into|for|through|up)\b/i,
+  /^(?:i(?:'ll| will)|let me)\s+(?:check|inspect|review|examine|investigate|verify|read|search|look)\b/i,
+];
+
+/**
+ * Detect a short terminal message that only announces work which never occurred.
+ * Keep this deliberately narrow: it is a recovery signal, not a general quality score.
+ */
+export function isProgressOnlyAssistantText(text: string): boolean {
+  const trimmed = String(text || "").trim();
+  if (!trimmed || trimmed.length > 240) return false;
+  if (/\n\s*\n/.test(trimmed)) return false;
+
+  const normalized = trimmed.replace(/\s+/g, " ");
+  const sentenceEnds = normalized.match(/[.!?](?:\s|$)/g)?.length || 0;
+  if (sentenceEnds > 1) return false;
+  return PROGRESS_ONLY_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+export function shouldContinueProgressOnlyTurn(input: {
+  mode: "bridge" | "plan" | "agent";
+  assistantText: string;
+  emittedHostTools: number;
+  continuationAttempts: number;
+}): boolean {
+  return (
+    input.mode === "bridge" &&
+    input.emittedHostTools === 0 &&
+    input.continuationAttempts < 1 &&
+    isProgressOnlyAssistantText(input.assistantText)
+  );
+}
+
+export function progressOnlyContinuationPrompt(): SDKUserMessage {
+  return {
+    text: [
+      "Continue the same turn now.",
+      "Your previous assistant message was only progress narration and ended without a host tool call or a complete answer.",
+      "Do not repeat the progress update.",
+      "If evidence is still needed, call an available host tool immediately; otherwise provide the complete user-facing answer now.",
+      "Do not finish until the requested work or answer is complete.",
+    ].join(" "),
+  };
 }
 
 /**
