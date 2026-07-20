@@ -15,9 +15,9 @@ npm publisher: `oakimov`
 ## Status
 
 - [x] Manual first publish completed (2026-07-20)
+- [x] `.github/workflows/npm-publish.yml` pushed to GitHub `main`
 - [ ] Trusted Publisher (OIDC) configured on all three npm packages
-- [ ] `.github/workflows/npm-publish.yml` pushed to GitHub `main`
-- [ ] Dry-run workflow_dispatch succeeded
+- [ ] Dry-run workflow_dispatch succeeded with Trusted Publisher configured
 - [ ] Tag-based publish verified on a new version
 
 ## 1. One-time npm org setup

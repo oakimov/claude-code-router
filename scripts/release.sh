@@ -71,7 +71,23 @@ npm_publish() {
   (
     cd "$pkg_dir"
     echo "npm publish ${PUBLISH_ARGS[*]}"
-    npm publish "${PUBLISH_ARGS[@]}"
+    set +e
+    local output
+    output="$(npm publish "${PUBLISH_ARGS[@]}" 2>&1)"
+    local status=$?
+    set -e
+    printf '%s\n' "$output"
+    if [[ $status -eq 0 ]]; then
+      exit 0
+    fi
+    # Dry-run against an already-published version is still a useful CI smoke test.
+    if [[ "${DRY_RUN}" == "1" || "${DRY_RUN}" == "true" ]]; then
+      if printf '%s\n' "$output" | grep -q "cannot publish over the previously published versions"; then
+        echo "Dry-run OK: version already on npm (packaging/auth path exercised)"
+        exit 0
+      fi
+    fi
+    exit "$status"
   )
 }
 
@@ -100,7 +116,7 @@ prepare_publish_package() {
     pkg.author = 'caeliq';
     pkg.repository = {
       type: 'git',
-      url: '${REPO_URL}',
+      url: 'git+${REPO_URL}',
       directory: '${repo_directory}'
     };
     pkg.publishConfig = {
