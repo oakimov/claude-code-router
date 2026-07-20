@@ -11,7 +11,7 @@ on:
         type: boolean
         default: false
 
-# OIDC trusted publishing requires id-token: write and must NOT set NODE_AUTH_TOKEN.
+# OIDC trusted publishing requires id-token: write and must NOT use NODE_AUTH_TOKEN.
 permissions:
   contents: read
   id-token: write
@@ -33,10 +33,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # Use current Node 22.x so npm@latest (OIDC/provenance) can install.
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "22.13.0"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: Upgrade npm (OIDC trusted publishing)
@@ -85,18 +86,14 @@ jobs:
             fi
           fi
 
-      - name: Ensure OIDC is used (no npm token)
-        run: |
-          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NODE_AUTH_TOKEN is set; unset it for npm trusted publishing"
-            exit 1
-          fi
-          # setup-node may write a placeholder auth line; remove it so OIDC is used.
-          npm config delete "//registry.npmjs.org/:_authToken" || true
-
       - name: Publish to npm (OIDC)
         env:
           CI: "true"
           NPM_TRUSTED_PUBLISHING: "true"
           NPM_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
-        run: bash scripts/release.sh npm
+          # setup-node injects a placeholder NODE_AUTH_TOKEN when registry-url is set.
+          # Clear it so npm uses GitHub OIDC trusted publishing instead of token auth.
+          NODE_AUTH_TOKEN: ""
+        run: |
+          npm config delete "//registry.npmjs.org/:_authToken" || true
+          bash scripts/release.sh npm

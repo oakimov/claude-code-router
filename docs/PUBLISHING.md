@@ -137,4 +137,5 @@ Publish order inside the script is always: shared → llms → CLI.
 | `cannot publish over existing version` | bump `version` in that package |
 | Provenance errors in CI | npm too old in CI (workflow upgrades npm), or trusted publisher missing |
 | Wrong repo in provenance | publisher config must match `oakimov/claude-code-router` |
-| `NODE_AUTH_TOKEN is set` workflow error | remove any npm token secret/env from the job |
+| Token auth used instead of OIDC | `actions/setup-node` injects `NODE_AUTH_TOKEN`; workflow clears it before publish |
+| `npm@latest` engine error on CI | use current Node 22.x (workflow uses `node-version: "22"`) |
