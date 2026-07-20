@@ -41,7 +41,7 @@
   },
   "link.item.label.NPM Package": {
     "message": "NPM 包",
-    "description": "The label of footer link with label=NPM Package linking to https://www.npmjs.com/package/@musistudio/claude-code-router"
+    "description": "The label of footer link with label=NPM Package linking to https://www.npmjs.com/package/@caeliq/claude-code-router"
   },
   "copyright": {
     "message": "Copyright © 2025 Claude Code Router. 保留所有权利。",

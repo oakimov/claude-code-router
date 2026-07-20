@@ -17,7 +17,7 @@ Claude Code Router CLI (`ccr`) 是一个命令行工具，用于管理和控制 
 ## 安装
 
 ```bash
-npm install -g @musistudio/claude-code-router
+npm install -g @caeliq/claude-code-router
 ```
 
 或使用项目别名：

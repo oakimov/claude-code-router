@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Code Router is a tool that routes Claude Code requests to different LLM providers. It uses a Monorepo architecture with four main packages:
+Claude Code Router is a tool that routes Claude Code requests to different LLM providers. It uses a Monorepo architecture with these packages:
 
-- **cli** (`@musistudio/claude-code-router`): Command-line tool providing the `ccr` command
-- **server** (`@CCR/server`): Core server handling API routing and transformations
-- **shared** (`@CCR/shared`): Shared constants, utilities, and preset management
-- **ui** (`@CCR/ui`): Web management interface (React + Vite)
+- **cli** (`@caeliq/claude-code-router`): Command-line tool providing the `ccr` command
+- **server** (`@caeliq/ccr-server`): Core server handling API routing and transformations
+- **shared** (`@caeliq/ccr-shared`): Shared constants, utilities, and preset management
+- **ui** (`@caeliq/ccr-ui`): Web management interface (React + Vite)
+- **core** (`@caeliq/llms`): Universal LLM API transformation / routing framework
 
 ### Core Objectives
 - **Model Versatility**: Enable Claude Code to leverage the best model for a specific task (e.g., high-reasoning models for Plan Mode vs. lightweight models for background tasks).
@@ -83,7 +84,7 @@ pnpm release        # Build and publish all packages
 
 ### 1. Routing System
 
-The routing logic is handled by the core framework in the `@musistudio/llms` package. It determines which model a request should be sent to:
+The routing logic is handled by the core framework in the `@caeliq/llms` package. It determines which model a request should be sent to:
 
 - **Default routing**: Uses `Router.default` configuration
 - **Project-level routing**: Checks `~/.claude/projects/<project-id>/claude-code-router.json`
@@ -293,7 +294,7 @@ Key files:
 
 ```
 cli → server → shared
-server → @musistudio/llms (core routing and transformation logic)
+server → @caeliq/llms (core routing and transformation logic)
 ui (standalone frontend application)
 ```
 
@@ -305,7 +306,7 @@ ui (standalone frontend application)
 4. **Build tools**:
    - cli/server/shared: esbuild
    - ui: Vite + TypeScript
-5. **@musistudio/llms**: This is an external dependency package providing the core server framework and transformer functionality, type definitions in `packages/server/src/types.d.ts`
+5. **@caeliq/llms**: In-monorepo core package (`packages/core`) providing the server framework and transformer functionality; published independently to npm. Type shims live in `packages/server/src/types.d.ts`.
 6. **Code comments**: All comments in code MUST be written in English
 7. **Documentation**: When implementing new features, add documentation to the docs project instead of creating standalone md files
 

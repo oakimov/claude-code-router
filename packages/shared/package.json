@@ -1,5 +1,5 @@
 {
-  "name": "@CCR/shared",
+  "name": "@caeliq/ccr-shared",
   "version": "2.0.0",
   "description": "Shared utilities and constants for Claude Code Router",
   "main": "dist/index.js",
@@ -13,8 +13,13 @@
     "router",
     "shared"
   ],
-  "author": "musistudio",
+  "author": "caeliq",
   "license": "MIT",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",

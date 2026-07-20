@@ -191,7 +191,7 @@ export async function transformRequestOut(request: any): Promise<UnifiedChatRequ
 
 /**
  * Transform response back — convert Mistral's content-array thinking format
- * to the delta.thinking / delta.content shape expected by @musistudio/llms.
+ * to the delta.thinking / delta.content shape expected by @caeliq/llms.
  */
 export async function transformResponseOut(
   response: Response,

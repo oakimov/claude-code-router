@@ -17,19 +17,19 @@ sidebar_position: 2
 ## 通过 npm 安装
 
 ```bash
-npm install -g @musistudio/claude-code-router
+npm install -g @caeliq/claude-code-router
 ```
 
 ## 通过 pnpm 安装
 
 ```bash
-pnpm add -g @musistudio/claude-code-router
+pnpm add -g @caeliq/claude-code-router
 ```
 
 ## 通过 Yarn 安装
 
 ```bash
-yarn global add @musistudio/claude-code-router
+yarn global add @caeliq/claude-code-router
 ```
 
 ## 验证安装

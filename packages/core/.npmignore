@@ -14,4 +14,3 @@ eslint.config.cjs
 *.log
 config.json
 tsconfig.json
-dist

@@ -3,8 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { backupConfigFile, readConfigFile, readConfigFileRaw, writeConfigFile } from "./index";
-import { CONFIG_FILE } from "@CCR/shared";
-import type { ProviderConfig } from "@CCR/shared";
+import { CONFIG_FILE } from "@caeliq/ccr-shared";
+import type { ProviderConfig } from "@caeliq/ccr-shared";
 
 const CODEX_AUTH_FILE = join(homedir(), ".claude-code-router", "codex_auth.json");
 const CONFIG_PATH_DISPLAY = "~/.claude-code-router/config.json";

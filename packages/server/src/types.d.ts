@@ -1,4 +1,4 @@
-declare module "@musistudio/llms" {
+declare module "@caeliq/llms" {
   import { FastifyInstance } from "fastify";
   import { FastifyBaseLogger } from "fastify";
 

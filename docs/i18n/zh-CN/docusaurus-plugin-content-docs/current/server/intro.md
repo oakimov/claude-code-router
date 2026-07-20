@@ -14,7 +14,7 @@ Claude Code Router Server 是一个核心服务组件，负责将 Claude Code �
 ┌─────────────┐     ┌─────────────────────────────┐     ┌──────────────┐
 │ Claude Code │────▶│ CCR Server                  │────▶│ LLM Provider │
 │   Client    │     │  ┌─────────────────────┐    │     │  (OpenAI/    │
-└─────────────┘     │  │ @musistudio/llms    │    │     │   Gemini/etc)│
+└─────────────┘     │  │ @caeliq/llms    │    │     │   Gemini/etc)│
                     │  │ (核心包)             │    │     └──────────────┘
                     │  │ - 请求转换           │    │
                     │  │ - 响应转换           │    │
@@ -31,13 +31,13 @@ Claude Code Router Server 是一个核心服务组件，负责将 Claude Code �
                            └─ Logs API
 ```
 
-## 核心包：@musistudio/llms
+## 核心包：@caeliq/llms
 
-服务器构建于 **@musistudio/llms** 之上，这是一个通用的 LLM API 转换库，提供了核心的请求/响应转换能力。
+服务器构建于 **@caeliq/llms** 之上，这是一个通用的 LLM API 转换库，提供了核心的请求/响应转换能力。
 
-### 什么是 @musistudio/llms？
+### 什么是 @caeliq/llms？
 
-`@musistudio/llms` 是一个独立的 npm 包，负责处理：
+`@caeliq/llms` 是一个独立的 npm 包，负责处理：
 
 - **API 格式转换**：在不同的 LLM 提供商 API 之间转换（Anthropic、OpenAI、Gemini 等）
 - **请求/响应转换**：将请求和响应转换为统一格式
@@ -106,7 +106,7 @@ interface Transformer {
 
 ### 与 CCR Server 的集成
 
-CCR server 通过以下方式集成 `@musistudio/llms`：
+CCR server 通过以下方式集成 `@caeliq/llms`：
 
 1. **转换器服务**（`packages/core/src/services/transformer.ts`）：管理转换器的注册和实例化
 2. **提供商配置**：将提供商配置映射到核心包的 LLMProvider 接口
@@ -115,7 +115,7 @@ CCR server 通过以下方式集成 `@musistudio/llms`：
 
 ### 版本和更新
 
-`@musistudio/llms` 的当前版本是 `1.0.51`。它作为独立的 npm 包发布，可以独立使用或作为 CCR Server 的一部分使用。
+`@caeliq/llms` 的当前版本是 `1.0.54`。它作为独立的 npm 包发布，可以独立使用或作为 CCR Server 的一部分使用。
 
 ## 核心功能
 

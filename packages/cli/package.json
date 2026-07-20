@@ -1,5 +1,5 @@
 {
-  "name": "@CCR/cli",
+  "name": "@caeliq/claude-code-router",
   "version": "2.0.0",
   "description": "CLI for Claude Code Router",
   "bin": {
@@ -15,14 +15,14 @@
     "router",
     "cli"
   ],
-  "author": "musistudio",
+  "author": "caeliq",
   "license": "MIT",
   "dependencies": {
     "@cursor/sdk": "^1.0.23"
   },
   "devDependencies": {
-    "@CCR/server": "workspace:*",
-    "@CCR/shared": "workspace:*",
+    "@caeliq/ccr-server": "workspace:*",
+    "@caeliq/ccr-shared": "workspace:*",
     "@inquirer/prompts": "^5.0.0",
     "@types/archiver": "^7.0.0",
     "@types/node": "^24.0.15",

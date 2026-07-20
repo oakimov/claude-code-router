@@ -516,7 +516,7 @@ module.exports = class StreamingMetadataTransformer {
 
 ```typescript
 // reasoning-transformer.ts
-import { Transformer, TransformerOptions } from "@musistudio/llms";
+import { Transformer, TransformerOptions } from "@caeliq/llms";
 
 export class ReasoningTransformer implements Transformer {
   static TransformerName = "reasoning";
@@ -820,4 +820,4 @@ async transformRequestIn(request, provider, context) {
 
 - [高级主题](/docs/server/advanced/custom-router) - 高级路由自定义
 - [Agents](/docs/server/advanced/agents) - 使用 agents 扩展
-- [核心包](/docs/server/intro) - 了解 @musistudio/llms
+- [核心包](/docs/server/intro) - 了解 @caeliq/llms

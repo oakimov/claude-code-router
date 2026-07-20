@@ -4,7 +4,7 @@
  */
 
 // Re-export types and core functions from shared package
-export * from '@CCR/shared';
+export * from '@caeliq/ccr-shared';
 
 // Export CLI specific functions (with interaction)
 export { exportPresetCli } from './export';

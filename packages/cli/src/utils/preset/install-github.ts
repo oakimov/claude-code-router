@@ -13,7 +13,7 @@ import {
   extractPreset,
   manifestToPresetFile,
   type PresetFile,
-} from '@CCR/shared';
+} from '@caeliq/ccr-shared';
 import AdmZip from 'adm-zip';
 
 // ANSI color codes

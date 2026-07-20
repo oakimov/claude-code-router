@@ -41,7 +41,7 @@ export class MistralTransformer implements Transformer {
 
   /**
    * Transform response back — convert Mistral's content-array thinking format
-   * to the delta.thinking / delta.content shape expected by @musistudio/llms.
+   * to the delta.thinking / delta.content shape expected by @caeliq/llms.
    */
   async transformResponseOut(response: Response, _context: TransformerContext): Promise<Response> {
     try {

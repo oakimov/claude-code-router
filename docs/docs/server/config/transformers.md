@@ -541,7 +541,7 @@ This is based on the actual `reasoning.transformer.ts` from the codebase.
 
 ```typescript
 // reasoning-transformer.ts
-import { Transformer, TransformerOptions } from "@musistudio/llms";
+import { Transformer, TransformerOptions } from "@caeliq/llms";
 
 export class ReasoningTransformer implements Transformer {
   static TransformerName = "reasoning";
@@ -845,4 +845,4 @@ async transformRequestIn(request, provider, context) {
 
 - [Advanced Topics](/docs/server/advanced/custom-router) - Advanced routing customization
 - [Agents](/docs/server/advanced/agents) - Extending with agents
-- [Core Package](/docs/server/intro) - Learn about @musistudio/llms
+- [Core Package](/docs/server/intro) - Learn about @caeliq/llms

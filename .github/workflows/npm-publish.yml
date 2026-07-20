@@ -1,0 +1,102 @@
+name: Publish npm packages
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run npm publish (no upload)"
+        type: boolean
+        default: false
+
+# OIDC trusted publishing requires id-token: write and must NOT set NODE_AUTH_TOKEN.
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.13.0"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm (OIDC trusted publishing)
+        run: npm install -g npm@latest
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Show publish plan
+        run: |
+          SHARED=$(node -p "require('./packages/shared/package.json').version")
+          LLMS=$(node -p "require('./packages/core/package.json').version")
+          CLI=$(node -p "require('./packages/cli/package.json').version")
+          echo "shared: @caeliq/ccr-shared@$SHARED"
+          echo "llms:   @caeliq/llms@$LLMS"
+          echo "cli:    @caeliq/claude-code-router@$CLI"
+          echo "ref:    $GITHUB_REF"
+          echo "npm:    $(npm --version)"
+          echo "node:   $(node --version)"
+          echo "pnpm:   $(pnpm --version)"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG=${GITHUB_REF#refs/tags/v}
+            echo "tag:    v$TAG"
+            if [[ "$TAG" != "$CLI" ]]; then
+              echo "::warning::Git tag v$TAG does not match CLI package version $CLI. Publish uses package.json versions."
+            fi
+          fi
+
+      - name: Ensure OIDC is used (no npm token)
+        run: |
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NODE_AUTH_TOKEN is set; unset it for npm trusted publishing"
+            exit 1
+          fi
+          # setup-node may write a placeholder auth line; remove it so OIDC is used.
+          npm config delete "//registry.npmjs.org/:_authToken" || true
+
+      - name: Publish to npm (OIDC)
+        env:
+          CI: "true"
+          NPM_TRUSTED_PUBLISHING: "true"
+          NPM_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: bash scripts/release.sh npm

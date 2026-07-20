@@ -1,6 +1,6 @@
 {
-  "name": "@musistudio/llms",
-  "version": "1.0.51",
+  "name": "@caeliq/llms",
+  "version": "1.0.54",
   "description": "A universal LLM API transformation server",
   "main": "dist/cjs/server.cjs",
   "module": "dist/esm/server.mjs",
@@ -30,10 +30,16 @@
     "transformer",
     "api"
   ],
-  "author": "musistudio",
+  "author": "caeliq",
   "license": "MIT",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "@anthropic-ai/sdk": "^0.54.0",
+    "@caeliq/ccr-shared": "workspace:*",
     "@cursor/sdk": "^1.0.23",
     "@fastify/cors": "^11.0.1",
     "@google/genai": "^1.7.0",
@@ -52,7 +58,6 @@
     "uuid": "^11.1.0"
   },
   "devDependencies": {
-    "@CCR/shared": "workspace:*",
     "@types/node": "^24.0.15",
     "esbuild": "^0.25.1",
     "tsx": "^4.20.3",

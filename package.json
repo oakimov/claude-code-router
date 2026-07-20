@@ -1,27 +1,25 @@
 {
-  "name": "@musistudio/claude-code-router",
+  "name": "claude-code-router",
+  "private": true,
   "version": "2.0.0",
   "description": "Use Claude Code without an Anthropics account and route it to another LLM provider",
   "scripts": {
     "build": "pnpm build:shared && pnpm build:core && pnpm build:server && pnpm build:cli && pnpm build:ui",
-    "build:core": "pnpm --filter @musistudio/llms build",
-    "build:shared": "pnpm --filter @CCR/shared build",
-    "build:cli": "pnpm --filter @CCR/cli build",
-    "build:server": "pnpm --filter @CCR/server build",
-    "build:ui": "pnpm --filter @CCR/ui build",
+    "build:core": "pnpm --filter @caeliq/llms build",
+    "build:shared": "pnpm --filter @caeliq/ccr-shared build",
+    "build:cli": "pnpm --filter @caeliq/claude-code-router build",
+    "build:server": "pnpm --filter @caeliq/ccr-server build",
+    "build:ui": "pnpm --filter @caeliq/ccr-ui build",
     "build:docs": "pnpm --filter claude-code-router-docs build",
     "release": "pnpm build && bash scripts/release.sh all",
     "release:npm": "bash scripts/release.sh npm",
     "release:docker": "bash scripts/release.sh docker",
-    "dev:cli": "pnpm --filter @CCR/cli dev",
-    "dev:server": "pnpm --filter @CCR/server dev",
-    "dev:ui": "pnpm --filter @CCR/ui dev",
-    "dev:core": "pnpm --filter @musistudio/llms dev",
+    "dev:cli": "pnpm --filter @caeliq/claude-code-router dev",
+    "dev:server": "pnpm --filter @caeliq/ccr-server dev",
+    "dev:ui": "pnpm --filter @caeliq/ccr-ui dev",
+    "dev:core": "pnpm --filter @caeliq/llms dev",
     "dev:docs": "pnpm --filter claude-code-router-docs start",
     "serve:docs": "pnpm --filter claude-code-router-docs serve"
-  },
-  "bin": {
-    "ccr": "dist/cli.js"
   },
   "keywords": [
     "claude",
@@ -30,7 +28,7 @@
     "llm",
     "anthropic"
   ],
-  "author": "musistudio",
+  "author": "caeliq",
   "license": "MIT",
   "dependencies": {
     "@cursor/sdk": "^1.0.23"
@@ -44,5 +42,6 @@
   "engines": {
     "node": ">=22.13.0",
     "pnpm": ">=8.0.0"
-  }
+  },
+  "packageManager": "pnpm@10.33.0"
 }

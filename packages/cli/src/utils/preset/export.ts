@@ -5,7 +5,7 @@
 
 import { input } from '@inquirer/prompts';
 import { readConfigFile } from '../index';
-import { exportPreset as exportPresetCore, ExportOptions } from '@CCR/shared';
+import { exportPreset as exportPresetCore, ExportOptions } from '@caeliq/ccr-shared';
 
 // ANSI color codes
 const RESET = "\x1B[0m";

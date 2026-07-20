@@ -8,6 +8,9 @@ dist
 tsconfig.tsbuildinfo
 packages/server/ccr-config
 
+# Temporary package.json backups from scripts/release.sh
+packages/*/.backup/
+
 # Documentation build output
 docs/build
 docs/.docusaurus

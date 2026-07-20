@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { PID_FILE, REFERENCE_COUNT_FILE } from '@CCR/shared';
+import { PID_FILE, REFERENCE_COUNT_FILE } from '@caeliq/ccr-shared';
 import { readConfigFile } from '.';
 import find from 'find-process';
 import { execSync } from 'child_process'; // Import execSync to execute command line

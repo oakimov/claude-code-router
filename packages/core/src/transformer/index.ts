@@ -12,6 +12,7 @@ import { ReasoningTransformer } from "./reasoning.transformer";
 import { SamplingTransformer } from "./sampling.transformer";
 import { MaxCompletionTokens } from "./maxcompletiontokens.transformer";
 import { VertexClaudeTransformer } from "./vertex-claude.transformer";
+import { VertexOpenaiTransformer } from "./vertex-openai.transformer";
 import { CerebrasTransformer } from "./cerebras.transformer";
 import { StreamOptionsTransformer } from "./streamoptions.transformer";
 import { OpenAITransformer } from "./openai.transformer";
@@ -21,6 +22,7 @@ import { OpenAIResponsesTransformer } from "./openai.responses.transformer";
 import { CodexTransformer } from "./codex.transformer";
 import { QwenAuthTransformer } from "./qwen-auth.transformer";
 import { ForceReasoningTransformer } from "./forcereasoning.transformer";
+import { ExtraThinkTagTransformer } from "./extrathinktag.transformer";
 import { MistralTransformer } from "./mistral.transformer";
 import { ChromeOnDeviceTransformer } from "./chrome-on-device.transformer";
 import { OpencodeHeadersTransformer } from "./opencode-headers.transformer";
@@ -32,6 +34,7 @@ export default {
   GeminiTransformer,
   VertexGeminiTransformer,
   VertexClaudeTransformer,
+  VertexOpenaiTransformer,
   DeepseekTransformer,
   TooluseTransformer,
   OpenrouterTransformer,
@@ -51,6 +54,7 @@ export default {
   CodexTransformer,
   QwenAuthTransformer,
   ForceReasoningTransformer,
+  ExtraThinkTagTransformer,
   MistralTransformer,
   ChromeOnDeviceTransformer,
   OpencodeHeadersTransformer,

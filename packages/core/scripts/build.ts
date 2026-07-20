@@ -35,7 +35,7 @@ const baseConfig: esbuild.BuildOptions = {
     "@fastify/cors",
     "undici",
     "tiktoken",
-    "@CCR/shared",
+    "@caeliq/ccr-shared",
     "lru-cache",
     // Native/platform runtime — must resolve from node_modules at runtime.
     "@cursor/sdk",

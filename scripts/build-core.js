@@ -4,7 +4,7 @@ const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-console.log('Building Core package (@musistudio/llms)...');
+console.log('Building Core package (@caeliq/llms)...');
 
 try {
   const coreDir = path.join(__dirname, '../packages/core');

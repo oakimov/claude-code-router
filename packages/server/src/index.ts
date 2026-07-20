@@ -5,14 +5,14 @@ import { join } from "path";
 import { initConfig, initDir } from "./utils";
 import { createServer } from "./server";
 import { apiKeyAuth } from "./middleware/auth";
-import { CONFIG_FILE, HOME_DIR, listPresets } from "@CCR/shared";
+import { CONFIG_FILE, HOME_DIR, listPresets } from "@caeliq/ccr-shared";
 import { createStream } from 'rotating-file-stream';
-import { sessionUsageCache, SSEParserTransform, SSESerializerTransform, rewriteStream } from "@musistudio/llms";
+import { sessionUsageCache, SSEParserTransform, SSESerializerTransform, rewriteStream } from "@caeliq/llms";
 import JSON5 from "json5";
 import { IAgent, ITool } from "./agents/type";
 import agentsManager from "./agents";
 import { EventEmitter } from "node:events";
-import { pluginManager, tokenSpeedPlugin } from "@musistudio/llms";
+import { pluginManager, tokenSpeedPlugin } from "@caeliq/llms";
 
 const event = new EventEmitter()
 
@@ -441,7 +441,7 @@ export { getServer };
 export type { RunOptions };
 export type { IAgent, ITool } from "./agents/type";
 export { initDir, initConfig, readConfigFile, writeConfigFile, backupConfigFile } from "./utils";
-export { pluginManager, tokenSpeedPlugin } from "@musistudio/llms";
+export { pluginManager, tokenSpeedPlugin } from "@caeliq/llms";
 
 // Start service if this file is run directly
 if (require.main === module) {

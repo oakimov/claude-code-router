@@ -74,10 +74,10 @@ importers:
         specifier: ^1.0.23
         version: 1.0.23
     devDependencies:
-      '@CCR/server':
+      '@caeliq/ccr-server':
         specifier: workspace:*
         version: link:../server
-      '@CCR/shared':
+      '@caeliq/ccr-shared':
         specifier: workspace:*
         version: link:../shared
       '@inquirer/prompts':
@@ -122,6 +122,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.54.0
         version: 0.54.0
+      '@caeliq/ccr-shared':
+        specifier: workspace:*
+        version: link:../shared
       '@cursor/sdk':
         specifier: ^1.0.23
         version: 1.0.23
@@ -171,9 +174,6 @@ importers:
         specifier: ^11.1.0
         version: 11.1.0
     devDependencies:
-      '@CCR/shared':
-        specifier: workspace:*
-        version: link:../shared
       '@types/node':
         specifier: ^24.0.15
         version: 24.7.0
@@ -189,6 +189,9 @@ importers:
 
   packages/server:
     dependencies:
+      '@caeliq/llms':
+        specifier: workspace:*
+        version: link:../core
       '@cursor/sdk':
         specifier: ^1.0.23
         version: 1.0.23
@@ -198,9 +201,6 @@ importers:
       '@fastify/static':
         specifier: ^8.2.0
         version: 8.2.0
-      '@musistudio/llms':
-        specifier: workspace:*
-        version: link:../core
       adm-zip:
         specifier: ^0.5.16
         version: 0.5.16
@@ -226,7 +226,7 @@ importers:
         specifier: ^11.1.0
         version: 11.1.0
     devDependencies:
-      '@CCR/shared':
+      '@caeliq/ccr-shared':
         specifier: workspace:*
         version: link:../shared
       '@types/adm-zip':

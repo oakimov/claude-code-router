@@ -1,4 +1,4 @@
-import Server, { calculateTokenCount, TokenizerService } from "@musistudio/llms";
+import Server, { calculateTokenCount, TokenizerService } from "@caeliq/llms";
 import { readConfigFile, writeConfigFile, backupConfigFile } from "./utils";
 import { join } from "path";
 import fastifyStatic from "@fastify/static";
@@ -21,7 +21,7 @@ import {
   type PresetFile,
   type ManifestFile,
   type PresetMetadata,
-} from "@CCR/shared";
+} from "@caeliq/ccr-shared";
 import fastifyMultipart from "@fastify/multipart";
 import AdmZip from "adm-zip";
 import { registerCodexAuthRoutes } from "./routes/codex-auth";
