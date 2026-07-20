@@ -18,7 +18,7 @@ npm publisher: `oakimov`
 - [x] `.github/workflows/npm-publish.yml` pushed to GitHub `main`
 - [x] Trusted Publisher (OIDC) configured on all three npm packages
 - [x] Dry-run workflow_dispatch succeeded
-- [ ] Tag-based publish with provenance verified (`v2.0.1`)
+- [x] Tag-based publish with provenance verified (`v2.0.1`)
 
 ## 1. One-time npm org setup
 
