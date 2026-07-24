@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { Agent, type ModelSelection, type Run, type SDKAgent } from "@cursor/sdk";
+import type { OpenAiUsage } from "./usage";
 import { ensureDenyHooksWorkspace } from "./hooks-template";
 import {
   CURSOR_SDK_WORKSPACES_ROOT,
@@ -15,6 +16,7 @@ export type ParkedTool = {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  runToken?: symbol;
   resolve: (result: string) => void;
   reject: (err: Error) => void;
   promise: Promise<string>;
@@ -28,9 +30,16 @@ export type CursorSdkSession = {
   workspaceDir: string;
   run?: Run;
   streamIterator?: AsyncIterator<any>;
+  activeRunToken?: symbol;
+  lastSdkUsageRaw?: OpenAiUsage;
   parked: ParkedTool[];
   /** Tool calls waiting to be emitted on the current SSE response. */
-  pendingEmit: Array<{ id: string; name: string; args: Record<string, unknown> }>;
+  pendingEmit: Array<{
+    id: string;
+    name: string;
+    args: Record<string, unknown>;
+    runToken?: symbol;
+  }>;
   emitWaiters: Array<() => void>;
   /**
    * Serializes cancel/send so a follow-up compact/retry cannot call
@@ -62,12 +71,21 @@ export type CursorSdkSession = {
  */
 export async function cancelActiveRun(
   session: CursorSdkSession,
-  options: { rejectParked?: boolean; reason?: string } = {}
+  options: {
+    rejectParked?: boolean;
+    reason?: string;
+    timeoutMs?: number;
+    onlyRunToken?: symbol;
+  } = {}
 ): Promise<void> {
+  if (options.onlyRunToken && session.activeRunToken !== options.onlyRunToken) {
+    return;
+  }
   const run = session.run;
   const iterator = session.streamIterator;
   session.run = undefined;
   session.streamIterator = undefined;
+  session.activeRunToken = undefined;
   session.pendingEmit = [];
   session.notifyEmit();
 
@@ -84,7 +102,11 @@ export async function cancelActiveRun(
 
   if (iterator && typeof iterator.return === "function") {
     try {
-      await iterator.return(undefined);
+      await withTimeout(
+        iterator.return(undefined),
+        options.timeoutMs ?? 2_000,
+        "cursor-sdk stream iterator return timed out"
+      );
     } catch {
       // ignore
     }
@@ -94,9 +116,31 @@ export async function cancelActiveRun(
   if (run.status !== "running") return;
 
   try {
-    await run.cancel();
+    await withTimeout(
+      run.cancel(),
+      options.timeoutMs ?? 2_000,
+      "cursor-sdk run cancel timed out"
+    );
   } catch {
     // Best-effort — next send may still succeed once store marks terminal.
+  }
+}
+
+export async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -375,8 +419,9 @@ export class SessionManager {
           resolve = res;
           reject = rej;
         });
-        session.parked.push({ id, name, args, resolve, reject, promise });
-        session.pendingEmit.push({ id, name, args });
+        const runToken = session.activeRunToken;
+        session.parked.push({ id, name, args, runToken, resolve, reject, promise });
+        session.pendingEmit.push({ id, name, args, runToken });
         session.notifyEmit();
         return promise;
       },

@@ -4,7 +4,7 @@ export type OpenAiUsage = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  prompt_tokens_details?: { cached_tokens: number };
+  prompt_tokens_details?: { cached_tokens?: number };
 };
 
 /**
@@ -51,16 +51,57 @@ export function estimateRequestPromptTokens(
 /** Build OpenAI-style usage for a single CCR request (not Cursor session totals). */
 export function requestUsageFromEstimate(
   promptTokens: number,
-  outputChars: number
+  outputChars: number,
+  cacheReadTokens = 0
 ): OpenAiUsage {
   const prompt_tokens = Math.max(0, Math.trunc(promptTokens) || 0);
   const completion_tokens = estimateTokens(outputChars);
+  const cached_tokens = Math.min(
+    prompt_tokens,
+    Math.max(0, Math.trunc(cacheReadTokens) || 0)
+  );
   return {
     prompt_tokens,
     completion_tokens,
     total_tokens: prompt_tokens + completion_tokens,
-    prompt_tokens_details: { cached_tokens: 0 },
+    prompt_tokens_details: { cached_tokens },
   };
+}
+
+function tokenValue(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Cursor SDK usage is session-cumulative, while Claude Code needs per-request
+ * usage. Use SDK usage only as a cache-read ratio and apply it to CCR's
+ * current-request prompt estimate.
+ */
+export function cacheReadFromSdkDelta(
+  current: OpenAiUsage | undefined,
+  previous: OpenAiUsage | undefined,
+  promptTokens: number
+): number {
+  const prompt = Math.max(0, Math.trunc(promptTokens) || 0);
+  if (!prompt || !current) return 0;
+
+  const currentPrompt = tokenValue(current.prompt_tokens);
+  const currentCached = tokenValue(current.prompt_tokens_details?.cached_tokens);
+  if (!currentPrompt || !currentCached) return 0;
+
+  const previousPrompt = tokenValue(previous?.prompt_tokens);
+  const previousCached = tokenValue(previous?.prompt_tokens_details?.cached_tokens);
+
+  const deltaPrompt = currentPrompt - previousPrompt;
+  const deltaCached = currentCached - previousCached;
+  const ratio =
+    deltaPrompt > 0 && deltaCached > 0
+      ? deltaCached / deltaPrompt
+      : currentCached / currentPrompt;
+
+  const boundedRatio = Math.min(1, Math.max(0, ratio));
+  return Math.min(prompt, Math.floor(prompt * boundedRatio));
 }
 
 /** Map SDK TokenUsage / usage message into OpenAI shape (diagnostics only). */

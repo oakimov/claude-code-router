@@ -153,6 +153,8 @@ The `cursor-sdk` transformer:
 - emits OpenAI chat.completion / chat.completion.chunk SSE for AnthropicTransformer
 - supports streaming and non-streaming Claude Code requests
 - maps effort / reasoning fields onto SDK model selection when available
+- keeps Cursor caching native to the SDK agent session, while exposing bounded cache-read usage back to Claude Code from SDK usage deltas
+- treats client stop/interrupt as a real SDK cancellation with bounded cleanup, so the next Claude Code message can start a fresh Cursor run instead of waiting behind a stuck stream
 
 ## Usage
 

@@ -47,6 +47,7 @@ export class CursorSdkTransformer implements Transformer {
       cursorMode,
       cursorCwd: this.options.cursorCwd,
       sandboxEnabled: this.options.sandboxEnabled,
+      abortSignal: context?.signal,
       logger: this.logger,
     };
 

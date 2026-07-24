@@ -468,6 +468,8 @@ Example provider:
 - **bridge** (default): Claude Code hosts tools; Cursor built-ins are denied in an isolated workspace under `~/.claude-code-router/cursor-sdk-workspaces/`
 - Discover models with `ccr model get cursor` (lists via `Cursor.models.list`, not REST `/models`)
 - Docker Compose passes `CURSOR_API_KEY` into the container when set; local Cursor sandboxing is forced off in Docker
+- Cursor prompt caching is native to the held-open SDK agent session. CCR reports per-request token estimates to Claude Code and maps SDK cache-read deltas back as bounded Anthropic cache-read usage.
+- Stopping a Cursor response cancels the owned SDK run with bounded cleanup so the next Claude Code message can start a fresh run instead of hanging behind a stuck stream.
 
 > **See also**: Full Cursor setup is documented in `docs/docs/server/guides/cursor.md`.
 
