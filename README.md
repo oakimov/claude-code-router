@@ -387,7 +387,14 @@ This command:
 1. Opens your browser to the OpenAI OAuth authorization page
 2. After you sign in, the OAuth callback is handled by the running CCR server
 3. Tokens are stored in `~/.claude-code-router/codex_auth.json`
-4. The Codex transformer automatically refreshes tokens when they expire
+4. The CLI and server independently refresh tokens five minutes before expiry
+
+CCR derives the selected ChatGPT workspace and FedRAMP routing state from the
+OAuth ID token. Runtime requests and `ccr model get codex` both send the same
+Codex bearer, account, and routing headers. Refreshes use an atomic credential
+file and a cross-process lock so a separately running CLI and server cannot
+reuse the same rotating refresh token. A runtime OAuth 401 performs one guarded
+credential reload/refresh retry.
 
 > **Note**: The server must be running for `ccr codex-auth` to work, as it hosts the OAuth callback endpoint.
 
@@ -417,7 +424,16 @@ If your provider `api_key` starts with `at-`, CCR treats it as a Codex Personal 
 }
 ```
 
-On the first request, CCR resolves the required account headers from OpenAI and caches the result in memory. If `api_key` is not a PAT, CCR falls back to OAuth tokens from `~/.claude-code-router/codex_auth.json`.
+CCR resolves the PAT's account, user, plan, and FedRAMP metadata through
+OpenAI's `/whoami` endpoint before calling the Codex backend. Both runtime
+requests and `ccr model get codex` then send `Authorization`,
+`ChatGPT-Account-ID`, and `X-OpenAI-Fedramp` when required. Metadata requests
+are deduplicated and cached briefly by the server.
+
+Auth mode is explicit: an `at-` value is always treated as a PAT. An invalid or
+revoked PAT fails as PAT authentication and is never silently replaced with
+OAuth. Any non-PAT placeholder selects OAuth tokens from
+`~/.claude-code-router/codex_auth.json`.
 
 > **See also**: Full Codex setup and troubleshooting are documented in `docs/docs/server/guides/codex.md`.
 

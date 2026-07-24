@@ -173,6 +173,8 @@ async function testCodexRoundTrip() {
       JSON.stringify({
         chatgpt_account_id: "account-test",
         chatgpt_account_is_fedramp: false,
+        chatgpt_user_id: "user-test",
+        chatgpt_plan_type: "pro",
       }),
       { headers: { "Content-Type": "application/json" } }
     );

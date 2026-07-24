@@ -31,6 +31,7 @@ import {
   toClientAbortError,
 } from "@/utils/retry";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
+import { sendWithUnauthorizedAuthRecovery } from "@/utils/auth-recovery";
 
 // Extend FastifyInstance to include custom services
 declare module "fastify" {
@@ -530,17 +531,28 @@ async function sendRequestToProvider(
   // logging is disabled here to reduce sensitive metadata in debug logs.
 
 
-  const response = await sendUnifiedRequest(
-    url,
-    requestBody,
-    {
-      httpsProxy: fastify.configService.getHttpsProxy(),
-      ...config,
-      headers: JSON.parse(JSON.stringify(requestHeaders)),
-      signal: context?.signal ?? config.signal,
-    },
-    context,
-    fastify.log
+  const {
+    __authRecovery,
+    ...providerRequestConfig
+  } = config || {};
+  const send = (headers: Record<string, string>) =>
+    sendUnifiedRequest(
+      url,
+      requestBody,
+      {
+        httpsProxy: fastify.configService.getHttpsProxy(),
+        ...providerRequestConfig,
+        headers: JSON.parse(JSON.stringify(headers)),
+        signal: context?.signal ?? providerRequestConfig.signal,
+      },
+      context,
+      fastify.log
+    );
+
+  const response = await sendWithUnauthorizedAuthRecovery(
+    send,
+    requestHeaders,
+    __authRecovery
   );
 
   // context?.req?.log?.debug?.(

@@ -8,18 +8,37 @@ import {
   validateOpenAIToolCalls,
 } from "../utils/openai.util";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
-import { getValidAccessToken } from "../utils/codex-auth";
+import {
+  getValidAccessToken,
+  toCodexOAuthAuth,
+} from "../utils/codex-auth";
 
-// Module-level cache for PAT whoami results — keyed by PAT value.
-// Auto-invalidates when the user changes api_key in the provider config.
-const whoamiCache = new Map<string, { accountId: string; isFedramp: boolean }>();
+const PAT_METADATA_TTL_MS = 5 * 60 * 1000;
+const whoamiCache = new Map<
+  string,
+  { value: PatAuth; expiresAt: number }
+>();
+const whoamiRequests = new Map<string, Promise<PatAuth>>();
 const CODEX_CLI_VERSION = "0.145.0";
 const CODEX_ORIGINATOR = "codex_cli_rs";
 
 interface WhoamiResponse {
   chatgpt_account_id?: string;
   chatgpt_account_is_fedramp?: boolean;
+  chatgpt_user_id?: string;
+  chatgpt_plan_type?: string;
 }
+
+interface PatAuth {
+  mode: "pat";
+  token: string;
+  accountId: string;
+  isFedramp: boolean;
+}
+
+type ResolvedCodexAuth =
+  | PatAuth
+  | ReturnType<typeof toCodexOAuthAuth>;
 
 interface ResponsesAPIOutputItem {
   type: string;
@@ -298,26 +317,7 @@ export class CodexTransformer implements Transformer {
       // true would send a flat JSON body with text/event-stream headers.
       this.streamIntent.set(reqId, request.stream === true);
     }
-    // Determine auth method: api_key starting with "at-" → PAT, anything else → OAuth
-    const apiKey = typeof provider?.apiKey === "string"
-      ? provider.apiKey.trim()
-      : provider?.apiKey;
-    const isPat = typeof apiKey === "string" && apiKey.startsWith("at-");
-
-    let token: string;
-    let accountId: string | undefined;
-    let isFedramp = false;
-
-    if (isPat) {
-      token = apiKey;
-      const patInfo = await this.resolvePatAuth(apiKey);
-      accountId = patInfo.accountId;
-      isFedramp = patInfo.isFedramp;
-    } else {
-      const tokenData = await getValidAccessToken();
-      token = tokenData.access_token;
-      accountId = tokenData.account_id;
-    }
+    const resolvedAuth = await this.resolveAuth(provider);
 
     delete request.temperature;
     delete request.max_tokens;
@@ -512,18 +512,7 @@ export class CodexTransformer implements Transformer {
     request.parallel_tool_calls = provider?.parallelToolCalls === true;
     (request as any).stream = true;
 
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-      originator: CODEX_ORIGINATOR,
-      "User-Agent": getCodexUserAgent(),
-    };
-
-    if (accountId) {
-      headers["ChatGPT-Account-ID"] = accountId;
-    }
-    if (isFedramp) {
-      headers["X-OpenAI-Fedramp"] = "true";
-    }
+    const headers = this.buildAuthHeaders(resolvedAuth);
 
     applyCodexTurnMetadata(
       request,
@@ -539,89 +528,144 @@ export class CodexTransformer implements Transformer {
       config: {
         url: appendCodexClientVersion(`${baseUrl}/responses`),
         headers,
+        __authRecovery: () =>
+          this.recoverUnauthorizedAuth(provider, resolvedAuth),
       },
     };
   }
 
   async auth(
-    _request: any,
+    request: any,
     provider: any
   ): Promise<any> {
-    const apiKey = typeof provider?.apiKey === "string"
-      ? provider.apiKey.trim()
-      : provider?.apiKey;
-    const isPat = typeof apiKey === "string" && apiKey.startsWith("at-");
-
-    let token: string;
-    let accountId: string | undefined;
-    let isFedramp = false;
-
-    if (isPat) {
-      token = apiKey;
-      const patInfo = await this.resolvePatAuth(apiKey);
-      accountId = patInfo.accountId;
-      isFedramp = patInfo.isFedramp;
-    } else {
-      const tokenData = await getValidAccessToken();
-      token = tokenData.access_token;
-      accountId = tokenData.account_id;
-    }
-
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-      originator: CODEX_ORIGINATOR,
-      "User-Agent": getCodexUserAgent(),
-    };
-
-    if (accountId) {
-      headers["ChatGPT-Account-ID"] = accountId;
-    }
-    if (isFedramp) {
-      headers["X-OpenAI-Fedramp"] = "true";
-    }
+    const resolvedAuth = await this.resolveAuth(provider);
+    const headers = this.buildAuthHeaders(resolvedAuth);
 
     const baseUrl = provider?.baseUrl || "https://chatgpt.com/backend-api/codex";
 
     return {
+      body: request,
       config: {
         url: appendCodexClientVersion(`${baseUrl}/responses`),
         headers,
+        __authRecovery: () =>
+          this.recoverUnauthorizedAuth(provider, resolvedAuth),
       },
     };
   }
 
-  private async resolvePatAuth(pat: string): Promise<{ accountId: string; isFedramp: boolean }> {
-    const cached = whoamiCache.get(pat);
-    if (cached) return cached;
+  private async resolveAuth(provider: any): Promise<ResolvedCodexAuth> {
+    const apiKey =
+      typeof provider?.apiKey === "string"
+        ? provider.apiKey.trim()
+        : provider?.apiKey;
+    if (typeof apiKey === "string" && apiKey.startsWith("at-")) {
+      return this.resolvePatAuth(apiKey);
+    }
+    return toCodexOAuthAuth(await getValidAccessToken());
+  }
 
+  private buildAuthHeaders(auth: ResolvedCodexAuth): Record<string, string> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${auth.token}`,
+      originator: CODEX_ORIGINATOR,
+      "User-Agent": getCodexUserAgent(),
+    };
+    if (auth.accountId) headers["ChatGPT-Account-ID"] = auth.accountId;
+    if (auth.isFedramp) headers["X-OpenAI-Fedramp"] = "true";
+    return headers;
+  }
+
+  private async recoverUnauthorizedAuth(
+    provider: any,
+    previous: ResolvedCodexAuth
+  ): Promise<Record<string, string> | null> {
+    if (previous.mode === "pat") {
+      whoamiCache.delete(previous.token);
+      return null;
+    }
+
+    const apiKey =
+      typeof provider?.apiKey === "string"
+        ? provider.apiKey.trim()
+        : provider?.apiKey;
+    if (typeof apiKey === "string" && apiKey.startsWith("at-")) {
+      return null;
+    }
+
+    const refreshed = await getValidAccessToken({
+      force: true,
+      previousAccessToken: previous.token,
+      expectedAccountId: previous.accountId,
+    });
+    const next = toCodexOAuthAuth(refreshed);
+    if (
+      previous.accountId &&
+      next.accountId &&
+      previous.accountId !== next.accountId
+    ) {
+      throw new Error(
+        "Codex OAuth account changed during unauthorized recovery."
+      );
+    }
+    return this.buildAuthHeaders(next);
+  }
+
+  private async resolvePatAuth(pat: string): Promise<PatAuth> {
+    const cached = whoamiCache.get(pat);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    whoamiCache.delete(pat);
+
+    const pending = whoamiRequests.get(pat);
+    if (pending) return pending;
+
+    const request = this.requestPatAuth(pat).finally(() => {
+      whoamiRequests.delete(pat);
+    });
+    whoamiRequests.set(pat, request);
+    return request;
+  }
+
+  private async requestPatAuth(pat: string): Promise<PatAuth> {
+    const authApiBaseUrl = (
+      process.env.CODEX_AUTHAPI_BASE_URL ||
+      "https://auth.openai.com/api/accounts"
+    ).replace(/\/+$/, "");
     const response = await fetch(
-      "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
+      `${authApiBaseUrl}/v1/user-auth-credential/whoami`,
       {
         headers: { Authorization: `Bearer ${pat}` },
+        signal: AbortSignal.timeout(15_000),
       }
     );
 
     if (!response.ok) {
-      const text = await response.text().catch(() => "");
       throw new Error(
-        `Codex PAT whoami failed (${response.status}): ${text}. ` +
-        "Verify the api_key contains a valid PAT, or remove it to use OAuth authentication."
+        `Codex PAT metadata request failed (${response.status}). Verify that the configured at- token is valid and has Codex access.`
       );
     }
 
     const data: WhoamiResponse = await response.json();
-    if (!data.chatgpt_account_id) {
+    if (
+      !data.chatgpt_account_id ||
+      !data.chatgpt_user_id ||
+      !data.chatgpt_plan_type
+    ) {
       throw new Error(
-        "Codex PAT whoami response missing chatgpt_account_id. " +
-        "The PAT may not have Codex access. Run `ccr codex-auth` for OAuth as a fallback."
+        "Codex PAT metadata response is missing required account, user, or plan information."
       );
     }
 
-    const result = {
+    const result: PatAuth = {
+      mode: "pat",
+      token: pat,
       accountId: data.chatgpt_account_id,
       isFedramp: data.chatgpt_account_is_fedramp === true,
     };
-    whoamiCache.set(pat, result);
+    whoamiCache.set(pat, {
+      value: result,
+      expiresAt: Date.now() + PAT_METADATA_TTL_MS,
+    });
     return result;
   }
 

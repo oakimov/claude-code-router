@@ -123,13 +123,34 @@
 - **Provider Config Validation**: When exposing provider-level options (e.g., `parallelToolCalls`, `verbosity`, `reasoningSummary`), validate against a whitelist of acceptable values. Any value outside the whitelist should be treated as unset (parameter omitted) to avoid sending invalid params that the upstream API would reject.
 - **Model-Slug Suffixes Are Unnecessary**: Parsing effort from model name suffixes (`-high`, `-xhigh`) adds complexity for no benefit in this codebase. Effort comes from Claude Code's `/effort` setting, not from model naming conventions.
 - **Active Maintenance Awareness**: Claude Code is under active development and its API request format can change (e.g., `budget_tokens` → `output_config.effort`). If a passthrough seems to work only for certain values, check the actual request body in the logs rather than assuming the mapping is correct.
-- **No new components for PAT auth**: PAT auth is detected inline in `CodexTransformer.transformRequestIn()` and `auth()` by checking if `provider.api_key` starts with `"at-"`. If it does, it's treated as a PAT — no new transformer, utility, CLI command, or server route needed.
+- **Keep CLI and server auth self-contained**: CCR's CLI and server are separate
+  components and may run concurrently. Implement equivalent Codex credential
+  resolution inside each component instead of importing one component's
+  runtime manager into the other. Coordinate only through the credential file
+  contract and a shared filesystem-lock convention.
 - **PAT detection is simple**: `typeof apiKey === "string" && apiKey.startsWith("at-")`. Everything else (env var placeholders, `"oauth_dummy_key"`, empty/unset) falls through to OAuth. The `at-` prefix is unambiguous — no heuristic needed.
-- **Whoami API for PAT**: `POST https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami` with `Authorization: Bearer <pat>`. Response contains `chatgpt_account_id` (required) and `chatgpt_account_is_fedramp` (boolean). This is called once per PAT and cached in a module-level `Map`.
+- **Whoami API for PAT**: `GET https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami` with `Authorization: Bearer <pat>`. Match Codex by validating account, user, and plan metadata and retaining the FedRAMP flag.
 - **Headers for PAT auth**: `Authorization: Bearer <pat>`, `ChatGPT-Account-ID: <from whoami>`, optionally `X-OpenAI-Fedramp: true` for FedRAMP accounts.
-- **PAT cache invalidation**: The whoami result is cached in `Map<string, { accountId, isFedramp }>` keyed by the PAT value. If the user changes `api_key` in the config, the PAT value changes, so the cache auto-invalidates and re-calls whoami on the next request.
-- **Fallback order**: if `api_key` is a placeholder or `"oauth_dummy_key"` → OAuth tokens from `codex_auth.json` via `getValidAccessToken()`. No breaking change for existing OAuth users.
-- **Model discovery with PAT**: `modelGet.ts:getRequestApiKey()` checks `provider.api_key` (via `getProviderApiKey()`) before falling back to OAuth tokens, so `ccr model get codex` works correctly with either auth method.
+- **PAT lookup lifetime**: Deduplicate concurrent `/whoami` calls and use a
+  bounded metadata cache. Invalidate it after a PAT 401, but do not retry an
+  unrefreshable PAT or silently cross into OAuth mode.
+- **Auth selection is not fallback recovery**: An `at-` config value selects
+  PAT mode; a non-PAT placeholder selects OAuth. Once selected, an auth failure
+  must not switch modes.
+- **Model discovery needs the complete auth context**: `/models` requires the
+  same bearer, `ChatGPT-Account-ID`, and FedRAMP routing headers as inference.
+  Passing only the PAT or OAuth access token causes operation-dependent auth.
+- **OAuth account routing comes from ID-token claims**: Token exchange responses
+  do not reliably provide a top-level `account_id`. Parse
+  `https://api.openai.com/auth.chatgpt_account_id` and
+  `chatgpt_account_is_fedramp`, then persist the selected account.
+- **OAuth refresh must tolerate rotation and concurrency**: Refresh five
+  minutes before JWT expiry, preserve old `refresh_token`/`id_token` fields
+  when omitted, atomically replace the file, serialize requests in-process, and
+  use a filesystem lock across the separately running CLI and server.
+- **OAuth unauthorized recovery is bounded and account-scoped**: Reload a token
+  another process may have refreshed, otherwise refresh through the authority,
+  verify the account did not change, and retry the upstream request once.
 - **Codex model discovery is client-version gated**: The ChatGPT Codex `/backend-api/codex/models` endpoint can return HTTP 200 with a valid but incomplete model list when `client_version` is stale. GPT-5.6 slugs (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) appeared with Codex CLI `0.145.0` but not with `0.125.0`. Keep CCR's default Codex discovery client version current and preserve a provider/env override for rollout testing. Keep runtime Codex spoofing in the core transformer independent of CCR's CLI package; use a core-owned Codex CLI version plus Codex CLI identity headers (`originator`, `User-Agent`).
 - **Codex prompt-cache affinity requires routing headers**: A stable `prompt_cache_key` alone produced zero cache hits against the ChatGPT Codex backend. Match the official client by also sending the same hashed session value in `session-id`, `thread-id`, and `x-client-request-id`; a repeated 8K-token live request then reported 7,936 cached tokens.
 - **Codex caching is key-based for every model**: The official `codex-rs` `ResponsesApiRequest` includes `prompt_cache_key` and contains no `prompt_cache_breakpoint` field. Do not reuse OpenAI GPT-5.6 explicit-breakpoint logic in the Codex transformer; `gpt-5.6-luna` and other Codex backend models reject it. Strip Claude markers after translating cache intent to the stable key and routing headers.

@@ -23,18 +23,29 @@ A ChatGPT Plus or Pro subscription is still required.
 4. Tokens are saved to `~/.claude-code-router/codex_auth.json`
 5. You return to the terminal and press Enter — the CLI confirms the tokens were saved
 6. The `codex` transformer reads the access token and uses it to authenticate API requests
-7. When the token nears expiry, it's refreshed automatically using the refresh token
+7. The CLI and server independently refresh the token five minutes before expiry
+
+The ID token supplies the selected `chatgpt_account_id` and FedRAMP state.
+CCR sends those routing headers for both inference and model discovery. Token
+updates are atomic and coordinated with a filesystem lock because the CLI and
+server are separate processes. If an inference request receives a 401, the
+server reloads or refreshes the same OAuth account and retries once.
 
 ### PAT via `api_key`
 
 If the provider `api_key` starts with `at-`, the Codex transformer treats it as a Personal Access Token instead of using OAuth tokens.
 
 1. You place the PAT directly in the provider `api_key` field
-2. On the first request, CCR calls OpenAI's whoami endpoint to resolve the required account headers
-3. The result is cached in memory for reuse while the process is running
-4. Requests are then authenticated directly with `Authorization: Bearer <pat>`
+2. Before backend use, CCR calls OpenAI's whoami endpoint to resolve account,
+   user, plan, and FedRAMP metadata
+3. The server deduplicates concurrent lookups and briefly caches the result
+4. Runtime and model-discovery requests send the PAT plus the resolved account
+   and FedRAMP headers
 
-If `api_key` is missing, is just a placeholder, or does not start with `at-`, CCR falls back to the OAuth token flow from `~/.claude-code-router/codex_auth.json`.
+If `api_key` is missing, is just a placeholder, or does not start with `at-`,
+CCR selects the OAuth token flow from
+`~/.claude-code-router/codex_auth.json`. An `at-` value always remains in PAT
+mode: a revoked or invalid PAT fails directly and does not silently use OAuth.
 
 ## Prerequisites
 

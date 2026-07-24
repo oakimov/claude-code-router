@@ -11,7 +11,8 @@ const OAUTH_CONFIG = {
   authorization_endpoint: "https://auth.openai.com/oauth/authorize",
   token_endpoint: "https://auth.openai.com/oauth/token",
   redirect_uri: "http://localhost:1455/auth/callback",
-  scope: "openid profile email offline_access",
+  scope:
+    "openid profile email offline_access api.connectors.read api.connectors.invoke",
 };
 
 function base64URLEncode(buffer: Buffer): string {
@@ -36,7 +37,7 @@ function generateState(): string {
   return randomBytes(16).toString("hex");
 }
 
-function buildAuthorizeUrl(codeChallenge: string, state: string): string {
+export function buildAuthorizeUrl(codeChallenge: string, state: string): string {
   const params = new URLSearchParams({
     client_id: OAUTH_CONFIG.client_id,
     redirect_uri: OAUTH_CONFIG.redirect_uri,
@@ -45,6 +46,9 @@ function buildAuthorizeUrl(codeChallenge: string, state: string): string {
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
+    id_token_add_organizations: "true",
+    codex_cli_simplified_flow: "true",
+    originator: "codex_cli_rs",
   });
   return `${OAUTH_CONFIG.authorization_endpoint}?${params.toString()}`;
 }
@@ -60,7 +64,11 @@ export async function runCodexAuth(): Promise<void> {
   console.log();
 
   // Save code_verifier and state for server to use during callback
-  const verifierData = { code_verifier: codeVerifier, state };
+  const verifierData = {
+    code_verifier: codeVerifier,
+    state,
+    created_at: Date.now(),
+  };
   console.log("Saving code_verifier to:", CODEX_VERIFIER_FILE);
   writeFileSync(CODEX_VERIFIER_FILE, JSON.stringify(verifierData, null, 2), {
     mode: 0o600,

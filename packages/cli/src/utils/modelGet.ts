@@ -5,6 +5,11 @@ import { homedir } from "node:os";
 import { backupConfigFile, readConfigFile, readConfigFileRaw, writeConfigFile } from "./index";
 import { CONFIG_FILE } from "@caeliq/ccr-shared";
 import type { ProviderConfig } from "@caeliq/ccr-shared";
+import {
+  buildCliCodexHeaders,
+  recoverCliCodexOAuth,
+  resolveCliCodexAuth,
+} from "./codex-auth";
 
 const CODEX_AUTH_FILE = join(homedir(), ".claude-code-router", "codex_auth.json");
 const CLAUDE_AUTH_FILE = join(homedir(), ".claude-code-router", "claude_auth.json");
@@ -20,13 +25,6 @@ const BOLDCYAN = "\x1B[1m\x1B[36m";
 const GREEN = "\x1B[32m";
 const YELLOW = "\x1B[33m";
 const BOLDYELLOW = "\x1B[1m\x1B[33m";
-
-interface CodexAuthTokens {
-  access_token?: string;
-  refresh_token?: string;
-  expires_at?: number;
-  token_type?: string;
-}
 
 interface ClaudeAuthTokens {
   access_token?: string;
@@ -130,32 +128,6 @@ function getProviderApiKey(provider: ProviderConfig): string | undefined {
   return provider.api_key;
 }
 
-function readCodexAuthTokens(): CodexAuthTokens {
-  if (!existsSync(CODEX_AUTH_FILE)) {
-    throw new Error("Codex OAuth tokens not found. Run `ccr codex-auth` first.");
-  }
-
-  try {
-    return JSON.parse(readFileSync(CODEX_AUTH_FILE, "utf-8")) as CodexAuthTokens;
-  } catch {
-    throw new Error("Failed to read Codex OAuth tokens from ~/.claude-code-router/codex_auth.json.");
-  }
-}
-
-function getCodexAccessToken(): string {
-  const tokens = readCodexAuthTokens();
-
-  if (!isNonEmptyString(tokens.access_token)) {
-    throw new Error("Codex OAuth access token is missing. Run `ccr codex-auth` again.");
-  }
-
-  if (typeof tokens.expires_at === "number" && tokens.expires_at <= Date.now() / 1000) {
-    throw new Error("Codex OAuth access token is expired. Run `ccr codex-auth` again.");
-  }
-
-  return tokens.access_token;
-}
-
 function readClaudeAuthTokens(): ClaudeAuthTokens {
   if (!existsSync(CLAUDE_AUTH_FILE)) {
     throw new Error("Claude OAuth tokens not found. Run `ccr claude-auth` first.");
@@ -183,15 +155,6 @@ function getClaudeAccessToken(): string {
 }
 
 function getRequestApiKey(provider: ProviderConfig): string | undefined {
-  if (normalizeProviderName(provider.name) === "codex") {
-    // Prefer a concrete api_key starting with "at-" (PAT) over OAuth tokens
-    const apiKey = getProviderApiKey(provider)?.trim();
-    if (apiKey && apiKey.startsWith("at-")) {
-      return apiKey; // PAT mode
-    }
-    return getCodexAccessToken(); // OAuth fallback
-  }
-
   if (isCursorProvider(provider)) {
     const apiKey = getProviderApiKey(provider)?.trim();
     // Mirror server resolveCursorApiKey: only concrete crsr_ keys from config;
@@ -487,14 +450,37 @@ function appendCodexQueryParams(url: string, provider?: ProviderConfig): string 
   return parsedUrl.toString();
 }
 
-async function fetchCodexModels(apiKey: string, url: string, provider: ProviderConfig): Promise<string[]> {
-  const response = await fetch(appendCodexQueryParams(url, provider), {
+export async function fetchWithCodexAuth(
+  url: string,
+  provider: ProviderConfig
+): Promise<Response> {
+  const clientVersion = getCodexClientVersion(provider);
+  let auth = await resolveCliCodexAuth(getProviderApiKey(provider));
+  let response = await fetch(appendCodexQueryParams(url, provider), {
     method: "GET",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: buildCliCodexHeaders(auth, clientVersion),
   });
 
+  if (response.status === 401 && auth.mode === "oauth") {
+    const recovered = await recoverCliCodexOAuth(auth);
+    if (recovered) {
+      auth = recovered;
+      try {
+        await response.body?.cancel();
+      } catch {
+        // The response may already be fully buffered.
+      }
+      response = await fetch(appendCodexQueryParams(url, provider), {
+        method: "GET",
+        headers: buildCliCodexHeaders(auth, clientVersion),
+      });
+    }
+  }
+  return response;
+}
+
+async function fetchCodexModels(url: string, provider: ProviderConfig): Promise<string[]> {
+  const response = await fetchWithCodexAuth(url, provider);
   if (!response.ok) {
     const errorMessage = await parseErrorMessage(response);
     throw new Error(`${describeHttpError(response.status)} (${response.status}): ${errorMessage}`);
@@ -541,7 +527,7 @@ async function fetchCursorModels(apiKey: string): Promise<string[]> {
 }
 
 async function fetchCustomModels(
-  apiKey: string,
+  apiKey: string | undefined,
   url: string,
   format: any,
   kind: string,
@@ -551,23 +537,28 @@ async function fetchCustomModels(
   let finalUrl = url;
 
   if (kind === "gemini") {
+    if (!apiKey) throw new Error("A Gemini API key is required.");
     finalUrl = appendApiKeyToUrl(url, apiKey);
   } else if (kind === "codex") {
-    finalUrl = appendCodexQueryParams(url, provider);
-    headers["Authorization"] = `Bearer ${apiKey}`;
+    if (!provider) throw new Error("Codex provider configuration is required.");
   } else if (kind === "anthropic" && provider) {
+    if (!apiKey) throw new Error("An Anthropic API key is required.");
     if (isClaudeAuthProvider(provider)) {
       finalUrl = appendClaudeAuthQueryParams(url);
     }
     Object.assign(headers, buildAnthropicModelHeaders(apiKey, provider));
   } else {
+    if (!apiKey) throw new Error("An API key is required.");
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
-  const response = await fetch(finalUrl, {
-    method: "GET",
-    headers,
-  });
+  const response =
+    kind === "codex" && provider
+      ? await fetchWithCodexAuth(finalUrl, provider)
+      : await fetch(finalUrl, {
+          method: "GET",
+          headers,
+        });
 
   if (!response.ok) {
     const errorMessage = await parseErrorMessage(response);
@@ -596,8 +587,9 @@ async function fetchCustomModels(
     .filter(Boolean);
 }
 
-async function fetchRemoteModels(apiKey: string, provider: ProviderConfig, endpoint: ResolvedEndpoint): Promise<string[]> {
+async function fetchRemoteModels(apiKey: string | undefined, provider: ProviderConfig, endpoint: ResolvedEndpoint): Promise<string[]> {
   if (endpoint.kind === "cursor") {
+    if (!apiKey) throw new Error(getMissingApiKeyMessage(provider));
     return fetchCursorModels(apiKey);
   }
 
@@ -606,17 +598,20 @@ async function fetchRemoteModels(apiKey: string, provider: ProviderConfig, endpo
   }
 
   if (endpoint.kind === "gemini") {
+    if (!apiKey) throw new Error(getMissingApiKeyMessage(provider));
     return fetchGeminiModels(apiKey, endpoint.url);
   }
 
   if (endpoint.kind === "codex") {
-    return fetchCodexModels(apiKey, endpoint.url, provider);
+    return fetchCodexModels(endpoint.url, provider);
   }
 
   if (endpoint.kind === "anthropic") {
+    if (!apiKey) throw new Error(getMissingApiKeyMessage(provider));
     return fetchAnthropicModels(apiKey, endpoint.url, provider);
   }
 
+  if (!apiKey) throw new Error(getMissingApiKeyMessage(provider));
   return fetchOpenAIModels(apiKey, endpoint.url);
 }
 
@@ -858,12 +853,12 @@ export async function runModelGet(providerName: string, options: { listPath?: st
       throw new Error(`Provider \"${providerName}\" not found in configuration.`);
     }
 
-    const apiKey = getRequestApiKey(provider);
-    if (!apiKey) {
+    const endpoint = resolveModelsEndpoint(provider);
+    const apiKey =
+      endpoint.kind === "codex" ? undefined : getRequestApiKey(provider);
+    if (endpoint.kind !== "codex" && !apiKey) {
       throw new Error(getMissingApiKeyMessage(provider));
     }
-
-    const endpoint = resolveModelsEndpoint(provider);
 
     // Merge CLI options with provider config
     if (options.listPath || options.idPath || options.stripPrefix) {
