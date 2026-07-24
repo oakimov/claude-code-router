@@ -13,6 +13,25 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { createApiError } from "@/api/middleware";
 import { formatBase64 } from "@/utils/image";
+import { applyRawAnthropicPromptCaching } from "@/utils/cacheControl";
+
+function toAnthropicCacheUsage(usage: any): Record<string, number> {
+  const cached = usage?.prompt_tokens_details?.cached_tokens || 0;
+  const written = usage?.prompt_tokens_details?.cache_write_tokens || 0;
+  return {
+    // Inverse of toOpenAIUsage (vertex-claude.util.ts), where
+    // prompt_tokens = input_tokens + cache_read + cache_creation. The three
+    // are disjoint in Anthropic semantics, so recover input_tokens by
+    // subtracting both cached and written back out.
+    input_tokens: Math.max(
+      0,
+      (usage?.prompt_tokens || 0) - cached - written
+    ),
+    output_tokens: usage?.completion_tokens || 0,
+    cache_creation_input_tokens: written,
+    cache_read_input_tokens: cached,
+  };
+}
 
 export class AnthropicTransformer implements Transformer {
   name = "Anthropic";
@@ -24,7 +43,7 @@ export class AnthropicTransformer implements Transformer {
     this.useBearer = this.options?.UseBearer ?? false;
   }
 
-  async auth(request: any, provider: LLMProvider): Promise<any> {
+  async auth(request: any, provider: LLMProvider, _context?: any): Promise<any> {
     const headers: Record<string, string | undefined> = {};
 
     if (this.useBearer) {
@@ -36,7 +55,7 @@ export class AnthropicTransformer implements Transformer {
     }
 
     return {
-      body: request,
+      body: applyRawAnthropicPromptCaching(request),
       config: {
         headers,
       },
@@ -129,6 +148,7 @@ export class AnthropicTransformer implements Transformer {
                             : part.source.url,
                       },
                       media_type: part.source.media_type,
+                      cache_control: part.cache_control,
                     };
                   }
                   return part;
@@ -144,9 +164,15 @@ export class AnthropicTransformer implements Transformer {
               (c: any) => c.type === "text" && c.text
             );
             if (textParts.length) {
-              assistantMessage.content = textParts
-                .map((text: any) => text.text)
-                .join("\n");
+              assistantMessage.content = textParts.some(
+                (text: any) => text.cache_control
+              )
+                ? textParts.map((text: any) => ({
+                    type: "text",
+                    text: text.text,
+                    cache_control: text.cache_control,
+                  }))
+                : textParts.map((text: any) => text.text).join("\n");
             }
 
             const toolCallParts = msg.content.filter(
@@ -161,6 +187,7 @@ export class AnthropicTransformer implements Transformer {
                     name: tool.name,
                     arguments: JSON.stringify(tool.input || {}),
                   },
+                  cache_control: tool.cache_control,
                 };
               });
             }
@@ -192,6 +219,9 @@ export class AnthropicTransformer implements Transformer {
         ? this.convertAnthropicToolsToUnified(request.tools)
         : undefined,
       tool_choice: request.tool_choice,
+      ...((request as any).cache_control
+        ? { cache_control: (request as any).cache_control }
+        : {}),
     };
     if (request.thinking) {
       result.reasoning = {
@@ -330,12 +360,32 @@ export class AnthropicTransformer implements Transformer {
         }
         if (typeof msg.content === "string" && msg.content) {
           content.push({ type: "text", text: msg.content });
+        } else if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (part.type === "text" && part.text) {
+              content.push({
+                type: "text",
+                text: part.text,
+                ...((part as any).cache_control
+                  ? { cache_control: (part as any).cache_control }
+                  : {}),
+              });
+            }
+          }
         }
         if (msg.tool_calls?.length) {
           for (const tc of msg.tool_calls) {
             let input: Record<string, any> = {};
             try { input = JSON.parse(tc.function.arguments || "{}"); } catch (e) { (logger?.error ?? console.error)("Failed to parse tool_call arguments for tool '%s': %s", tc.function.name, e); }
-            content.push({ type: "tool_use", id: tc.id, name: tc.function.name, input });
+            content.push({
+              type: "tool_use",
+              id: tc.id,
+              name: tc.function.name,
+              input,
+              ...(tc.cache_control
+                ? { cache_control: tc.cache_control }
+                : {}),
+            });
           }
         }
         if (content.length > 0) messages.push({ role: "assistant", content });
@@ -355,9 +405,21 @@ export class AnthropicTransformer implements Transformer {
               if (url.startsWith("data:")) {
                 const [meta, data] = url.split(",");
                 const mediaType = meta.split(":")[1]?.split(";")[0] ?? "image/jpeg";
-                content.push({ type: "image", source: { type: "base64", media_type: mediaType, data } });
+                content.push({
+                  type: "image",
+                  source: { type: "base64", media_type: mediaType, data },
+                  ...((part as any).cache_control
+                    ? { cache_control: (part as any).cache_control }
+                    : {}),
+                });
               } else {
-                content.push({ type: "image", source: { type: "url", url } });
+                content.push({
+                  type: "image",
+                  source: { type: "url", url },
+                  ...((part as any).cache_control
+                    ? { cache_control: (part as any).cache_control }
+                    : {}),
+                });
               }
             }
           }
@@ -406,7 +468,11 @@ export class AnthropicTransformer implements Transformer {
     if (request.anthropic_metadata) body.metadata = request.anthropic_metadata;
     if (request.anthropic_stop_sequences) body.stop_sequences = request.anthropic_stop_sequences;
 
-    return body;
+    if ((request as any).cache_control) {
+      body.cache_control = (request as any).cache_control;
+    }
+
+    return applyRawAnthropicPromptCaching(body);
   }
 
   private convertAnthropicToolsToUnified(tools: any[]): UnifiedTool[] {
@@ -563,6 +629,59 @@ export class AnthropicTransformer implements Transformer {
           }
         };
 
+        const safeError = (error: unknown) => {
+          if (isClosed) return;
+
+          try {
+            if (currentContentBlockIndex >= 0) {
+              safeEnqueue(
+                encoder.encode(
+                  `event: content_block_stop\ndata: ${JSON.stringify({
+                    type: "content_block_stop",
+                    index: currentContentBlockIndex,
+                  })}\n\n`
+                )
+              );
+              currentContentBlockIndex = -1;
+            }
+
+            const providerError =
+              error && typeof error === "object"
+                ? (error as Record<string, unknown>)
+                : {};
+            const errorType =
+              typeof providerError.type === "string"
+                ? providerError.type
+                : "api_error";
+            const message =
+              error instanceof Error
+                ? error.message
+                : typeof providerError.message === "string"
+                  ? providerError.message
+                  : String(error || "Upstream stream failed");
+
+            safeEnqueue(
+              encoder.encode(
+                `event: error\ndata: ${JSON.stringify({
+                  type: "error",
+                  error: {
+                    type: errorType,
+                    message,
+                  },
+                })}\n\n`
+              )
+            );
+            controller.close();
+            isClosed = true;
+          } catch (streamError) {
+            try {
+              controller.error(streamError);
+            } catch (controllerError) {
+              this.logger?.error(controllerError);
+            }
+          }
+        };
+
         let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
         try {
@@ -664,29 +783,11 @@ export class AnthropicTransformer implements Transformer {
                         stop_reason: "end_turn",
                         stop_sequence: null,
                       },
-                      usage: {
-                        input_tokens:
-                          (chunk.usage?.prompt_tokens || 0) -
-                          (chunk.usage?.prompt_tokens_details?.cached_tokens ||
-                            0),
-                        output_tokens: chunk.usage?.completion_tokens || 0,
-                        cache_creation_input_tokens: 0,
-                        cache_read_input_tokens:
-                          chunk.usage?.prompt_tokens_details?.cached_tokens ||
-                          0,
-                      },
+                      usage: toAnthropicCacheUsage(chunk.usage),
                     };
                   } else {
-                    stopReasonMessageDelta.usage = {
-                      input_tokens:
-                        (chunk.usage?.prompt_tokens || 0) -
-                        (chunk.usage?.prompt_tokens_details?.cached_tokens ||
-                            0),
-                      output_tokens: chunk.usage?.completion_tokens || 0,
-                      cache_creation_input_tokens: 0,
-                      cache_read_input_tokens:
-                        chunk.usage?.prompt_tokens_details?.cached_tokens || 0,
-                    };
+                    stopReasonMessageDelta.usage =
+                      toAnthropicCacheUsage(chunk.usage);
                   }
                 }
                 if (!choice) {
@@ -1084,16 +1185,7 @@ export class AnthropicTransformer implements Transformer {
                         stop_reason: anthropicStopReason,
                         stop_sequence: null,
                       },
-                      usage: {
-                        input_tokens:
-                          (chunk.usage?.prompt_tokens || 0) -
-                          (chunk.usage?.prompt_tokens_details?.cached_tokens ||
-                            0),
-                        output_tokens: chunk.usage?.completion_tokens || 0,
-                        cache_read_input_tokens:
-                          chunk.usage?.prompt_tokens_details?.cached_tokens ||
-                          0,
-                      },
+                      usage: toAnthropicCacheUsage(chunk.usage),
                     };
                   }
 
@@ -1108,18 +1200,7 @@ export class AnthropicTransformer implements Transformer {
           }
           safeClose();
         } catch (error) {
-          // Ensure clients (e.g. Claude Code CLI's model-validator) still
-          // observe a well-formed message_delta with a usage block even when
-          // the upstream stream errors out before the normal close path.
-          // Otherwise the validator hits `undefined.usage.input_tokens`.
-          safeClose();
-          if (!isClosed) {
-            try {
-              controller.error(error);
-            } catch (controllerError) {
-              this.logger?.error(controllerError);
-            }
-          }
+          safeError(error);
         } finally {
           if (reader) {
             try {
@@ -1238,12 +1319,7 @@ export class AnthropicTransformer implements Transformer {
             : "end_turn",
         stop_sequence: null,
         usage: {
-          input_tokens:
-            (openaiResponse.usage?.prompt_tokens || 0) -
-            (openaiResponse.usage?.prompt_tokens_details?.cached_tokens || 0),
-          output_tokens: openaiResponse.usage?.completion_tokens || 0,
-          cache_read_input_tokens:
-            openaiResponse.usage?.prompt_tokens_details?.cached_tokens || 0,
+          ...toAnthropicCacheUsage(openaiResponse.usage),
           ...(choice.message.annotations?.length
             ? {
                 server_tool_use: {

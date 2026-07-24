@@ -5,6 +5,7 @@ import {
   transformRequestOut,
   transformResponseOut,
 } from "../utils/gemini.util";
+import { attachGeminiCachedContent } from "../utils/gemini-cache";
 
 export class GeminiTransformer implements Transformer {
   logger?: any;
@@ -18,8 +19,18 @@ export class GeminiTransformer implements Transformer {
     context: any
   ): Promise<Record<string, any>> {
     const model = context?.req?.model || request.model || provider.model || "";
-    return {
+    const body = await attachGeminiCachedContent({
       body: buildRequestBody(request),
+      modelResource: model.startsWith("models/") ? model : `models/${model}`,
+      createUrl: new URL("../cachedContents", provider.baseUrl),
+      headers: {
+        "x-goog-api-key": provider.apiKey,
+        Authorization: undefined,
+      },
+      logger: this.logger,
+    });
+    return {
+      body,
       config: {
         url: new URL(
           `./${model}:${request.stream ? "streamGenerateContent?alt=sse" : "generateContent"

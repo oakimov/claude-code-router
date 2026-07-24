@@ -1,14 +1,20 @@
 import { randomUUID } from "crypto";
+import { execFileSync } from "child_process";
+import { arch as osArch, platform as osPlatform, release as osRelease } from "os";
 import { UnifiedChatRequest, MessageContent } from "@/types/llm";
 import { Transformer } from "@/types/transformer";
-import { validateOpenAIToolCalls, injectPromptCaching } from "../utils/openai.util";
+import {
+  applyRequestCacheKey,
+  validateOpenAIToolCalls,
+} from "../utils/openai.util";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
-import { stripCacheControl } from "../utils/cacheControl";
 import { getValidAccessToken } from "../utils/codex-auth";
 
 // Module-level cache for PAT whoami results — keyed by PAT value.
 // Auto-invalidates when the user changes api_key in the provider config.
 const whoamiCache = new Map<string, { accountId: string; isFedramp: boolean }>();
+const CODEX_CLI_VERSION = "0.145.0";
+const CODEX_ORIGINATOR = "codex_cli_rs";
 
 interface WhoamiResponse {
   chatgpt_account_id?: string;
@@ -48,6 +54,10 @@ interface ResponsesAPIPayload {
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    input_tokens_details?: {
+      cached_tokens?: number;
+      cache_write_tokens?: number;
+    };
   };
 }
 
@@ -85,6 +95,10 @@ interface ResponsesStreamEvent {
       input_tokens: number;
       output_tokens: number;
       total_tokens: number;
+      input_tokens_details?: {
+        cached_tokens?: number;
+        cache_write_tokens?: number;
+      };
     };
   };
   reasoning_summary?: string;
@@ -113,6 +127,57 @@ const CODEX_SESSION_ID_KEY = "session_id";
 const CODEX_THREAD_ID_KEY = "thread_id";
 const CODEX_TURN_ID_KEY = "turn_id";
 const CODEX_WINDOW_ID_KEY = "window_id";
+
+function getCodexOsType(): string {
+  switch (osPlatform()) {
+    case "darwin":
+      return "Mac OS";
+    case "linux":
+      return "Linux";
+    case "win32":
+      return "Windows";
+    default:
+      return osPlatform() || "unknown";
+  }
+}
+
+function getCodexArchitecture(): string {
+  switch (osArch()) {
+    case "x64":
+      return "x86_64";
+    case "arm64":
+      return "arm64";
+    default:
+      return osArch() || "unknown";
+  }
+}
+
+function getCodexOsVersion(): string {
+  if (osPlatform() === "darwin") {
+    try {
+      return execFileSync("sw_vers", ["-productVersion"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch {
+      // Fall through to the Node runtime version if sw_vers is unavailable.
+    }
+  }
+
+  return osRelease() || "unknown";
+}
+
+function getCodexUserAgent(): string {
+  return `${CODEX_ORIGINATOR}/${CODEX_CLI_VERSION} (${getCodexOsType()} ${getCodexOsVersion()}; ${getCodexArchitecture()})`;
+}
+
+function appendCodexClientVersion(url: string): string {
+  const parsedUrl = new URL(url);
+  if (!parsedUrl.searchParams.has("client_version")) {
+    parsedUrl.searchParams.set("client_version", CODEX_CLI_VERSION);
+  }
+  return parsedUrl.toString();
+}
 
 function buildCodexTurnMetadata(sessionId: string): CodexTurnMetadata {
   return {
@@ -151,6 +216,9 @@ function mergeClientMetadata(
 
 function buildCodexCompatibilityHeaders(turnMetadata: CodexTurnMetadata): Record<string, string> {
   return {
+    "session-id": turnMetadata.session_id,
+    "thread-id": turnMetadata.thread_id,
+    "x-client-request-id": turnMetadata.thread_id,
     [CODEX_WINDOW_ID_HEADER]: turnMetadata.window_id,
     [CODEX_TURN_METADATA_HEADER]: JSON.stringify(turnMetadata),
     [CODEX_PARENT_THREAD_ID_HEADER]: turnMetadata.thread_id,
@@ -282,9 +350,8 @@ export class CodexTransformer implements Transformer {
       (request as any).verbosity = provider.verbosity;
     }
 
-    const model = request.model || "";
+    request = applyRequestCacheKey(request, context);
     let messages = validateOpenAIToolCalls(request.messages);
-    messages = injectPromptCaching(messages, model);
     request.messages = messages;
 
     const input: any[] = [];
@@ -447,7 +514,8 @@ export class CodexTransformer implements Transformer {
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
-      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+      originator: CODEX_ORIGINATOR,
+      "User-Agent": getCodexUserAgent(),
     };
 
     if (accountId) {
@@ -457,14 +525,19 @@ export class CodexTransformer implements Transformer {
       headers["X-OpenAI-Fedramp"] = "true";
     }
 
-    applyCodexTurnMetadata(request, headers, getCodexSessionId(context, request));
+    applyCodexTurnMetadata(
+      request,
+      headers,
+      (request as any).prompt_cache_key ||
+        getCodexSessionId(context, request)
+    );
 
     const baseUrl = provider?.baseUrl || "https://chatgpt.com/backend-api/codex";
 
     return {
       body: request,
       config: {
-        url: `${baseUrl}/responses`,
+        url: appendCodexClientVersion(`${baseUrl}/responses`),
         headers,
       },
     };
@@ -496,7 +569,8 @@ export class CodexTransformer implements Transformer {
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
-      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+      originator: CODEX_ORIGINATOR,
+      "User-Agent": getCodexUserAgent(),
     };
 
     if (accountId) {
@@ -510,7 +584,7 @@ export class CodexTransformer implements Transformer {
 
     return {
       config: {
-        url: `${baseUrl}/responses`,
+        url: appendCodexClientVersion(`${baseUrl}/responses`),
         headers,
       },
     };
@@ -1036,6 +1110,12 @@ export class CodexTransformer implements Transformer {
           prompt_tokens: data.response.usage.input_tokens || 0,
           completion_tokens: data.response.usage.output_tokens || 0,
           total_tokens: data.response.usage.total_tokens || 0,
+          prompt_tokens_details: {
+            cached_tokens:
+              data.response.usage.input_tokens_details?.cached_tokens || 0,
+            cache_write_tokens:
+              data.response.usage.input_tokens_details?.cache_write_tokens || 0,
+          },
         };
       }
 
@@ -1215,6 +1295,13 @@ export class CodexTransformer implements Transformer {
               prompt_tokens: parsed.usage.prompt_tokens || 0,
               completion_tokens: parsed.usage.completion_tokens || 0,
               total_tokens: parsed.usage.total_tokens || 0,
+              ...(parsed.usage.prompt_tokens_details
+                ? {
+                    prompt_tokens_details: {
+                      ...parsed.usage.prompt_tokens_details,
+                    },
+                  }
+                : {}),
             };
           }
           controller.enqueue(emit(finalChunk));
@@ -1436,8 +1523,6 @@ export class CodexTransformer implements Transformer {
   }
 
   private normalizeRequestContent(content: any, role: string | undefined) {
-    const clone = stripCacheControl(content);
-
     if (content.type === "text") {
       return {
         type: role === "assistant" ? "output_text" : "input_text",
@@ -1580,6 +1665,13 @@ export class CodexTransformer implements Transformer {
             prompt_tokens: responseData.usage.input_tokens || 0,
             completion_tokens: responseData.usage.output_tokens || 0,
             total_tokens: responseData.usage.total_tokens || 0,
+            prompt_tokens_details: {
+              cached_tokens:
+                responseData.usage.input_tokens_details?.cached_tokens || 0,
+              cache_write_tokens:
+                responseData.usage.input_tokens_details?.cache_write_tokens ||
+                0,
+            },
           }
         : null,
     };

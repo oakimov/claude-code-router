@@ -121,12 +121,57 @@ async function testCacheControlRoundTrip() {
   assert.deepEqual(toolResult?.cache_control, { type: "ephemeral" });
 }
 
+async function testMediaAndToolUseCacheControlRoundTrip() {
+  const transformer = new AnthropicTransformer();
+  const unified = await transformer.transformRequestOut({
+    model: "claude-sonnet-4-6",
+    max_tokens: 100,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/png",
+              data: "aGVsbG8=",
+            },
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_2",
+            name: "Read",
+            input: { file_path: "README.md" },
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ],
+  });
+
+  const rebuilt = AnthropicTransformer.buildAnthropicBody(unified);
+  assert.deepEqual(rebuilt.messages[0].content[0].cache_control, {
+    type: "ephemeral",
+  });
+  assert.deepEqual(rebuilt.messages[1].content[0].cache_control, {
+    type: "ephemeral",
+  });
+}
+
 async function main() {
   testMergeAnthropicBetaValues();
   testReadHeaderValue();
   testResolvePrefersClientBetas();
   testResolveOnlyOauthWithoutClientBeta();
   await testCacheControlRoundTrip();
+  await testMediaAndToolUseCacheControlRoundTrip();
   console.log("claude-auth.beta-headers: ok");
 }
 

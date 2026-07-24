@@ -1,6 +1,10 @@
 import { GoogleAuth } from "google-auth-library";
 import { UnifiedChatRequest } from "../types/llm";
 import { Transformer, TransformerOptions } from "../types/transformer";
+import {
+  stripMessagesCacheControl,
+  stripToolsCacheControl,
+} from "../utils/cacheControl";
 
 export interface VertexOpenaiOptions extends TransformerOptions {
   client_email?: string;
@@ -55,7 +59,11 @@ export class VertexOpenaiTransformer implements Transformer {
     }
 
     return {
-      body: request,
+      body: {
+        ...request,
+        messages: stripMessagesCacheControl(request.messages),
+        tools: stripToolsCacheControl(request.tools),
+      },
       config: {
         headers: {
           Authorization: `Bearer ${token}`,

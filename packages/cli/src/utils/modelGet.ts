@@ -7,8 +7,11 @@ import { CONFIG_FILE } from "@caeliq/ccr-shared";
 import type { ProviderConfig } from "@caeliq/ccr-shared";
 
 const CODEX_AUTH_FILE = join(homedir(), ".claude-code-router", "codex_auth.json");
+const CLAUDE_AUTH_FILE = join(homedir(), ".claude-code-router", "claude_auth.json");
 const CONFIG_PATH_DISPLAY = "~/.claude-code-router/config.json";
 const READABLE_CONFIG_FILE = process.env.CCR_CONFIG_FILE || CONFIG_FILE;
+const DEFAULT_CODEX_CLIENT_VERSION = "0.145.0";
+const CLAUDE_OAUTH_REQUIRED_BETA = "oauth-2025-04-20";
 
 const RESET = "\x1B[0m";
 const DIM = "\x1B[2m";
@@ -25,14 +28,57 @@ interface CodexAuthTokens {
   token_type?: string;
 }
 
+interface ClaudeAuthTokens {
+  access_token?: string;
+  refresh_token?: string;
+  expires_at?: number;
+  token_type?: string;
+}
+
 interface ConfigWithProviders {
   Providers?: ProviderConfig[];
   [key: string]: any;
 }
 
 interface ResolvedEndpoint {
-  kind: "openai" | "gemini" | "codex" | "cursor";
+  kind: "openai" | "gemini" | "codex" | "cursor" | "anthropic";
   url: string;
+}
+
+function transformerUseIncludes(provider: ProviderConfig, transformerName: string): boolean {
+  const use = provider.transformer?.use;
+  if (!Array.isArray(use)) {
+    return false;
+  }
+
+  const normalizedTransformerName = transformerName.toLowerCase();
+  return use.some((entry: unknown) => {
+    if (typeof entry === "string") {
+      return entry.toLowerCase() === normalizedTransformerName;
+    }
+    if (Array.isArray(entry) && typeof entry[0] === "string") {
+      return entry[0].toLowerCase() === normalizedTransformerName;
+    }
+    if (entry && typeof entry === "object" && typeof (entry as any).name === "string") {
+      return (entry as any).name.toLowerCase() === normalizedTransformerName;
+    }
+    return false;
+  });
+}
+
+function isClaudeAuthProvider(provider: ProviderConfig): boolean {
+  return transformerUseIncludes(provider, "claude-auth");
+}
+
+function isAnthropicProvider(provider: ProviderConfig): boolean {
+  const normalizedName = normalizeProviderName(provider.name);
+  const baseUrl = String(provider.api_base_url || "").toLowerCase();
+  return (
+    normalizedName === "claude" ||
+    normalizedName === "anthropic" ||
+    baseUrl.includes("api.anthropic.com") ||
+    transformerUseIncludes(provider, "anthropic")
+  );
 }
 
 function isCursorProvider(provider: ProviderConfig): boolean {
@@ -40,16 +86,7 @@ function isCursorProvider(provider: ProviderConfig): boolean {
     return true;
   }
 
-  const use = provider.transformer?.use;
-  if (!Array.isArray(use)) {
-    return false;
-  }
-
-  return use.some(
-    (entry: unknown) =>
-      entry === "cursor-sdk" ||
-      (Array.isArray(entry) && entry[0] === "cursor-sdk")
-  );
+  return transformerUseIncludes(provider, "cursor-sdk");
 }
 
 if (!READABLE_CONFIG_FILE) {
@@ -119,6 +156,32 @@ function getCodexAccessToken(): string {
   return tokens.access_token;
 }
 
+function readClaudeAuthTokens(): ClaudeAuthTokens {
+  if (!existsSync(CLAUDE_AUTH_FILE)) {
+    throw new Error("Claude OAuth tokens not found. Run `ccr claude-auth` first.");
+  }
+
+  try {
+    return JSON.parse(readFileSync(CLAUDE_AUTH_FILE, "utf-8")) as ClaudeAuthTokens;
+  } catch {
+    throw new Error("Failed to read Claude OAuth tokens from ~/.claude-code-router/claude_auth.json.");
+  }
+}
+
+function getClaudeAccessToken(): string {
+  const tokens = readClaudeAuthTokens();
+
+  if (!isNonEmptyString(tokens.access_token)) {
+    throw new Error("Claude OAuth access token is missing. Run `ccr claude-auth` again.");
+  }
+
+  if (typeof tokens.expires_at === "number" && tokens.expires_at <= Date.now() / 1000) {
+    throw new Error("Claude OAuth access token is expired. Run `ccr claude-auth` again.");
+  }
+
+  return tokens.access_token;
+}
+
 function getRequestApiKey(provider: ProviderConfig): string | undefined {
   if (normalizeProviderName(provider.name) === "codex") {
     // Prefer a concrete api_key starting with "at-" (PAT) over OAuth tokens
@@ -148,6 +211,10 @@ function getRequestApiKey(provider: ProviderConfig): string | undefined {
     return undefined;
   }
 
+  if (isClaudeAuthProvider(provider)) {
+    return getClaudeAccessToken();
+  }
+
   return getProviderApiKey(provider);
 }
 
@@ -160,6 +227,10 @@ function getMissingApiKeyMessage(provider: ProviderConfig): string {
   if (isCursorProvider(provider)) {
     return "Cursor authentication unavailable. Set Providers[].api_key to a crsr_ key, " +
            "or export CURSOR_API_KEY.";
+  }
+
+  if (isClaudeAuthProvider(provider)) {
+    return "Claude authentication unavailable. Run `ccr claude-auth` for OAuth.";
   }
 
   return `Provider \"${provider.name}\" does not have a usable API key configured.`;
@@ -224,6 +295,22 @@ function deriveOpenAIModelsUrl(apiBaseUrl: string): string {
   return parsedUrl.toString();
 }
 
+function deriveAnthropicModelsUrl(apiBaseUrl: string): string {
+  const parsedUrl = new URL(apiBaseUrl);
+  const pathname = parsedUrl.pathname;
+  const suffixes = ["/v1/messages", "/messages", "/v1/complete", "/complete"];
+
+  const matchedSuffix = suffixes.find((suffix) => pathname.endsWith(suffix));
+  if (matchedSuffix) {
+    parsedUrl.pathname = pathname.slice(0, -matchedSuffix.length) + "/v1/models";
+  } else {
+    parsedUrl.pathname = "/v1/models";
+  }
+
+  parsedUrl.search = "";
+  return parsedUrl.toString();
+}
+
 function resolveModelsEndpoint(provider: ProviderConfig): ResolvedEndpoint {
   const normalizedName = normalizeProviderName(provider.name);
 
@@ -246,6 +333,11 @@ function resolveModelsEndpoint(provider: ProviderConfig): ResolvedEndpoint {
       throw new Error("Provider \"codex\" requires \"models_api_url\" to be configured for model discovery.");
     }
     return { kind: "codex", url: provider.models_api_url };
+  }
+
+  if (isAnthropicProvider(provider)) {
+    const url = provider.models_api_url || deriveAnthropicModelsUrl(provider.api_base_url);
+    return { kind: "anthropic", url };
   }
 
   if (provider.models_api_url) {
@@ -335,16 +427,68 @@ async function fetchGeminiModels(apiKey: string, url: string): Promise<string[]>
     .filter(Boolean);
 }
 
-function appendCodexQueryParams(url: string): string {
+function appendClaudeAuthQueryParams(url: string): string {
+  const parsedUrl = new URL(url);
+  parsedUrl.searchParams.set("beta", "true");
+  return parsedUrl.toString();
+}
+
+function buildAnthropicModelHeaders(apiKey: string, provider: ProviderConfig): Record<string, string> {
+  const headers: Record<string, string> = {
+    "anthropic-version": "2023-06-01",
+  };
+
+  if (isClaudeAuthProvider(provider)) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+    headers["anthropic-beta"] = CLAUDE_OAUTH_REQUIRED_BETA;
+  } else {
+    headers["x-api-key"] = apiKey;
+  }
+
+  return headers;
+}
+
+async function fetchAnthropicModels(apiKey: string, url: string, provider: ProviderConfig): Promise<string[]> {
+  const finalUrl = isClaudeAuthProvider(provider) ? appendClaudeAuthQueryParams(url) : url;
+  const response = await fetch(finalUrl, {
+    method: "GET",
+    headers: buildAnthropicModelHeaders(apiKey, provider),
+  });
+
+  if (!response.ok) {
+    const errorMessage = await parseErrorMessage(response);
+    throw new Error(`${describeHttpError(response.status)} (${response.status}): ${errorMessage}`);
+  }
+
+  const payload = await response.json();
+  if (!Array.isArray(payload?.data)) {
+    throw new Error("Unsupported Anthropic response format: expected a data array");
+  }
+
+  return payload.data
+    .map((model: any) => (typeof model?.id === "string" ? model.id.trim() : ""))
+    .filter(Boolean);
+}
+
+function getCodexClientVersion(provider?: ProviderConfig): string {
+  const configuredVersion =
+    typeof provider?.codex_client_version === "string"
+      ? provider.codex_client_version.trim()
+      : "";
+  const envVersion = process.env.CCR_CODEX_CLIENT_VERSION?.trim() || "";
+  return configuredVersion || envVersion || DEFAULT_CODEX_CLIENT_VERSION;
+}
+
+function appendCodexQueryParams(url: string, provider?: ProviderConfig): string {
   const parsedUrl = new URL(url);
   if (!parsedUrl.searchParams.has("client_version")) {
-    parsedUrl.searchParams.set("client_version", "0.125.0");
+    parsedUrl.searchParams.set("client_version", getCodexClientVersion(provider));
   }
   return parsedUrl.toString();
 }
 
-async function fetchCodexModels(apiKey: string, url: string): Promise<string[]> {
-  const response = await fetch(appendCodexQueryParams(url), {
+async function fetchCodexModels(apiKey: string, url: string, provider: ProviderConfig): Promise<string[]> {
+  const response = await fetch(appendCodexQueryParams(url, provider), {
     method: "GET",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -396,15 +540,26 @@ async function fetchCursorModels(apiKey: string): Promise<string[]> {
     .filter(Boolean);
 }
 
-async function fetchCustomModels(apiKey: string, url: string, format: any, kind: string): Promise<string[]> {
+async function fetchCustomModels(
+  apiKey: string,
+  url: string,
+  format: any,
+  kind: string,
+  provider?: ProviderConfig
+): Promise<string[]> {
   const headers: Record<string, string> = {};
   let finalUrl = url;
 
   if (kind === "gemini") {
     finalUrl = appendApiKeyToUrl(url, apiKey);
   } else if (kind === "codex") {
-    finalUrl = appendCodexQueryParams(url);
+    finalUrl = appendCodexQueryParams(url, provider);
     headers["Authorization"] = `Bearer ${apiKey}`;
+  } else if (kind === "anthropic" && provider) {
+    if (isClaudeAuthProvider(provider)) {
+      finalUrl = appendClaudeAuthQueryParams(url);
+    }
+    Object.assign(headers, buildAnthropicModelHeaders(apiKey, provider));
   } else {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
@@ -447,7 +602,7 @@ async function fetchRemoteModels(apiKey: string, provider: ProviderConfig, endpo
   }
 
   if (provider.models_response_format) {
-    return fetchCustomModels(apiKey, endpoint.url, provider.models_response_format, endpoint.kind);
+    return fetchCustomModels(apiKey, endpoint.url, provider.models_response_format, endpoint.kind, provider);
   }
 
   if (endpoint.kind === "gemini") {
@@ -455,7 +610,11 @@ async function fetchRemoteModels(apiKey: string, provider: ProviderConfig, endpo
   }
 
   if (endpoint.kind === "codex") {
-    return fetchCodexModels(apiKey, endpoint.url);
+    return fetchCodexModels(apiKey, endpoint.url, provider);
+  }
+
+  if (endpoint.kind === "anthropic") {
+    return fetchAnthropicModels(apiKey, endpoint.url, provider);
   }
 
   return fetchOpenAIModels(apiKey, endpoint.url);
@@ -468,6 +627,10 @@ function getEndpointHelpText(provider: ProviderConfig, endpoint: ResolvedEndpoin
 
   if (endpoint.kind === "cursor") {
     return `Cursor discovery uses Cursor.models.list and writes ids into Providers[].models (no cursor-models.json side cache).`;
+  }
+
+  if (endpoint.kind === "anthropic") {
+    return `Anthropic parsing uses data[].id for provider \"${provider.name}\".`;
   }
 
   return undefined;
@@ -498,6 +661,10 @@ function printAuthSource(provider: ProviderConfig): void {
     } else {
       console.log(`${BOLDCYAN}Auth source:${RESET} CURSOR_API_KEY`);
     }
+  }
+
+  if (isClaudeAuthProvider(provider)) {
+    console.log(`${BOLDCYAN}Auth source:${RESET} ${CLAUDE_AUTH_FILE}`);
   }
 }
 
@@ -547,7 +714,7 @@ function shouldSyncRemoteModels(models: string[]): boolean {
   return hasRemoteModels(models);
 }
 
-async function syncMissingModels(config: ConfigWithProviders, provider: ProviderConfig, remoteModels: string[]): Promise<void> {
+async function syncMissingModels(provider: ProviderConfig, remoteModels: string[]): Promise<void> {
   if (!shouldSyncRemoteModels(remoteModels)) {
     return;
   }
@@ -596,6 +763,68 @@ async function syncMissingModels(config: ConfigWithProviders, provider: Provider
 
   console.log(`\n${GREEN}✓ Added models to ${provider.name}:${RESET}`);
   printModelList(modelsToAdd);
+}
+
+async function syncUnavailableModels(provider: ProviderConfig, remoteModels: string[]): Promise<void> {
+  if (!shouldSyncRemoteModels(remoteModels)) {
+    return;
+  }
+
+  const configuredModels = Array.isArray(provider.models) ? provider.models : [];
+  const remoteSet = new Set(remoteModels);
+  const unavailableModels = configuredModels.filter((model) => !remoteSet.has(model));
+
+  if (unavailableModels.length === 0) {
+    console.log(`\n${DIM}No unavailable configured models to remove.${RESET}`);
+    return;
+  }
+
+  console.log(`\n${BOLDCYAN}Configured models not returned by API:${RESET} ${unavailableModels.length}`);
+  printModelList(unavailableModels);
+
+  const shouldRemove = await confirm({
+    message: `${BOLDYELLOW}Remove unavailable models from provider \"${provider.name}\"?${RESET}`,
+    default: false,
+  });
+
+  if (!shouldRemove) {
+    console.log(`\n${DIM}Skipped removing unavailable models.${RESET}`);
+    return;
+  }
+
+  const latestConfig = await readConfigFileRaw();
+  const latestProvider = findProvider(latestConfig, provider.name);
+
+  if (!latestProvider) {
+    throw new Error(`Provider \"${provider.name}\" was removed before sync could be applied.`);
+  }
+
+  const latestModels = Array.isArray(latestProvider.models) ? latestProvider.models : [];
+  const unavailableSet = new Set(unavailableModels);
+  const remoteModelSet = new Set(remoteModels);
+  const modelsToRemove = latestModels.filter(
+    (model) => unavailableSet.has(model) && !remoteModelSet.has(model)
+  );
+
+  if (modelsToRemove.length === 0) {
+    console.log(`\n${DIM}No unavailable models remain after reloading config.${RESET}`);
+    return;
+  }
+
+  latestProvider.models = latestModels.filter((model) => !modelsToRemove.includes(model));
+  await backupConfigFile();
+  await writeConfigFile(latestConfig);
+
+  console.log(`\n${GREEN}✓ Removed models from ${provider.name}:${RESET}`);
+  printModelList(modelsToRemove);
+}
+
+async function syncModelDifferences(provider: ProviderConfig, remoteModels: string[]): Promise<void> {
+  await syncMissingModels(provider, remoteModels);
+
+  const latestConfig = (await readConfigFile()) as ConfigWithProviders;
+  const latestProvider = findProvider(latestConfig, provider.name) || provider;
+  await syncUnavailableModels(latestProvider, remoteModels);
 }
 
 function validateParsedModels(provider: ProviderConfig, endpoint: ResolvedEndpoint, models: string[]): void {
@@ -650,7 +879,7 @@ export async function runModelGet(providerName: string, options: { listPath?: st
 
     validateParsedModels(provider, endpoint, remoteModels);
     printSuccess(provider, endpoint, remoteModels);
-    await syncMissingModels(config, provider, remoteModels);
+    await syncModelDifferences(provider, remoteModels);
   } catch (error: any) {
     console.error(`\n${YELLOW}Error:${RESET} ${error.message}`);
     process.exit(1);

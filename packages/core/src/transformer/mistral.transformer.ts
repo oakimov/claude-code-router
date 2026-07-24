@@ -21,10 +21,10 @@ export class MistralTransformer implements Transformer {
   async transformRequestIn(
     request: UnifiedChatRequest,
     provider: LLMProvider,
-    _context: TransformerContext
+    context: TransformerContext
   ): Promise<Record<string, any>> {
     return {
-      body: buildRequestBody(request),
+      body: buildRequestBody(request, context, provider),
       config: {
         url: new URL("/v1/chat/completions", provider.baseUrl),
         headers: {

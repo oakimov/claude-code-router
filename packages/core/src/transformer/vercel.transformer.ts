@@ -1,6 +1,10 @@
 import { UnifiedChatRequest } from "@/types/llm";
 import { Transformer, TransformerOptions } from "../types/transformer";
 import { v4 as uuidv4 } from "uuid";
+import {
+  stripMessagesCacheControl,
+  stripToolsCacheControl,
+} from "../utils/cacheControl";
 
 export class VercelTransformer implements Transformer {
   static TransformerName = "vercel";
@@ -10,48 +14,45 @@ export class VercelTransformer implements Transformer {
   constructor(private readonly options?: TransformerOptions) {}
 
   async transformRequestIn(
-    request: UnifiedChatRequest
+    request: UnifiedChatRequest,
+    provider?: any,
+    context?: any
   ): Promise<UnifiedChatRequest> {
-    if (!request.model.includes("claude")) {
-      request.messages.forEach((msg) => {
-        if (Array.isArray(msg.content)) {
-          msg.content.forEach((item: any) => {
-            if (item.cache_control) {
-              delete item.cache_control;
+    // Vercel AI Gateway drives Anthropic prompt caching via
+    // providerOptions.gateway.caching = "auto" (set below), which inserts its
+    // own cache_control breakpoints. Per Vercel docs, automatic and manual
+    // markers are alternative strategies, and CCR's content-item-level markers
+    // are the wrong shape for the gateway's Chat Completions endpoint. Strip
+    // source-only markers for every model so they cannot conflict with the
+    // gateway-inserted breakpoints or exceed Anthropic's 4-breakpoint cap.
+    request = {
+      ...request,
+      messages: stripMessagesCacheControl(request.messages),
+      tools: stripToolsCacheControl(request.tools),
+    };
+
+    // Normalise image URLs for all models.
+    request.messages.forEach((msg) => {
+      if (Array.isArray(msg.content)) {
+        msg.content.forEach((item: any) => {
+          if (item.type === "image_url") {
+            if (!item.image_url.url.startsWith("http")) {
+              item.image_url.url = `data:${item.media_type};base64,${item.image_url.url}`;
             }
-            if (item.type === "image_url") {
-              if (!item.image_url.url.startsWith("http")) {
-                item.image_url.url = `data:${item.media_type};base64,${item.image_url.url}`;
-              }
-              delete item.media_type;
-            }
-          });
-        } else if (msg.cache_control) {
-          delete msg.cache_control;
-        }
-      });
-      if (Array.isArray(request.tools)) {
-        request.tools.forEach((tool) => {
-          if ((tool as any).cache_control) {
-            delete (tool as any).cache_control;
+            delete item.media_type;
           }
         });
       }
-    } else {
-      request.messages.forEach((msg) => {
-        if (Array.isArray(msg.content)) {
-          msg.content.forEach((item: any) => {
-            if (item.type === "image_url") {
-              if (!item.image_url.url.startsWith("http")) {
-                item.image_url.url = `data:${item.media_type};base64,${item.image_url.url}`;
-              }
-              delete item.media_type;
-            }
-          });
-        }
-      });
-    }
+    });
     Object.assign(request, this.options || {});
+    const providerOptions = (request as any).providerOptions || {};
+    (request as any).providerOptions = {
+      ...providerOptions,
+      gateway: {
+        ...(providerOptions.gateway || {}),
+        caching: "auto",
+      },
+    };
     return request;
   }
 

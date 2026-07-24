@@ -1,3 +1,11 @@
+import { UnifiedChatRequest, UnifiedMessage } from "../types/llm";
+import {
+  applyQwenPromptCaching,
+  deriveCacheSessionKey,
+  stripMessagesCacheControl,
+  stripToolsCacheControl,
+} from "./cacheControl";
+
 /**
  * Validates OpenAI format messages to ensure complete tool_calls/tool message pairing.
  * Requires tool messages to immediately follow assistant messages with tool_calls.
@@ -107,4 +115,183 @@ export function injectPromptCaching(messages: any[], model: string): any[] {
     }
     return msg;
   });
+}
+
+export function supportsOpenAIExplicitPromptCache(model: string): boolean {
+  const normalized = (model || "").toLowerCase();
+  const match = normalized.match(/(?:^|\/)gpt-(\d+)(?:\.(\d+))?/);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2] || 0);
+  return major > 5 || (major === 5 && minor >= 6);
+}
+
+function isOpenAICacheableChatContent(content: any): boolean {
+  return (
+    content?.type === "text" ||
+    content?.type === "image_url" ||
+    content?.type === "input_audio" ||
+    content?.type === "file" ||
+    content?.type === "refusal"
+  );
+}
+
+function lastCacheableContentIndex(content: any[]): number {
+  for (let i = content.length - 1; i >= 0; i -= 1) {
+    if (isOpenAICacheableChatContent(content[i])) return i;
+  }
+  return -1;
+}
+
+export function applyOpenAIChatCaching(
+  request: UnifiedChatRequest,
+  _provider?: any,
+  context?: any
+): UnifiedChatRequest {
+  const next: UnifiedChatRequest = {
+    ...request,
+    messages: (request.messages || []).map((message) => ({
+      ...message,
+      content: Array.isArray(message.content)
+        ? message.content.map((part: any) => ({ ...part }))
+        : message.content,
+    })),
+    tools: Array.isArray(request.tools)
+      ? request.tools.map((tool) => ({
+          ...tool,
+          function: {
+            ...tool.function,
+            parameters: { ...tool.function.parameters },
+          },
+        }))
+      : request.tools,
+  };
+
+  const cacheKey = deriveCacheSessionKey(context, request);
+  if (cacheKey) {
+    (next as any).prompt_cache_key = cacheKey;
+  }
+
+  if (supportsOpenAIExplicitPromptCache(next.model)) {
+    const candidates: Array<{ messageIndex: number; contentIndex?: number }> = [];
+    next.messages.forEach((message: UnifiedMessage, messageIndex: number) => {
+      if ((message as any).cache_control) {
+        if (typeof message.content === "string" && message.content) {
+          candidates.push({ messageIndex });
+        } else if (Array.isArray(message.content)) {
+          const contentIndex = lastCacheableContentIndex(message.content);
+          if (contentIndex >= 0) candidates.push({ messageIndex, contentIndex });
+        }
+      }
+      if (Array.isArray(message.content)) {
+        message.content.forEach((part: any, contentIndex: number) => {
+          if (part?.cache_control && isOpenAICacheableChatContent(part)) {
+            candidates.push({ messageIndex, contentIndex });
+          }
+        });
+      }
+    });
+
+    for (const candidate of candidates.slice(-3)) {
+      const message = next.messages[candidate.messageIndex];
+      if (typeof message.content === "string") {
+        message.content = [
+          {
+            type: "text",
+            text: message.content,
+            prompt_cache_breakpoint: { mode: "explicit" },
+          } as any,
+        ];
+      } else if (
+        Array.isArray(message.content) &&
+        candidate.contentIndex !== undefined
+      ) {
+        (message.content[candidate.contentIndex] as any).prompt_cache_breakpoint =
+          { mode: "explicit" };
+      }
+    }
+  }
+
+  next.messages = stripMessagesCacheControl(next.messages);
+  next.tools = stripToolsCacheControl(next.tools);
+  return next;
+}
+
+export function openAIContentCacheBreakpoint(content: any, model: string): any {
+  if (!supportsOpenAIExplicitPromptCache(model)) {
+    return {};
+  }
+  return content?.prompt_cache_breakpoint
+    ? { prompt_cache_breakpoint: content.prompt_cache_breakpoint }
+    : {};
+}
+
+function providerName(provider?: any): string {
+  return String(provider?.name || "").trim().toLowerCase();
+}
+
+function providerHost(provider?: any): string {
+  const baseUrl = provider?.baseUrl || provider?.api_base_url || "";
+  try {
+    return new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return String(baseUrl).toLowerCase();
+  }
+}
+
+export function applyRequestCacheKey(
+  request: UnifiedChatRequest,
+  context?: any
+): UnifiedChatRequest {
+  const next = {
+    ...request,
+    messages: stripMessagesCacheControl(request.messages || []),
+    tools: stripToolsCacheControl(request.tools),
+  };
+  const cacheKey = deriveCacheSessionKey(context, request);
+  if (cacheKey) (next as any).prompt_cache_key = cacheKey;
+  return next;
+}
+
+export function applyProviderNativeChatCaching(
+  request: UnifiedChatRequest,
+  provider?: any,
+  context?: any
+): UnifiedChatRequest {
+  const name = providerName(provider);
+  const host = providerHost(provider);
+
+  if (
+    name === "openai" ||
+    name === "azure-openai" ||
+    host === "api.openai.com" ||
+    host.endsWith(".openai.azure.com")
+  ) {
+    return applyOpenAIChatCaching(request, provider, context);
+  }
+
+  if (
+    name === "qwen" ||
+    name === "qwen-auth" ||
+    host.includes("dashscope") ||
+    host.endsWith(".aliyuncs.com") ||
+    host === "qwen.aikit.club"
+  ) {
+    return applyQwenPromptCaching(request);
+  }
+
+  if (
+    name === "mistral" ||
+    name === "cerebras" ||
+    host === "api.mistral.ai" ||
+    host === "api.cerebras.ai"
+  ) {
+    return applyRequestCacheKey(request, context);
+  }
+
+  return {
+    ...request,
+    messages: stripMessagesCacheControl(request.messages || []),
+    tools: stripToolsCacheControl(request.tools),
+  };
 }

@@ -6,6 +6,10 @@ import {
   DEFAULT_CURSOR_MODE,
   type CursorSdkMode,
 } from "@/cursor-sdk/shared";
+import {
+  stripMessagesCacheControl,
+  stripToolsCacheControl,
+} from "../utils/cacheControl";
 
 export interface CursorSdkTransformerOptions extends TransformerOptions {
   cursorMode?: CursorSdkMode;
@@ -46,11 +50,21 @@ export class CursorSdkTransformer implements Transformer {
       logger: this.logger,
     };
 
-    const response = await runCursor(request, provider, context, runnerOptions);
+    const nativeRequest = {
+      ...request,
+      messages: stripMessagesCacheControl(request.messages),
+      tools: stripToolsCacheControl(request.tools),
+    };
+    const response = await runCursor(
+      nativeRequest,
+      provider,
+      context,
+      runnerOptions
+    );
 
     // Placeholder URL — never used because __providerResponse short-circuits.
     return {
-      body: request,
+      body: nativeRequest,
       config: {
         url: provider?.baseUrl || "https://cursor.com",
         headers: {},

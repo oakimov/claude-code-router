@@ -30,6 +30,7 @@ import {
   selectFallbackModels,
   toClientAbortError,
 } from "@/utils/retry";
+import { applyProviderNativeChatCaching } from "../utils/openai.util";
 
 // Extend FastifyInstance to include custom services
 declare module "fastify" {
@@ -404,6 +405,21 @@ async function processRequestTransformers(
     }
   }
 
+  // Generic OpenAI-compatible providers often have no transformer configured.
+  // Translate or remove Anthropic cache markers according to the actual
+  // upstream rather than leaking provider-specific fields.
+  if (
+    !bypass &&
+    !provider.transformer?.use?.length &&
+    Array.isArray(requestBody?.messages)
+  ) {
+    requestBody = applyProviderNativeChatCaching(
+      requestBody,
+      provider,
+      context
+    );
+  }
+
   return { requestBody, config, bypass };
 }
 
@@ -448,7 +464,7 @@ async function sendRequestToProvider(
 
   // Handle authentication in passthrough mode
   if ((bypass || provider.transformer?.passthrough) && typeof transformer.auth === "function") {
-    const auth = await transformer.auth(requestBody, provider);
+    const auth = await transformer.auth(requestBody, provider, context);
     if (auth.body) {
       requestBody = auth.body;
       let headers = config.headers || {};

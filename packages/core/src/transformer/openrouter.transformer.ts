@@ -1,7 +1,14 @@
 import { UnifiedChatRequest } from "@/types/llm";
 import { Transformer, TransformerOptions } from "../types/transformer";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
-import { stripMessagesCacheControl, stripToolsCacheControl } from "../utils/cacheControl";
+import {
+  applyQwenPromptCaching,
+  applyRawAnthropicPromptCaching,
+  deriveCacheSessionKey,
+  stripMessagesCacheControl,
+  stripToolsCacheControl,
+} from "../utils/cacheControl";
+import { applyOpenAIChatCaching } from "../utils/openai.util";
 import {
   createReasoningAccumulator,
   accumulateReasoning,
@@ -19,12 +26,41 @@ export class OpenrouterTransformer implements Transformer {
   constructor(private readonly options?: TransformerOptions) {}
 
   async transformRequestIn(
-    request: UnifiedChatRequest
+    request: UnifiedChatRequest,
+    provider?: any,
+    context?: any
   ): Promise<UnifiedChatRequest> {
-    if (!request.model.includes("claude")) {
-      request.messages = stripMessagesCacheControl(request.messages);
-      request.tools = stripToolsCacheControl(request.tools);
+    const cacheKey = deriveCacheSessionKey(context, request);
 
+    const normalizedModel = (request.model || "").toLowerCase();
+    if (normalizedModel.includes("anthropic/") || normalizedModel.includes("claude")) {
+      request = applyRawAnthropicPromptCaching(request);
+    } else if (
+      normalizedModel.startsWith("openai/") ||
+      normalizedModel.startsWith("gpt-")
+    ) {
+      request = applyOpenAIChatCaching(request, provider, context);
+    } else if (
+      normalizedModel.includes("qwen") ||
+      normalizedModel.includes("alibaba")
+    ) {
+      request = applyQwenPromptCaching(request);
+    } else if (normalizedModel.includes("gemini")) {
+      // Gemini caching on OpenRouter requires cache_control breakpoints
+      // inserted within message content, in the same ephemeral format as
+      // Anthropic (OpenRouter uses only the last breakpoint for Gemini). This
+      // is the content-level marker applyQwenPromptCaching emits; a top-level
+      // request.cache_control would not be honoured on this endpoint.
+      request = applyQwenPromptCaching(request);
+    } else {
+      request = {
+        ...request,
+        messages: stripMessagesCacheControl(request.messages),
+        tools: stripToolsCacheControl(request.tools),
+      };
+    }
+
+    if (!request.model.includes("claude")) {
       // Handle non-HTTP image URLs for non-Claude models
       request.messages.forEach((msg) => {
         if (Array.isArray(msg.content)) {
@@ -53,6 +89,10 @@ export class OpenrouterTransformer implements Transformer {
       });
     }
     Object.assign(request, this.options || {});
+    if (cacheKey) {
+      (request as any).session_id = cacheKey;
+      (request as any).prompt_cache_key = cacheKey;
+    }
     return request;
   }
 

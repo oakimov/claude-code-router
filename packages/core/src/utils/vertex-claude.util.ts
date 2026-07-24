@@ -7,6 +7,7 @@ import {
   consolidateMessages,
   normalizeTool
 } from "./google.util";
+import { applyRawAnthropicPromptCaching } from "./cacheControl";
 
 // Vertex Claude message interface
 interface ClaudeMessage {
@@ -68,12 +69,30 @@ interface VertexClaudeResponse {
   usage: {
     input_tokens: number;
     output_tokens: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
   };
   tool_use?: Array<{
     id: string;
     name: string;
     input: Record<string, any>;
   }>;
+}
+
+function toOpenAIUsage(usage: any): Record<string, any> {
+  const input = usage?.input_tokens || 0;
+  const cached = usage?.cache_read_input_tokens || 0;
+  const written = usage?.cache_creation_input_tokens || 0;
+  const output = usage?.output_tokens || 0;
+  return {
+    completion_tokens: output,
+    prompt_tokens: input + cached + written,
+    prompt_tokens_details: {
+      cached_tokens: cached,
+      cache_write_tokens: written,
+    },
+    total_tokens: input + cached + written + output,
+  };
 }
 
 export function buildRequestBody(
@@ -101,12 +120,18 @@ export function buildRequestBody(
         type: "tool_result",
         tool_use_id: message.tool_call_id,
         content: resultText as string,
+        ...(message.cache_control
+          ? { cache_control: message.cache_control }
+          : {}),
       });
     } else {
       if (typeof message.content === "string") {
         content.push({
           type: "text",
           text: message.content,
+          ...(message.cache_control
+            ? { cache_control: message.cache_control }
+            : {}),
         });
       } else if (Array.isArray(message.content)) {
         // Text parts
@@ -115,6 +140,9 @@ export function buildRequestBody(
             content.push({
               type: "text",
               text: item.text || "",
+              ...((item as any).cache_control
+                ? { cache_control: (item as any).cache_control }
+                : {}),
             });
           }
         });
@@ -160,6 +188,7 @@ export function buildRequestBody(
         name: normalized.name,
         description: normalized.description,
         input_schema: normalized.parameters,
+        ...(tool.cache_control ? { cache_control: tool.cache_control } : {}),
       };
     });
   }
@@ -177,7 +206,7 @@ export function buildRequestBody(
     }
   }
 
-  return requestBody;
+  return applyRawAnthropicPromptCaching(requestBody) as VertexClaudeRequest;
 }
 
 export function transformRequestOut(
@@ -289,13 +318,7 @@ export async function transformResponseOut(
       created: parseInt(new Date().getTime() / 1000 + "", 10),
       model: jsonResponse.model,
       object: "chat.completion",
-      usage: {
-        completion_tokens: jsonResponse.usage?.output_tokens ?? 0,
-        prompt_tokens: jsonResponse.usage?.input_tokens ?? 0,
-        total_tokens:
-          (jsonResponse.usage?.input_tokens ?? 0) +
-          (jsonResponse.usage?.output_tokens ?? 0),
-      },
+      usage: toOpenAIUsage(jsonResponse.usage),
     };
 
     return new Response(JSON.stringify(res), {
@@ -309,6 +332,7 @@ export async function transformResponseOut(
       return response;
     }
 
+    let streamInputUsage: Record<string, any> = {};
     const processLine = (
       line: string,
       ctx: { controller: ReadableStreamDefaultController, encoder: TextEncoder }
@@ -322,7 +346,20 @@ export async function transformResponseOut(
             const chunk = JSON.parse(chunkStr);
 
             // Handle Anthropic native format streaming response
-            if (
+            if (chunk.type === "message_start") {
+              streamInputUsage = chunk.message?.usage || chunk.usage || {};
+              const res = {
+                choices: [],
+                created: parseInt(new Date().getTime() / 1000 + "", 10),
+                id: chunk.message?.id || chunk.id || "",
+                model: chunk.message?.model || chunk.model || "",
+                object: "chat.completion.chunk",
+                usage: toOpenAIUsage(streamInputUsage),
+              };
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
+              );
+            } else if (
               chunk.type === "content_block_delta" &&
               chunk.delta?.type === "text_delta"
             ) {
@@ -525,13 +562,10 @@ export async function transformResponseOut(
                 model: chunk.model || "",
                 object: "chat.completion.chunk",
                 system_fingerprint: "fp_a49d71b8a1",
-                usage: {
-                  completion_tokens: chunk.usage?.output_tokens || 0,
-                  prompt_tokens: chunk.usage?.input_tokens || 0,
-                  total_tokens:
-                    (chunk.usage?.input_tokens || 0) +
-                    (chunk.usage?.output_tokens || 0),
-                },
+                usage: toOpenAIUsage({
+                  ...streamInputUsage,
+                  ...chunk.usage,
+                }),
               };
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(res)}\n\n`)

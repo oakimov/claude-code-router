@@ -5,6 +5,7 @@ import {
   transformRequestOut,
   transformResponseOut,
 } from "../utils/gemini.util";
+import { attachGeminiCachedContent } from "../utils/gemini-cache";
 
 async function getAccessToken(logger?: any): Promise<string> {
   try {
@@ -32,7 +33,8 @@ export class VertexGeminiTransformer implements Transformer {
 
   async transformRequestIn(
     request: UnifiedChatRequest,
-    provider: LLMProvider
+    provider: LLMProvider,
+    context?: any
   ): Promise<Record<string, any>> {
     let projectId = process.env.GOOGLE_CLOUD_PROJECT;
     const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
@@ -55,12 +57,29 @@ export class VertexGeminiTransformer implements Transformer {
     }
 
     const accessToken = await getAccessToken(this.logger);
-    return {
+    const model = request.model || provider.model || "";
+    const baseUrl =
+      provider.baseUrl.endsWith('/') ? provider.baseUrl : provider.baseUrl + '/' || `https://${location}-aiplatform.googleapis.com`;
+    const modelResource = `projects/${projectId}/locations/${location}/publishers/google/models/${model}`;
+    const body = await attachGeminiCachedContent({
       body: buildRequestBody(request),
+      modelResource,
+      createUrl: new URL(
+        `./v1beta1/projects/${projectId}/locations/${location}/cachedContents`,
+        baseUrl
+      ),
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "x-goog-api-key": undefined,
+      },
+      logger: this.logger,
+    });
+    return {
+      body,
       config: {
         url: new URL(
-          `./v1beta1/projects/${projectId}/locations/${location}/publishers/google/models/${request.model || provider.model || ""}:${request.stream ? "streamGenerateContent" : "generateContent"}`,
-            provider.baseUrl.endsWith('/') ? provider.baseUrl : provider.baseUrl + '/' || `https://${location}-aiplatform.googleapis.com`
+          `./v1beta1/${modelResource}:${request.stream ? "streamGenerateContent" : "generateContent"}`,
+          baseUrl
         ),
         headers: {
           "Authorization": `Bearer ${accessToken}`,

@@ -1,6 +1,7 @@
 import { Transformer } from "@/types/transformer";
 import { getValidAccessToken } from "../utils/qwen-auth";
 import { createSSEStreamReader, StreamContext, encodeSSELine } from "../utils/stream";
+import { applyQwenPromptCaching } from "../utils/cacheControl";
 
 const QWEN_TARGET = "https://qwen.aikit.club";
 
@@ -33,7 +34,7 @@ export class QwenAuthTransformer implements Transformer {
     provider: any
   ): Promise<Record<string, any>> {
     return {
-      body: request,
+      body: applyQwenPromptCaching(request),
       config: await this.buildAuthConfig(provider),
     };
   }

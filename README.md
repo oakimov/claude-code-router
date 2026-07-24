@@ -324,16 +324,19 @@ The CLI tool validates all inputs and provides helpful prompts to guide you thro
 For non-interactive model discovery, you can also test provider access and list remote models directly:
 
 ```shell
-ccr model get openai
+ccr model get claude
 ccr model get gemini
+ccr model get openai
 ```
 
 This command:
 - Calls the provider's model-list endpoint using the configured API key
 - Prints the remote models returned by the provider
-- Prompts to append only missing models to the configured `models` array
+- Prompts to append missing models and remove configured models that the API no longer returns
 
-Built-in endpoint support is included for `openai` and `gemini`. For other providers, you can configure `models_api_url` and a custom `models_response_format` to handle different JSON response structures.
+Built-in endpoint support is included for `anthropic`/`claude`, `gemini`, `openai`, `codex`, and `cursor`. For Claude subscription providers using `claude-auth`, discovery reads `~/.claude-code-router/claude_auth.json` and sends the required Anthropic OAuth beta headers; the provider `api_key` is only a placeholder in that mode. For other providers, you can configure `models_api_url` and a custom `models_response_format` to handle different JSON response structures.
+
+For the `codex` provider, model discovery sends the current Codex CLI `client_version` because the ChatGPT backend can gate newly released Codex model slugs by client version. CCR defaults to the latest stable version known at release time; override it with `codex_client_version` on the provider or `CCR_CODEX_CLIENT_VERSION` when testing a newer Codex CLI rollout. Runtime Codex requests are handled separately by the core Codex transformer, which spoofs the Codex CLI request version and identity headers without depending on CCR's CLI package.
 
 The `models_response_format` object supports:
 - `listPath`: JSON path to the array of models (e.g., `"data"`, `"models"`, or `""` for root array)
@@ -361,7 +364,7 @@ You can also override these settings via CLI flags for testing:
 ccr model get my-provider --list-path data --id-path id --strip-prefix "v1/"
 ```
 
-If the provider returns additional models, `ccr model get <provider>` can append only the missing entries while keeping existing configured models unchanged.
+If the provider returns model changes, `ccr model get <provider>` can append missing entries and remove unavailable configured entries, each behind a separate confirmation prompt.
 
 > **Note**: After syncing models into `config.json`, restart the service with `ccr restart` so the updated provider list is picked up by the running server.
 
@@ -983,6 +986,21 @@ Please help me analyze this code snippet for potential optimizations...
 ```bash
 export CLAUDE_CODE_SUBAGENT_MODEL="openrouter,anthropic/claude-3.5-sonnet"
 ```
+
+## Prompt Caching
+
+CCR translates Claude Code's Anthropic cache intent into each upstream's native caching mechanism automatically:
+
+- Anthropic, Claude Auth, and Vertex Claude use Anthropic automatic prompt caching while preserving bounded explicit block markers.
+- OpenAI Chat and Responses use stable `prompt_cache_key` values; GPT-5.6+ models also receive explicit content breakpoints. Codex uses its separate native contract for every model: a stable prompt key plus session-routing headers, with no explicit content breakpoints.
+- OpenRouter uses sticky `session_id` routing plus model-native caching. Vercel AI Gateway receives `providerOptions.gateway.caching: "auto"`.
+- Mistral and Cerebras receive native `prompt_cache_key` values. Qwen/DashScope receives a final-content cache marker. DeepSeek, Groq, and Vertex OpenAI retain their native implicit caching.
+- Gemini and Vertex Gemini use implicit caching and create/reuse native CachedContent resources for sufficiently large stable system/tool prefixes.
+- Cursor SDK and Chrome On-Device reuse stable native sessions.
+
+Provider-incompatible cache fields are removed only after translation. Cache read/write usage reported upstream is converted back to Anthropic `cache_read_input_tokens` and `cache_creation_input_tokens` for Claude Code.
+
+See [the implementation plan and review](tasks/caching-plan.md) for the provider matrix and verification scope.
 
 ## Status Line (Beta)
 To better monitor the status of claude-code-router at runtime, version v1.0.40 includes a built-in statusline tool, which you can enable in the UI.

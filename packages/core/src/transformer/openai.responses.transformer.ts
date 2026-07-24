@@ -1,6 +1,10 @@
 import { UnifiedChatRequest, MessageContent } from "@/types/llm";
 import { Transformer } from "@/types/transformer";
-import { validateOpenAIToolCalls, injectPromptCaching } from "../utils/openai.util";
+import {
+  applyOpenAIChatCaching,
+  validateOpenAIToolCalls,
+  openAIContentCacheBreakpoint,
+} from "../utils/openai.util";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
 import { stripCacheControl } from "../utils/cacheControl";
 
@@ -30,6 +34,10 @@ interface ResponsesAPIPayload {
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    input_tokens_details?: {
+      cached_tokens?: number;
+      cache_write_tokens?: number;
+    };
   };
 }
 
@@ -66,6 +74,10 @@ interface ResponsesStreamEvent {
       input_tokens: number;
       output_tokens: number;
       total_tokens: number;
+      input_tokens_details?: {
+        cached_tokens?: number;
+        cache_write_tokens?: number;
+      };
     };
   };
   reasoning_summary?: string;
@@ -84,7 +96,9 @@ export class OpenAIResponsesTransformer implements Transformer {
   endPoint = "/v1/responses";
 
   async transformRequestIn(
-    request: UnifiedChatRequest
+    request: UnifiedChatRequest,
+    provider?: any,
+    context?: any
   ): Promise<UnifiedChatRequest> {
     delete request.temperature;
     delete request.max_tokens;
@@ -98,8 +112,8 @@ export class OpenAIResponsesTransformer implements Transformer {
     }
 
     const model = request.model || "";
+    request = applyOpenAIChatCaching(request, provider, context);
     let messages = validateOpenAIToolCalls(request.messages);
-    messages = injectPromptCaching(messages, model);
     request.messages = messages;
 
     const input: any[] = [];
@@ -121,7 +135,13 @@ export class OpenAIResponsesTransformer implements Transformer {
           }
           input.push({
             role: "system",
-            content: text,
+            content: [
+              {
+                type: "input_text",
+                text,
+                ...openAIContentCacheBreakpoint(item, model),
+              },
+            ],
           });
         });
       } else {
@@ -134,7 +154,9 @@ export class OpenAIResponsesTransformer implements Transformer {
 
       if (Array.isArray(message.content)) {
         const convertedContent = message.content
-          .map((content) => this.normalizeRequestContent(content, message.role))
+          .map((content) =>
+            this.normalizeRequestContent(content, message.role, model)
+          )
           .filter(
             (content): content is Record<string, unknown> => content !== null
           );
@@ -478,6 +500,12 @@ export class OpenAIResponsesTransformer implements Transformer {
           prompt_tokens: data.response.usage.input_tokens || 0,
           completion_tokens: data.response.usage.output_tokens || 0,
           total_tokens: data.response.usage.total_tokens || 0,
+          prompt_tokens_details: {
+            cached_tokens:
+              data.response.usage.input_tokens_details?.cached_tokens || 0,
+            cache_write_tokens:
+              data.response.usage.input_tokens_details?.cache_write_tokens || 0,
+          },
         };
       }
 
@@ -527,13 +555,14 @@ export class OpenAIResponsesTransformer implements Transformer {
     return null;
   }
 
-  private normalizeRequestContent(content: any, role: string | undefined) {
-    const clone = stripCacheControl(content);
-
+  private normalizeRequestContent(content: any, role: string | undefined, model: string) {
+    // cache_control is already converted to prompt_cache_breakpoint by
+    // applyOpenAIChatCaching, so no explicit strip is needed here.
     if (content.type === "text") {
       return {
         type: role === "assistant" ? "output_text" : "input_text",
         text: content.text,
+        ...openAIContentCacheBreakpoint(content, model),
       };
     }
 
@@ -547,7 +576,10 @@ export class OpenAIResponsesTransformer implements Transformer {
         imagePayload.image_url = content.image_url.url;
       }
 
-      return imagePayload;
+      return {
+        ...imagePayload,
+        ...openAIContentCacheBreakpoint(content, model),
+      };
     }
 
     return null;
@@ -672,6 +704,13 @@ export class OpenAIResponsesTransformer implements Transformer {
             prompt_tokens: responseData.usage.input_tokens || 0,
             completion_tokens: responseData.usage.output_tokens || 0,
             total_tokens: responseData.usage.total_tokens || 0,
+            prompt_tokens_details: {
+              cached_tokens:
+                responseData.usage.input_tokens_details?.cached_tokens || 0,
+              cache_write_tokens:
+                responseData.usage.input_tokens_details?.cache_write_tokens ||
+                0,
+            },
           }
         : null,
     };

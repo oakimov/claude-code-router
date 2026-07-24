@@ -1,4 +1,6 @@
 import { Transformer } from "@/types/transformer";
+import { UnifiedChatRequest } from "@/types/llm";
+import { applyProviderNativeChatCaching } from "../utils/openai.util";
 
 /**
  * Server-side route handler for the OpenAI Chat Completions API.
@@ -12,7 +14,7 @@ import { Transformer } from "@/types/transformer";
  * the "endpoint transformer" — the one responsible for converting between
  * the external wire format and the internal Unified format.
  *
- * ## Why this class has no transform methods
+ * ## Request handling
  *
  * The Unified format IS the OpenAI Chat Completions format. The conversion
  * from Anthropic → Unified already happened in
@@ -20,10 +22,10 @@ import { Transformer } from "@/types/transformer";
  * pipeline). So by the time the provider chain executes, the body is already
  * in the right shape — no further conversion is needed.
  *
- * When this transformer appears in a provider's `transformer.use[]`,
- * `processRequestTransformers` skips it because it has no
- * `transformRequestIn`. Its role is purely to register the
- * `/v1/chat/completions` route for direct Chat Completions callers.
+ * `transformRequestIn` also translates Claude Code cache intent to the
+ * selected provider's native Chat Completions behavior. The provider identity
+ * is checked before adding request-level fields so OpenAI-compatible services
+ * do not receive OpenAI-only parameters.
  *
  * ## Relationship to OpenAIResponsesTransformer
  *
@@ -48,4 +50,12 @@ import { Transformer } from "@/types/transformer";
 export class OpenAITransformer implements Transformer {
   name = "OpenAI";
   endPoint = "/v1/chat/completions";
+
+  async transformRequestIn(
+    request: UnifiedChatRequest,
+    provider: any,
+    context: any
+  ): Promise<UnifiedChatRequest> {
+    return applyProviderNativeChatCaching(request, provider, context);
+  }
 }

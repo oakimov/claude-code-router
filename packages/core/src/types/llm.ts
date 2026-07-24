@@ -31,6 +31,7 @@ export interface TextContent {
   text: string;
   cache_control?: {
     type?: string;
+    ttl?: "5m" | "1h";
   };
 }
 
@@ -40,6 +41,10 @@ export interface ImageContent {
     url: string;
   };
   media_type: string;
+  cache_control?: {
+    type?: string;
+    ttl?: "5m" | "1h";
+  };
 }
 
 export type MessageContent = TextContent | ImageContent;
@@ -56,10 +61,15 @@ export interface UnifiedMessage {
       name: string;
       arguments: string;
     };
+    cache_control?: {
+      type?: string;
+      ttl?: "5m" | "1h";
+    };
   }>;
   tool_call_id?: string;
   cache_control?: {
     type?: string;
+    ttl?: "5m" | "1h";
   };
   thinking?: {
     content: string;
@@ -83,6 +93,7 @@ export interface UnifiedTool {
   };
   cache_control?: {
     type?: string;
+    ttl?: "5m" | "1h";
   };
 }
 
@@ -118,6 +129,10 @@ export interface UnifiedChatRequest {
     budget_tokens?: number;
   };
   parallel_tool_calls?: boolean;
+  cache_control?: {
+    type?: string;
+    ttl?: "5m" | "1h";
+  };
 
   // Pass-through fields for Anthropic-specific parameters.
   // These survive the Anthropic → Unified → Anthropic roundtrip so that

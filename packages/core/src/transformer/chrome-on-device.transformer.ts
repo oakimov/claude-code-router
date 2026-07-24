@@ -1,5 +1,10 @@
 import { UnifiedChatRequest } from "@/types/llm";
 import { Transformer } from "@/types/transformer";
+import {
+  deriveCacheSessionKey,
+  stripMessagesCacheControl,
+  stripToolsCacheControl,
+} from "../utils/cacheControl";
 
 const DEFAULT_BRIDGE_URL = "http://127.0.0.1:3457";
 
@@ -24,16 +29,20 @@ export class ChromeOnDeviceTransformer implements Transformer {
     if (context?.req?.body) {
       context.req.body.stream = true;
     }
+    const sessionKey = deriveCacheSessionKey(context, request);
 
     return {
       body: {
         ...request,
+        messages: stripMessagesCacheControl(request.messages),
+        tools: stripToolsCacheControl(request.tools),
         stream: true,
       },
       config: {
         url: `${bridgeUrl}/v1/chat/completions`,
         headers: {
           "Content-Type": "application/json",
+          ...(sessionKey ? { "x-ccr-session-id": sessionKey } : {}),
         },
       },
     };

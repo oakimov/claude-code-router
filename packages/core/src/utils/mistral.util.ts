@@ -6,6 +6,7 @@ import {
   cleanReasoningFields,
 } from "./thinking";
 import { normalizeToolParameters } from "./schema";
+import { deriveCacheSessionKey } from "./cacheControl";
 
 // Type definitions for Mistral API responses
 interface MistralStreamChunk {
@@ -129,7 +130,11 @@ const NON_REASONING = new Set([
 /**
  * Transform incoming request to Mistral-compatible format
  */
-export function buildRequestBody(request: UnifiedChatRequest): Record<string, any> {
+export function buildRequestBody(
+  request: UnifiedChatRequest,
+  context?: any,
+  provider?: any
+): Record<string, any> {
   const req = { ...request };
 
   // 1. Process messages
@@ -140,6 +145,13 @@ export function buildRequestBody(request: UnifiedChatRequest): Record<string, an
   // 2. Defaults
   if (req.stream === undefined) {
     req.stream = true;
+  }
+
+  // Mistral prompt caching is keyed at request level. Inline cache_control
+  // markers are removed below after the native key has been derived.
+  const cacheKey = deriveCacheSessionKey(context, request);
+  if (cacheKey) {
+    (req as any).prompt_cache_key = cacheKey;
   }
 
   // 3. Tool Choice

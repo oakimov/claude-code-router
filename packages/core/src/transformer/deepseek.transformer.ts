@@ -18,6 +18,19 @@ import {
   prepareReasoningReplay,
   recordReasoningResponseMessage,
 } from "../utils/deepseek.util";
+import {
+  stripMessagesCacheControl,
+  stripToolsCacheControl,
+} from "../utils/cacheControl";
+
+function normalizeDeepSeekCacheUsage(payload: any): void {
+  const usage = payload?.usage;
+  if (!usage || usage.prompt_cache_hit_tokens === undefined) return;
+  usage.prompt_tokens_details = {
+    ...(usage.prompt_tokens_details || {}),
+    cached_tokens: usage.prompt_cache_hit_tokens || 0,
+  };
+}
 
 export class DeepseekTransformer implements Transformer {
   name = "deepseek";
@@ -30,6 +43,8 @@ export class DeepseekTransformer implements Transformer {
     if (request.max_tokens && request.max_tokens > 8192) {
       request.max_tokens = 8192;
     }
+    request.messages = stripMessagesCacheControl(request.messages);
+    request.tools = stripToolsCacheControl(request.tools);
     prepareReasoningReplay(request, provider, context);
     return request;
   }
@@ -38,6 +53,7 @@ export class DeepseekTransformer implements Transformer {
     const shouldRecordDeepSeekReasoning = hasDeepSeekReasoningContext(context);
     if (response.headers.get("Content-Type")?.includes("application/json")) {
       const jsonResponse = await response.json();
+      normalizeDeepSeekCacheUsage(jsonResponse);
       if (shouldRecordDeepSeekReasoning) {
         recordReasoningResponseMessage(
           {
@@ -76,10 +92,13 @@ export class DeepseekTransformer implements Transformer {
         try {
           const rawDataStr = line.slice(5).trim();
           const data = JSON.parse(rawDataStr);
+          normalizeDeepSeekCacheUsage(data);
 
           const delta = data.choices?.[0]?.delta;
           if (!delta) {
-            ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
+            ctx.controller.enqueue(
+              encodeSSEData(JSON.stringify(data), ctx.encoder)
+            );
             return;
           }
 

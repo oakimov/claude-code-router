@@ -982,6 +982,14 @@ class Mutex {
 }
 
 function fingerprintClient(req: http.IncomingMessage): string {
+  const explicitSession =
+    req.headers["x-ccr-session-id"] || req.headers["x-session-id"];
+  if (typeof explicitSession === "string" && explicitSession) {
+    return createHash("sha256")
+      .update(explicitSession)
+      .digest("hex")
+      .slice(0, 24);
+  }
   const ip = req.socket?.remoteAddress || "unknown";
   const ua = req.headers["user-agent"] || "unknown";
   return createHash("sha256")

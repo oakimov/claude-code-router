@@ -1,5 +1,10 @@
 import { LLMProvider, UnifiedChatRequest, UnifiedMessage } from "@/types/llm";
 import { Transformer } from "@/types/transformer";
+import {
+  deriveCacheSessionKey,
+  stripMessagesCacheControl,
+  stripToolsCacheControl,
+} from "../utils/cacheControl";
 
 
 /**
@@ -16,10 +21,17 @@ export class CerebrasTransformer implements Transformer {
    */
   async transformRequestIn(
     request: UnifiedChatRequest,
-    provider: LLMProvider
+    provider: LLMProvider,
+    context?: any
   ): Promise<Record<string, unknown>> {
     // Deep clone the request to avoid modifying the original
     const transformedRequest = JSON.parse(JSON.stringify(request));
+    transformedRequest.messages = stripMessagesCacheControl(
+      transformedRequest.messages
+    );
+    transformedRequest.tools = stripToolsCacheControl(transformedRequest.tools);
+    const cacheKey = deriveCacheSessionKey(context, request);
+    if (cacheKey) transformedRequest.prompt_cache_key = cacheKey;
 
     if (transformedRequest.reasoning) {
       delete transformedRequest.reasoning;
