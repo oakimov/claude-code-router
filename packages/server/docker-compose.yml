@@ -9,6 +9,9 @@ services:
     ports:
       - "3456:3456"
       - "1455:3456"
+      # Antigravity OAuth: Google redirects to localhost:51121/oauth-callback
+      # → CCR Fastify /oauth-callback (same pattern as Codex 1455→3456)
+      - "51121:3456"
     volumes:
       - ./ccr-config:/root/.claude-code-router
     restart: always
@@ -23,6 +26,7 @@ services:
       - MISTRAL_API_KEY=${MISTRAL_API_KEY}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
       - OPENCODE_API_KEY=${OPENCODE_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - ALIBABA_API_KEY=${ALIBABA_API_KEY}
       - CURSOR_API_KEY=${CURSOR_API_KEY}
     healthcheck:

@@ -134,6 +134,36 @@ sidebar_position: 2
 
 使用 `ccr model get cursor` 发现模型。详见 [Cursor SDK 集成指南](/docs/server/guides/cursor)。
 
+### Antigravity
+
+通过 Google Antigravity 网关路由，使用 `ccr antigravity-auth` 完成 OAuth。将 `gemini` 链接在 `antigravity-auth` **之前**。
+
+```json
+{
+  "name": "antigravity",
+  "api_base_url": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+  "api_key": "oauth",
+  "project_id": "$ANTIGRAVITY_PROJECT_ID",
+  "models": [
+    "gemini-3-pro-high",
+    "gemini-3-flash",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking"
+  ],
+  "transformer": {
+    "use": [
+      ["gemini", { "cachedContent": false, "thoughtSignatureFallback": "skip" }],
+      "antigravity-auth"
+    ]
+  }
+}
+```
+
+- **`cachedContent: false`** — 必需。Antigravity 没有 `cachedContents` 资源；Gemini 默认（`true`）会导致 404。
+- **`thoughtSignatureFallback: "skip"`** — 保持默认。当缺少工具调用的 thought signature 时，盖印 Google 的 `skip_thought_signature_validator` 哨兵，避免网关 400。仅在端点拒绝该哨兵时设为 `"none"`。
+
+完整选项说明：[转换器 → gemini](/zh/docs/server/config/transformers#选项-cachedcontent-与-thoughtsignaturefallback)。另见 [CLI 认证命令](/zh/docs/cli/commands/auth)。
+
 ### Qwen Chat
 
 需要通过 `ccr qwen-auth` 完成 JWT 认证。

@@ -143,7 +143,86 @@ export function sanitizeJsonSchema(
     }
   }
 
+  // Filter orphaned required entries after properties were stripped.
+  if (Array.isArray(result.required) && result.properties) {
+    const keys = new Set(Object.keys(result.properties));
+    result.required = result.required.filter((name: string) => keys.has(name));
+    if (result.required.length === 0) {
+      delete result.required;
+    }
+  }
+
   return result;
+}
+
+/**
+ * Collapse union subschemas that carry no `type` of their own.
+ *
+ * Antigravity serves Claude models by parsing our Gemini `generateContent` body
+ * into the Gemini Schema proto and re-emitting it as an Anthropic tool schema. A
+ * subschema with `anyOf` and no sibling `type` has no proto type to carry, and
+ * what comes out the far side fails Anthropic's draft 2020-12 validation:
+ *
+ *   tools.18.custom.input_schema: JSON schema is invalid.
+ *
+ * Adding a sibling `type` is not an option — Gemini rejects that outright with
+ * "type and anyOf cannot be both populated" — so the union is collapsed onto its
+ * first typed branch instead, and the alternatives are recorded in the
+ * description so the model still knows they exist. Lossy, but the alternative is
+ * that every request carrying such a tool fails.
+ *
+ * Gemini itself handles typeless unions fine, so this is only for backends
+ * reached through the Gemini wire format.
+ */
+export function collapseTypelessUnions(schema: any): any {
+  if (!schema || typeof schema !== "object") return schema;
+  if (Array.isArray(schema)) return schema.map(collapseTypelessUnions);
+
+  const result: any = {};
+  for (const key in schema) {
+    const value = schema[key];
+    if (key === "properties" && value && typeof value === "object") {
+      const props: any = {};
+      for (const propKey in value) props[propKey] = collapseTypelessUnions(value[propKey]);
+      result[key] = props;
+    } else if (key === "items") {
+      result[key] = collapseTypelessUnions(value);
+    } else if (["anyOf", "allOf", "oneOf"].includes(key) && Array.isArray(value)) {
+      result[key] = value.map(collapseTypelessUnions);
+    } else {
+      result[key] = value;
+    }
+  }
+
+  const union = result.anyOf || result.oneOf;
+  if (!Array.isArray(union) || result.type) return result;
+
+  const branches = union.filter((b: any) => b && typeof b === "object");
+  const chosen = branches.find((b: any) => b.type) || branches[0];
+  if (!chosen) return result;
+
+  const { anyOf, oneOf, description, ...rest } = result;
+  // Describe the dropped branches once each, without re-nesting the note a
+  // deeper collapse already added.
+  const alternatives = [
+    ...new Set(
+      branches
+        .filter((b: any) => b !== chosen)
+        .map((b: any) =>
+          String(b.description || b.type || "").split(" (alternatives:")[0]
+        )
+        .filter(Boolean)
+    ),
+  ];
+
+  const merged: any = { ...chosen, ...rest };
+  const notes = [description, chosen.description, ...alternatives].filter(Boolean);
+  if (notes.length) {
+    merged.description = alternatives.length
+      ? `${notes[0]} (alternatives: ${alternatives.join("; ")})`
+      : notes[0];
+  }
+  return merged;
 }
 
 /**

@@ -1,5 +1,9 @@
 import { LLMProvider, UnifiedChatRequest } from "../types/llm";
-import { Transformer } from "../types/transformer";
+import {
+  Transformer,
+  TransformerContext,
+  TransformerOptions,
+} from "../types/transformer";
 import {
   buildRequestBody,
   transformRequestOut,
@@ -28,8 +32,20 @@ async function getAccessToken(logger?: any): Promise<string> {
 }
 
 export class VertexGeminiTransformer implements Transformer {
+  static TransformerName = "vertex-gemini";
+
   logger?: any;
   name = "vertex-gemini";
+
+  private readonly thoughtSignatureFallback: "skip" | "none";
+
+  constructor(options?: TransformerOptions) {
+    // Vertex speaks the same generateContent dialect, but deployments have been
+    // reported to reject the skip_thought_signature_validator sentinel; allow
+    // ["vertex-gemini", { thoughtSignatureFallback: "none" }] to turn it off.
+    this.thoughtSignatureFallback =
+      options?.thoughtSignatureFallback === "none" ? "none" : "skip";
+  }
 
   async transformRequestIn(
     request: UnifiedChatRequest,
@@ -62,7 +78,11 @@ export class VertexGeminiTransformer implements Transformer {
       provider.baseUrl.endsWith('/') ? provider.baseUrl : provider.baseUrl + '/' || `https://${location}-aiplatform.googleapis.com`;
     const modelResource = `projects/${projectId}/locations/${location}/publishers/google/models/${model}`;
     const body = await attachGeminiCachedContent({
-      body: buildRequestBody(request),
+      body: buildRequestBody(request, {
+        thoughtSignatureFallback: this.thoughtSignatureFallback,
+        // Scope cached thought signatures to this provider.
+        signatureScope: provider?.name || this.name,
+      }),
       modelResource,
       createUrl: new URL(
         `./v1beta1/projects/${projectId}/locations/${location}/cachedContents`,
@@ -93,7 +113,15 @@ export class VertexGeminiTransformer implements Transformer {
     return transformRequestOut(request);
   }
 
-  async transformResponseOut(response: Response): Promise<Response> {
-    return transformResponseOut(response, this.name);
+  async transformResponseOut(
+    response: Response,
+    context?: TransformerContext
+  ): Promise<Response> {
+    return transformResponseOut(
+      response,
+      this.name,
+      this.logger,
+      context?.provider?.name || this.name
+    );
   }
 }

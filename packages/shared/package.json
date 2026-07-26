@@ -22,12 +22,10 @@
   ],
   "dependencies": {
     "adm-zip": "^0.5.16",
-    "archiver": "^7.0.1",
     "json5": "^2.2.3"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.7",
-    "@types/archiver": "^7.0.0",
     "@types/node": "^24.0.15",
     "esbuild": "^0.25.1",
     "typescript": "^5.8.2"

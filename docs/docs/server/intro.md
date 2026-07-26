@@ -103,6 +103,9 @@ The core package includes transformers for:
 - **cerebras**: Cerebras API format
 - **openrouter**: OpenRouter API format
 - **codex**: Codex (ChatGPT) backend API
+- **claude-auth**: Claude Pro/Max subscription OAuth
+- **antigravity-auth**: Google Antigravity (`cloudcode-pa`) OAuth + envelope
+- **cursor-sdk**: In-process Cursor Agent via `@cursor/sdk`
 - **qwen-auth**: Qwen Chat authentication (JWT-based)
 - **chrome-on-device**: Chrome built-in Gemini Nano (local, no API cost)
 - **vercel**: Vercel AI SDK format
@@ -120,7 +123,7 @@ The CCR server integrates `@caeliq/llms` through:
 
 ### Version and Updates
 
-The current version of `@caeliq/llms` is `1.0.54`. It's published as an independent npm package and can be used standalone or as part of CCR Server.
+The current version of `@caeliq/llms` is `1.0.56`. It's published as an independent npm package and can be used standalone or as part of CCR Server.
 
 ## Core Features
 

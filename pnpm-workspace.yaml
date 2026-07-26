@@ -1,3 +1,20 @@
 packages:
   - 'packages/*'
   - 'docs'
+allowBuilds:
+  '@google/genai': true
+  core-js: false
+  core-js-pure: false
+  esbuild: false
+  protobufjs: true
+overrides:
+  # Force deprecated transitive dependency versions up to current, non-deprecated
+  # releases. uuid@8.3.2 comes from sockjs (webpack-dev-server, docs toolchain).
+  # @ungap/structured-clone@1.3.0 comes from docusaurus's MDX pipeline.
+  # node-fetch@^3 pulls in fetch-blob → deprecated node-domexception, replaced
+  # with a native-fetch wrapper that has zero dependencies (Node 22+ has native
+  # fetch/DOMException). Overrides are avoided where possible — archiver (glob@10)
+  # was unused and removed, @fastify/static was upgraded to ^10 (glob@^13).
+  uuid: ^11.1.0
+  '@ungap/structured-clone': ^1.3.3
+  node-fetch: npm:node-fetch-native@^1.6.7

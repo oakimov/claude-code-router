@@ -2,7 +2,7 @@
 sidebar_position: 7
 ---
 
-# ccr claude-auth / ccr codex-auth / ccr qwen-auth
+# ccr claude-auth / ccr codex-auth / ccr qwen-auth / ccr antigravity-auth
 
 Authentication commands for provider backends that require OAuth or JWT tokens.
 
@@ -77,6 +77,66 @@ As an alternative to OAuth, the Codex provider can authenticate with a Personal 
 ```
 
 CCR checks `api_key` first for PAT mode and otherwise falls back to OAuth tokens from `~/.claude-code-router/codex_auth.json`.
+
+---
+
+## ccr antigravity-auth
+
+Authenticate with Google's Antigravity gateway via OAuth with PKCE.
+
+```bash
+ccr antigravity-auth
+ccr antigravity-auth --manual
+ccr antigravity-auth --project <gcp-project-id>
+```
+
+### How It Works
+
+1. The CLI generates a PKCE challenge, writes a verifier file, and prints a Google authorization URL
+2. You sign in with a Google account that has Antigravity access
+3. Google redirects to `http://localhost:51121/oauth-callback`
+4. Docker Compose maps **51121 → 3456** onto the CCR server (same idea as Codex `1455 → 3456`)
+5. The public Fastify route `GET /oauth-callback` exchanges the code and writes `~/.claude-code-router/antigravity_auth.json`
+6. Press Enter in the terminal to confirm
+
+### Options
+
+- `--manual` — paste the redirect URL; CLI exchanges without the server (no compose / headless)
+- `--project <id>` — seed `project_id` into the verifier / auth file
+
+### Prerequisites / notes
+
+- The CCR server must be running (it hosts `/oauth-callback`)
+- With Docker: recreate compose so `51121:3456` is published
+- Using Antigravity IDE OAuth client credentials from a non-IDE client may violate Google's terms
+
+### Provider config
+
+```json
+{
+  "name": "antigravity",
+  "api_base_url": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+  "api_key": "oauth",
+  "project_id": "$ANTIGRAVITY_PROJECT_ID",
+  "models": [
+    "gemini-3-pro-high",
+    "gemini-3-flash",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking"
+  ],
+  "transformer": {
+    "use": [
+      ["gemini", { "cachedContent": false, "thoughtSignatureFallback": "skip" }],
+      "antigravity-auth"
+    ]
+  }
+}
+```
+
+Gemini options in that chain (full detail in [Transformers → gemini](/docs/server/config/transformers#options-cachedcontent-and-thoughtsignaturefallback)):
+
+- **`cachedContent: false`** — Antigravity has no Google `cachedContents` resource. The Gemini transformer defaults to `true` (public Gemini may create/reuse that server-side prefix cache). Leaving it on here causes 404s.
+- **`thoughtSignatureFallback: "skip"`** — explicit form of the default. Gemini 3 / Antigravity require a `thoughtSignature` on tool calls; Claude Code cannot carry it on Anthropic `tool_use`, so CCR caches signatures and restores them. On a miss, `"skip"` stamps Google's `skip_thought_signature_validator` sentinel on the first `functionCall` so the turn does not 400. The value name refers to that sentinel — it does **not** mean “disable the fallback.” Set `"none"` only if your endpoint rejects the sentinel.
 
 ---
 

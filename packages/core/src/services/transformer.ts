@@ -44,11 +44,47 @@ export class TransformerService {
 
   getTransformersWithEndpoint(): { name: string; transformer: Transformer }[] {
     const result: { name: string; transformer: Transformer }[] = [];
+    // Several transformers legitimately share one wire format (`openai` and
+    // `vercel` both declare /v1/chat/completions). Fastify rejects duplicate
+    // routes, so the first registration for an endpoint wins.
+    const claimedEndpoints = new Map<string, string>();
+
+    const claim = (name: string, transformer: Transformer): void => {
+      const endPoint = transformer.endPoint;
+      if (!endPoint) return;
+      const owner = claimedEndpoints.get(endPoint);
+      if (owner) {
+        this.logger?.debug?.(
+          `transformer ${name} shares endpoint ${endPoint} with ${owner}; keeping ${owner}`
+        );
+        return;
+      }
+      claimedEndpoints.set(endPoint, name);
+      result.push({ name, transformer });
+    };
 
     this.transformers.forEach((transformer, name) => {
-      // Check if it's an instance with endPoint
-      if (typeof transformer === 'object' && transformer.endPoint) {
-        result.push({ name, transformer });
+      // Instance with endPoint (anthropic, openai, …)
+      if (typeof transformer === "object") {
+        claim(name, transformer);
+        return;
+      }
+      // Constructor registered via static TransformerName (gemini, vercel, …).
+      // `endPoint` is declared as a class field, so it exists only on an
+      // instance — build a default (no-options) one so configuring
+      // ["gemini", opts] does not silently drop the native endpoint route.
+      if (typeof transformer === "function") {
+        try {
+          const instance = new (transformer as TransformerConstructor)();
+          if (instance && typeof instance === "object") {
+            (instance as any).logger = this.logger;
+          }
+          claim(name, instance);
+        } catch (error: any) {
+          this.logger?.warn?.(
+            `transformer ${name} could not be instantiated for endpoint registration: ${error?.message}`
+          );
+        }
       }
     });
 

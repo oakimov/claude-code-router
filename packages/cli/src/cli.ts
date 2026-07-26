@@ -23,6 +23,7 @@ import { runCodexAuth } from "./utils/codex-cli-auth";
 import { runQwenAuth } from "./utils/qwen-cli-auth";
 import { runChromeBridge } from "./utils/chrome-device-bridge";
 import { runClaudeAuth } from "./utils/claude-auth-cli";
+import { runAntigravityAuth } from "./utils/antigravity-cli-auth";
 
 
 const command = process.argv[2];
@@ -44,6 +45,7 @@ const KNOWN_COMMANDS = [
   "codex-auth",
   "qwen-auth",
   "claude-auth",
+  "antigravity-auth",
   "chrome-bridge",
   "-v",
   "version",
@@ -71,6 +73,8 @@ Commands:
   codex-auth    Authenticate with Codex API via OAuth
   qwen-auth     Authenticate with Qwen Chat (paste JWT from localStorage)
   claude-auth   Show Claude Code OAuth credential status and provider config
+  antigravity-auth  Authenticate with Google Antigravity via OAuth
+                    Options: --manual, --project <id>
   chrome-bridge Start Chrome on-device model bridge (for Gemini Nano)
   -v, version   Show version information
   -h, help      Show help information
@@ -326,6 +330,9 @@ async function main() {
       break;
     case "claude-auth":
       await runClaudeAuth();
+      break;
+    case "antigravity-auth":
+      await runAntigravityAuth();
       break;
     case "chrome-bridge": {
       // Parse optional --port and --cdp flags

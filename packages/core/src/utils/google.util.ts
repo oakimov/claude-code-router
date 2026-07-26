@@ -3,6 +3,59 @@ import { UnifiedMessage, UnifiedTool, ImageContent, MessageContent } from "../ty
 import latexToUnicode from "latex-to-unicode";
 
 // ---------------------------------------------------------------------------
+// Finish reasons
+// ---------------------------------------------------------------------------
+
+/**
+ * Google finish reasons that have a Unified (OpenAI) equivalent. Anything not
+ * listed here is passed through lowercased and lands on Anthropic's `end_turn`
+ * default — correct for genuine completions, and harmless for upstream failures
+ * because those also carry a visible notice (see buildAbnormalFinishNotice).
+ *
+ * Without this map, MAX_TOKENS reached Anthropic as `end_turn`, so a response
+ * truncated mid-answer was indistinguishable from a finished one.
+ */
+const GOOGLE_FINISH_REASON_MAP: Record<string, string> = {
+  STOP: "stop",
+  MAX_TOKENS: "length",
+  SAFETY: "content_filter",
+  RECITATION: "content_filter",
+  BLOCKLIST: "content_filter",
+  PROHIBITED_CONTENT: "content_filter",
+  SPII: "content_filter",
+  IMAGE_SAFETY: "content_filter",
+};
+
+/** Marker that prefixes CCR's upstream-failure notice; used to strip it on replay. */
+export const UPSTREAM_STOP_NOTICE = "⚠️ Upstream ended the turn without a reply";
+
+export function normalizeGoogleFinishReason(
+  raw?: string | null
+): string | null {
+  if (!raw) return null;
+  return GOOGLE_FINISH_REASON_MAP[raw.toUpperCase()] || raw.toLowerCase();
+}
+
+/**
+ * Text to show when the upstream ends a turn abnormally with nothing to show:
+ * no text, no tool calls. Returns null for normal completions.
+ *
+ * Gemini 3 / Antigravity return e.g. `MALFORMED_FUNCTION_CALL` ("Function call
+ * is empty - no input to parse") after streaming only thinking. Without this the
+ * turn reached Claude Code as a silent, successful `end_turn`, so the user saw
+ * an assistant turn that said nothing and had to prompt again.
+ */
+export function buildAbnormalFinishNotice(candidate?: any): string | null {
+  const raw = candidate?.finishReason;
+  if (!raw || String(raw).toUpperCase() === "STOP") return null;
+  const detail = String(candidate?.finishMessage || "").trim();
+  return (
+    `${UPSTREAM_STOP_NOTICE} (${String(raw).toUpperCase()})` +
+    (detail ? `: ${detail}` : "")
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ThinkingSequencer
 // ---------------------------------------------------------------------------
 
@@ -25,14 +78,23 @@ export interface ThinkingSequencerEmit {
 }
 
 /**
- * State machine that enforces the emission order for Gemini thinking blocks:
- *   Thinking Content -> Thinking Signature -> Final Content
+ * State machine that enforces Anthropic-safe emission order for Gemini thinking:
+ *   Thinking Content → Thinking Signature → Final Content
  *
- * Handles:
- * - Happy path: thinking, signature, content arrive in order
- * - Gemini 3: content arrives before signature (buffered until signature)
- * - Missing signature: fallback signature generated at finalize
- * - Empty thinking: signature arrives with no prior thinking content
+ * Supports two upstream stream dialects:
+ *
+ * 1) Public Gemini API (and Vertex):
+ *    - Happy path: thought:true → thoughtSignature → text
+ *    - Gemini 3 out-of-order: thought:true → text (buffer) → signature (flush)
+ *    - Empty thinking: signature first → emit "(no content)" thinking → text
+ *
+ * 2) Antigravity:
+ *    - Visible text first (often with no thought:true parts)
+ *    - Final event: thoughtSignature + empty text + STOP
+ *    - Must NOT open a late thinking block after text (Claude Code drops the turn)
+ *
+ * Rule: if visible content was already emitted when a signature arrives, record
+ * the signature as handled and skip thinking/signature emission.
  */
 export class ThinkingSequencer {
   private _hasThinking = false;
@@ -50,9 +112,8 @@ export class ThinkingSequencer {
 
   /**
    * Called when a signature arrives.
-   * - Emits "(no content)" thinking if no thinking was seen
-   * - Emits the signature
-   * - Flushes any buffered content
+   * - Public Gemini: emit thinking placeholder if needed, emit signature, flush buffer
+   * - Antigravity trailer after content: no-op emission (see class docs)
    */
   processSignature(sig: string, chunk?: any): void {
     this.processSignatureWithMeta(sig, chunk);
@@ -72,6 +133,11 @@ export class ThinkingSequencer {
     }
   ): void {
     if (this._sigSent) return;
+    // Antigravity: content already streamed — do not emit late thinking.
+    if (this._contentSent) {
+      this._sigSent = true;
+      return;
+    }
     if (!this._hasThinking) {
       this._hasThinking = true;
       this.emit.thinking("(no content)", chunk);
@@ -85,7 +151,7 @@ export class ThinkingSequencer {
   /**
    * Called when content text arrives.
    * - Signature already sent or no thinking at all: emit immediately
-   * - Thinking seen but no signature yet: buffer
+   * - Thinking seen but no signature yet: buffer (public Gemini / Gemini 3)
    */
   processContent(text: string, chunk?: any, candidate?: any): void {
     if (this._sigSent || !this._hasThinking) {
@@ -135,7 +201,7 @@ export class ThinkingSequencer {
           chunk,
           candidate,
           mode: candidate?.finishReason ? "finish" : "buffered",
-          finishReason: candidate?.finishReason?.toLowerCase() || null,
+          finishReason: normalizeGoogleFinishReason(candidate?.finishReason),
         },
       });
       return;
@@ -144,7 +210,7 @@ export class ThinkingSequencer {
       chunk,
       candidate,
       mode: candidate?.finishReason ? "finish" : "buffered",
-      finishReason: candidate?.finishReason?.toLowerCase() || null,
+      finishReason: normalizeGoogleFinishReason(candidate?.finishReason),
     });
   }
 
@@ -166,7 +232,10 @@ export class ThinkingSequencer {
     }
   }
 
-  /** Whether Gemini 3 content should be deferred (signature not yet seen, not finishing, no tool calls). */
+  /**
+   * Whether Gemini 3 content should be deferred (signature not yet seen,
+   * not finishing, no tool calls). Public Gemini 3 out-of-order path.
+   */
   shouldDeferContent(isFinish: boolean, hasToolCalls: boolean): boolean {
     return this._hasThinking && !this._sigSent && !isFinish && !hasToolCalls;
   }
@@ -176,6 +245,15 @@ export class ThinkingSequencer {
   get signatureSent(): boolean { return this._sigSent; }
   get contentSent(): boolean { return this._contentSent; }
   get needsContentPlaceholder(): boolean { return this._sigSent && !this._contentSent; }
+
+  /**
+   * Mark a thoughtSignature as handled without emitting thinking/signature/content.
+   * Used when the signature belongs on functionCall parts (tool turns) and must
+   * not invent "(no content)" thinking/text placeholders.
+   */
+  acknowledgeSignature(): void {
+    this._sigSent = true;
+  }
 }
 
 
@@ -270,18 +348,20 @@ export function processImageContent(
   provider: "gemini" | "claude"
 ): any {
   if (provider === "gemini") {
+    // camelCase keys: v1internal (Antigravity) rejects the snake_case aliases
+    // that the public REST API tolerates.
     if (normalizedImage.isBase64) {
       return {
         inlineData: {
-          mime_type: normalizedImage.mediaType,
+          mimeType: normalizedImage.mediaType,
           data: normalizedImage.url.split(",").pop() || normalizedImage.url,
         },
       };
     }
     return {
-      file_data: {
-        mime_type: normalizedImage.mediaType,
-        file_uri: normalizedImage.url,
+      fileData: {
+        mimeType: normalizedImage.mediaType,
+        fileUri: normalizedImage.url,
       },
     };
   }

@@ -10,9 +10,20 @@ import {
   recoverCliCodexOAuth,
   resolveCliCodexAuth,
 } from "./codex-auth";
+import {
+  ANTIGRAVITY_ENDPOINT_PROD,
+  fetchCliAntigravityModels,
+  resolveCliAntigravityAuth,
+  resolveCliAntigravityProjectId,
+} from "./antigravity-auth";
 
 const CODEX_AUTH_FILE = join(homedir(), ".claude-code-router", "codex_auth.json");
 const CLAUDE_AUTH_FILE = join(homedir(), ".claude-code-router", "claude_auth.json");
+const ANTIGRAVITY_AUTH_FILE = join(
+  homedir(),
+  ".claude-code-router",
+  "antigravity_auth.json"
+);
 const CONFIG_PATH_DISPLAY = "~/.claude-code-router/config.json";
 const READABLE_CONFIG_FILE = process.env.CCR_CONFIG_FILE || CONFIG_FILE;
 const DEFAULT_CODEX_CLIENT_VERSION = "0.145.0";
@@ -39,7 +50,7 @@ interface ConfigWithProviders {
 }
 
 interface ResolvedEndpoint {
-  kind: "openai" | "gemini" | "codex" | "cursor" | "anthropic";
+  kind: "openai" | "gemini" | "codex" | "cursor" | "anthropic" | "antigravity";
   url: string;
 }
 
@@ -66,6 +77,13 @@ function transformerUseIncludes(provider: ProviderConfig, transformerName: strin
 
 function isClaudeAuthProvider(provider: ProviderConfig): boolean {
   return transformerUseIncludes(provider, "claude-auth");
+}
+
+function isAntigravityProvider(provider: ProviderConfig): boolean {
+  if (normalizeProviderName(provider.name) === "antigravity") {
+    return true;
+  }
+  return transformerUseIncludes(provider, "antigravity-auth");
 }
 
 function isAnthropicProvider(provider: ProviderConfig): boolean {
@@ -178,6 +196,11 @@ function getRequestApiKey(provider: ProviderConfig): string | undefined {
     return getClaudeAccessToken();
   }
 
+  // Antigravity uses OAuth store; placeholder api_key like "oauth" is unused.
+  if (isAntigravityProvider(provider)) {
+    return undefined;
+  }
+
   return getProviderApiKey(provider);
 }
 
@@ -194,6 +217,10 @@ function getMissingApiKeyMessage(provider: ProviderConfig): string {
 
   if (isClaudeAuthProvider(provider)) {
     return "Claude authentication unavailable. Run `ccr claude-auth` for OAuth.";
+  }
+
+  if (isAntigravityProvider(provider)) {
+    return "Antigravity authentication unavailable. Run `ccr antigravity-auth` for OAuth.";
   }
 
   return `Provider \"${provider.name}\" does not have a usable API key configured.`;
@@ -296,6 +323,17 @@ function resolveModelsEndpoint(provider: ProviderConfig): ResolvedEndpoint {
       throw new Error("Provider \"codex\" requires \"models_api_url\" to be configured for model discovery.");
     }
     return { kind: "codex", url: provider.models_api_url };
+  }
+
+  if (isAntigravityProvider(provider)) {
+    const base =
+      provider.models_api_url ||
+      provider.api_base_url ||
+      ANTIGRAVITY_ENDPOINT_PROD;
+    return {
+      kind: "antigravity",
+      url: `${String(base).replace(/\/$/, "")}/v1internal:fetchAvailableModels`,
+    };
   }
 
   if (isAnthropicProvider(provider)) {
@@ -587,10 +625,55 @@ async function fetchCustomModels(
     .filter(Boolean);
 }
 
+async function fetchAntigravityModels(provider: ProviderConfig): Promise<string[]> {
+  const tokens = await resolveCliAntigravityAuth();
+  const projectId = await resolveCliAntigravityProjectId(
+    typeof provider.project_id === "string" ? provider.project_id : undefined,
+    tokens.access_token
+  );
+  const configured = Array.isArray(provider.models)
+    ? provider.models.filter((m) => typeof m === "string" && m.trim())
+    : [];
+
+  if (!projectId) {
+    console.log(
+      `${DIM}No Antigravity project id — remote model discovery skipped (fetchAvailableModels requires one).${RESET}`
+    );
+    console.log(
+      `${DIM}Set provider.project_id or run \`ccr antigravity-auth --project <id>\` to enable discovery.${RESET}`
+    );
+    return configured;
+  }
+
+  try {
+    return await fetchCliAntigravityModels(
+      tokens.access_token,
+      projectId,
+      provider.api_base_url || ANTIGRAVITY_ENDPOINT_PROD
+    );
+  } catch (error: any) {
+    const message = error?.message || String(error);
+    if (/403|PERMISSION_DENIED|401/i.test(message)) {
+      console.log(
+        `${DIM}Remote Antigravity model discovery failed (${message.split("\n")[0].slice(0, 120)}).${RESET}`
+      );
+      console.log(
+        `${DIM}Falling back to configured models. Chat/inference can still work without listing.${RESET}`
+      );
+      return configured;
+    }
+    throw error;
+  }
+}
+
 async function fetchRemoteModels(apiKey: string | undefined, provider: ProviderConfig, endpoint: ResolvedEndpoint): Promise<string[]> {
   if (endpoint.kind === "cursor") {
     if (!apiKey) throw new Error(getMissingApiKeyMessage(provider));
     return fetchCursorModels(apiKey);
+  }
+
+  if (endpoint.kind === "antigravity") {
+    return fetchAntigravityModels(provider);
   }
 
   if (provider.models_response_format) {
@@ -618,6 +701,10 @@ async function fetchRemoteModels(apiKey: string | undefined, provider: ProviderC
 function getEndpointHelpText(provider: ProviderConfig, endpoint: ResolvedEndpoint): string | undefined {
   if (endpoint.kind === "codex") {
     return `Codex parsing uses models[].slug for provider \"${provider.name}\".`;
+  }
+
+  if (endpoint.kind === "antigravity") {
+    return "Antigravity discovery calls POST /v1internal:fetchAvailableModels with OAuth (project id optional).";
   }
 
   if (endpoint.kind === "cursor") {
@@ -660,6 +747,10 @@ function printAuthSource(provider: ProviderConfig): void {
 
   if (isClaudeAuthProvider(provider)) {
     console.log(`${BOLDCYAN}Auth source:${RESET} ${CLAUDE_AUTH_FILE}`);
+  }
+
+  if (isAntigravityProvider(provider)) {
+    console.log(`${BOLDCYAN}Auth source:${RESET} ${ANTIGRAVITY_AUTH_FILE}`);
   }
 }
 
@@ -855,8 +946,14 @@ export async function runModelGet(providerName: string, options: { listPath?: st
 
     const endpoint = resolveModelsEndpoint(provider);
     const apiKey =
-      endpoint.kind === "codex" ? undefined : getRequestApiKey(provider);
-    if (endpoint.kind !== "codex" && !apiKey) {
+      endpoint.kind === "codex" || endpoint.kind === "antigravity"
+        ? undefined
+        : getRequestApiKey(provider);
+    if (
+      endpoint.kind !== "codex" &&
+      endpoint.kind !== "antigravity" &&
+      !apiKey
+    ) {
       throw new Error(getMissingApiKeyMessage(provider));
     }
 

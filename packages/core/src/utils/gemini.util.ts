@@ -1,6 +1,18 @@
 import { UnifiedChatRequest, UnifiedMessage } from "../types/llm";
 import { Content, ContentListUnion, Part, ToolListUnion } from "@google/genai";
-import { sanitizeJsonSchema } from "./schema";
+import { collapseTypelessUnions, sanitizeJsonSchema } from "./schema";
+import { buildGeminiThinkingConfig } from "./gemini-thinking";
+
+/**
+ * Models that Antigravity serves from an Anthropic backend while still speaking
+ * the Gemini wire format to us.
+ */
+function isAnthropicBackedModel(model: string): boolean {
+  return String(model || "")
+    .toLowerCase()
+    .replace(/^models\//, "")
+    .startsWith("claude");
+}
 import { createSSEStreamReader, StreamContext } from "./stream";
 import {
   mapRole,
@@ -11,7 +23,14 @@ import {
   replaceLatexSymbols,
   sanitizeGeminiFunctionName,
   ThinkingSequencer,
+  normalizeGoogleFinishReason,
+  buildAbnormalFinishNotice,
+  UPSTREAM_STOP_NOTICE,
 } from "./google.util";
+import {
+  recallThoughtSignature,
+  rememberThoughtSignature,
+} from "./thought-signature-cache";
 
 // Type enum equivalent in JavaScript
 const Type = {
@@ -147,6 +166,23 @@ function processJsonSchema(_jsonSchema: any): any {
       genAISchema[fieldName] = fieldValue;
     }
   }
+
+  // Antigravity / strict Gemini reject ARRAY without items.
+  if (genAISchema.type === "ARRAY" && !genAISchema.items) {
+    genAISchema.items = { type: "STRING" };
+  }
+
+  // Drop required entries that no longer exist after schema sanitization.
+  if (Array.isArray(genAISchema.required) && genAISchema.properties) {
+    const keys = new Set(Object.keys(genAISchema.properties));
+    genAISchema.required = genAISchema.required.filter(
+      (name: string) => keys.has(name)
+    );
+    if (genAISchema.required.length === 0) {
+      delete genAISchema.required;
+    }
+  }
+
   return genAISchema;
 }
 
@@ -155,26 +191,64 @@ function processJsonSchema(_jsonSchema: any): any {
  * @param {Object} tool - The tool object to transform
  * @returns {Object} - The transformed tool object
  */
-export function tTool(tool: any): any {
+export function tTool(tool: any, opts?: { collapseUnions?: boolean }): any {
+  const finish = (schema: any) =>
+    opts?.collapseUnions ? collapseTypelessUnions(schema) : schema;
+
   if (tool.functionDeclarations) {
     for (const functionDeclaration of tool.functionDeclarations) {
-      if (functionDeclaration.parameters) {
+      if (!functionDeclaration.parameters) {
+        functionDeclaration.parameters = { type: "OBJECT", properties: {} };
+      } else {
         const sanitized = sanitizeJsonSchema(functionDeclaration.parameters);
-        functionDeclaration.parameters = processJsonSchema(sanitized);
+        functionDeclaration.parameters = finish(processJsonSchema(sanitized));
       }
       if (functionDeclaration.response) {
         const sanitized = sanitizeJsonSchema(functionDeclaration.response);
-        functionDeclaration.response = processJsonSchema(sanitized);
+        functionDeclaration.response = finish(processJsonSchema(sanitized));
       }
     }
   }
   return tool;
 }
 
+export const SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
 
+export type GeminiBuildOptions = {
+  /**
+   * How to replay functionCall parts whose thought signature is missing (Claude
+   * Code strips the field from tool_use blocks).
+   *
+   * - "skip" (default): stamp the documented `skip_thought_signature_validator`
+   *   sentinel on the first functionCall part of the turn. Gemini 3 and
+   *   Antigravity return 400 without it.
+   * - "none": never stamp the sentinel — escape hatch for endpoints that reject
+   *   it, at the cost of 400s on unsigned tool replays.
+   *
+   * The sentinel is only reached when the real signature is unavailable: CCR
+   * caches signatures per tool-call id (see thought-signature-cache) precisely
+   * so that unsigned replays stop degrading the model.
+   */
+  thoughtSignatureFallback?: "skip" | "none";
 
+  /**
+   * Cache scope for remembered thought signatures — the provider name. A
+   * signature is only valid at the upstream that minted it, so a mismatch must
+   * miss the cache and fall back to the sentinel.
+   */
+  signatureScope?: string;
+};
+
+/**
+ * Build a Gemini generateContent body from UnifiedChatRequest.
+ *
+ * Whitelist-by-construction: messages/tools/system are rebuilt from named fields,
+ * so Anthropic `cache_control` markers never reach upstream. Do not refactor toward
+ * pass-through of content objects without stripping cache_control first.
+ */
 export function buildRequestBody(
-  request: UnifiedChatRequest
+  request: UnifiedChatRequest,
+  opts?: GeminiBuildOptions
 ): Record<string, any> {
   const tools = [];
   const requestTools = request.tools || [];
@@ -182,13 +256,21 @@ export function buildRequestBody(
     .filter((tool) => normalizeTool(tool).name !== "web_search")
     .map((tool) => {
       const { name, description, parameters } = normalizeTool(tool);
-      return { name: sanitizeGeminiFunctionName(name), description, parameters };
+      return {
+        name: sanitizeGeminiFunctionName(name),
+        description,
+        parameters: parameters ?? { type: "object", properties: {} },
+      };
     });
   if (functionDeclarations?.length) {
     tools.push(
-      tTool({
-        functionDeclarations,
-      })
+      tTool(
+        { functionDeclarations },
+        // Claude on Antigravity is reached through this same Gemini body, but
+        // its tool schemas are re-emitted for Anthropic, which rejects the
+        // typeless unions Gemini accepts. See collapseTypelessUnions.
+        { collapseUnions: isAnthropicBackedModel(request.model) }
+      )
     );
   }
   const webSearch = requestTools.find(
@@ -225,31 +307,50 @@ export function buildRequestBody(
   const toolResponses = rawMessages.filter((item) => item.role === "tool");
   const filteredMessages = rawMessages.filter((msg) => msg.role !== "tool" && msg.role !== "system");
 
+  const skipFallbackEnabled = opts?.thoughtSignatureFallback !== "none";
+
   filteredMessages.forEach((message: UnifiedMessage) => {
     const role = mapRole(message.role, { assistant: "model" });
     const parts = [];
 
-    const realSignature =
-      message.thinking?.signature &&
-        !message.thinking.signature.startsWith("ccr_")
-        ? message.thinking.signature
-        : undefined;
+    // "ccr_…" signatures are CCR placeholders, not upstream reasoning state, so
+    // they are dropped. The sentinel is not substituted here: the API does not
+    // validate signatures on thought parts, and the sentinel measurably degrades
+    // model quality — it belongs on functionCall parts only (see below).
+    const rawSignature = message.thinking?.signature;
+    const realSignature = rawSignature?.startsWith("ccr_")
+      ? undefined
+      : rawSignature;
+
+    // CCR emits "(no content)" as a placeholder for empty model turns (see
+    // ThinkingSequencer), and an upstream-failure notice when a turn ends
+    // abnormally with nothing to show. Strip both when replaying model turns so
+    // Gemini does not start echoing them back as an empty final answer. User and
+    // tool text is left alone — it can legitimately contain those strings.
+    const isModelPlaceholder = (text: string): boolean =>
+      role === "model" &&
+      (text === "(no content)" || text.startsWith(UPSTREAM_STOP_NOTICE));
 
     if (realSignature && role === "model") {
       parts.push({
         thought: true,
         text: message.thinking?.content || "",
-        thought_signature: realSignature,
+        thoughtSignature: realSignature,
       });
     }
 
     if (typeof message.content === "string") {
-      parts.push({ text: message.content });
+      if (message.content && !isModelPlaceholder(message.content)) {
+        parts.push({ text: message.content });
+      }
     } else if (Array.isArray(message.content)) {
       // Text parts
       message.content.forEach((item) => {
         if (item.type === "text") {
-          parts.push({ text: item.text || "" });
+          const text = item.text || "";
+          if (text && !isModelPlaceholder(text)) {
+            parts.push({ text });
+          }
         }
       });
       // Image parts
@@ -259,27 +360,59 @@ export function buildRequestBody(
       });
     } else if (message.content && typeof message.content === "object") {
       if ((message.content as any).text) {
-        parts.push({ text: (message.content as any).text });
+        const text = (message.content as any).text;
+        if (!isModelPlaceholder(text)) {
+          parts.push({ text });
+        }
       } else {
         parts.push({ text: JSON.stringify(message.content) });
       }
     }
 
-    if (Array.isArray(message.tool_calls)) {
-      parts.push(
-        ...message.tool_calls.map((toolCall) => {
-          const signature = (toolCall as any).thought_signature || realSignature;
-          return {
-            functionCall: {
-              id:
-                toolCall.id ||
-                `tool_${Math.random().toString(36).substring(2, 15)}`,
-              name: toolCall.function.name,
-              args: JSON.parse(toolCall.function.arguments || "{}"),
-            },
-            ...(signature && { thought_signature: signature }),
-          };
+    // Shared call ids so functionCall.id === functionResponse.id. Gemini needs
+    // that match for parallel tools; Claude-on-Antigravity remaps
+    // functionResponse.id → Anthropic tool_result.tool_use_id and 400s when
+    // the id is missing ("tool_use_id: Field required").
+    const preparedCalls = Array.isArray(message.tool_calls)
+      ? message.tool_calls.map((toolCall, toolIndex) => {
+          const id =
+            toolCall.id || `tool_${Math.random().toString(36).substring(2, 15)}`;
+
+          // A per-tool signature (round-tripped via Anthropic tool_use) always
+          // wins, then the one CCR remembered when the model returned this call
+          // — Claude Code cannot carry it, and replaying the real signature is
+          // what keeps the model's reasoning chain intact across tool turns.
+          // Each is restored exactly where the model produced it, including
+          // sibling parallel calls.
+          //
+          // Only when no real signature is available does the fallback apply:
+          // Gemini 3 / Antigravity validate the *first* functionCall part of
+          // each step and 400 when its thoughtSignature is missing, so that part
+          // gets the turn-level thinking signature, else the documented sentinel
+          // (which costs model quality — see thought-signature-cache).
+          let signature = ((toolCall as any).thought_signature ||
+            recallThoughtSignature(opts?.signatureScope, id)) as
+            | string
+            | undefined;
+          if (!signature && toolIndex === 0) {
+            signature =
+              realSignature ||
+              (skipFallbackEnabled ? SKIP_THOUGHT_SIGNATURE : undefined);
+          }
+          return { toolCall, id, signature };
         })
+      : [];
+
+    if (preparedCalls.length > 0) {
+      parts.push(
+        ...preparedCalls.map(({ toolCall, id, signature }) => ({
+          functionCall: {
+            id,
+            name: toolCall.function.name,
+            args: JSON.parse(toolCall.function.arguments || "{}"),
+          },
+          ...(signature && { thoughtSignature: signature }),
+        }))
       );
     }
 
@@ -292,10 +425,10 @@ export function buildRequestBody(
       parts,
     });
 
-    if (role === "model" && message.tool_calls) {
-      const functionResponses = message.tool_calls.map((tool) => {
+    if (role === "model" && preparedCalls.length > 0) {
+      const functionResponses = preparedCalls.map(({ toolCall, id }) => {
         const response = toolResponses.find(
-          (item) => item.tool_call_id === tool.id
+          (item) => item.tool_call_id === toolCall.id
         );
 
         let resultText = response?.content;
@@ -310,7 +443,8 @@ export function buildRequestBody(
 
         return {
           functionResponse: {
-            name: tool?.function?.name,
+            id,
+            name: toolCall?.function?.name,
             response: { result: resultText },
           },
         };
@@ -324,48 +458,24 @@ export function buildRequestBody(
 
   const contents = consolidateMessages(rawContents, 'parts');
 
-  const generation_config: any = {};
+  const generationConfig: any = {};
 
-  if (
-    request.reasoning &&
-    request.reasoning.effort &&
-    request.reasoning.effort !== "none"
-  ) {
-    generation_config.thinking_config = {
-      include_thoughts: true,
-    };
-    if (request.model.includes("gemini-3")) {
-      generation_config.thinking_config.thinking_level = request.reasoning.effort;
-    } else {
-      const thinkingBudgets = request.model.includes("pro")
-        ? [128, 32768]
-        : [0, 24576];
-      let thinkingBudget;
-      const max_tokens = request.reasoning.max_tokens;
-      if (typeof max_tokens !== "undefined") {
-        if (
-          max_tokens >= thinkingBudgets[0] &&
-          max_tokens <= thinkingBudgets[1]
-        ) {
-          thinkingBudget = max_tokens;
-        } else if (max_tokens < thinkingBudgets[0]) {
-          thinkingBudget = thinkingBudgets[0];
-        } else if (max_tokens > thinkingBudgets[1]) {
-          thinkingBudget = thinkingBudgets[1];
-        }
-        generation_config.thinking_config.thinking_budget = thinkingBudget;
-      }
-    }
+  // Claude Code's effort decides how much the model thinks; the model id is
+  // never rewritten. Each family gets the dialect it accepts — see
+  // gemini-thinking.ts.
+  const thinkingConfig = buildGeminiThinkingConfig(request);
+  if (thinkingConfig) {
+    generationConfig.thinkingConfig = thinkingConfig;
   }
 
   // Map other generation config fields
-  if (request.max_tokens) generation_config.max_output_tokens = request.max_tokens;
-  if (request.temperature !== undefined) generation_config.temperature = request.temperature;
+  if (request.max_tokens) generationConfig.maxOutputTokens = request.max_tokens;
+  if (request.temperature !== undefined) generationConfig.temperature = request.temperature;
 
   const body: Record<string, any> = {
     contents: contents.length ? contents : [{ role: "user", parts: [{ text: "" }] }],
     tools: tools.length ? tools : undefined,
-    generation_config,
+    generationConfig,
   };
   if (systemTexts.length) {
     body.systemInstruction = {
@@ -479,11 +589,29 @@ export function transformRequestOut(
   return unifiedChatRequest;
 }
 
+/**
+ * Record the signatures upstream returned with this turn's tool calls, so the
+ * next request can replay them instead of the validator-skip sentinel. CCR's own
+ * placeholders are never cached — they are not upstream reasoning state.
+ */
+function rememberToolSignatures(
+  scope: string | undefined,
+  tool_calls: Array<{ id?: string; thought_signature?: string }>
+): void {
+  tool_calls.forEach((tool) => {
+    const sig = tool.thought_signature;
+    if (!sig || sig === SKIP_THOUGHT_SIGNATURE || sig.startsWith("ccr_")) return;
+    rememberThoughtSignature(scope, tool.id, sig);
+  });
+}
+
 export async function transformResponseOut(
   response: Response,
   providerName: string,
-  logger?: any
+  logger?: any,
+  signatureScope?: string
 ): Promise<Response> {
+  const scope = signatureScope || providerName;
   if (response.headers.get("Content-Type")?.includes("application/json")) {
     const jsonResponse: any = await response.json();
     logger?.debug({ response: jsonResponse }, `${providerName} response:`);
@@ -572,8 +700,20 @@ export async function transformResponseOut(
             name: part.functionCall?.name,
             arguments: JSON.stringify(part.functionCall?.args || {}),
           },
-          thought_signature: (part as any).thoughtSignature || (part as any).thought_signature,
+          // Same-part sibling thoughtSignature (Antigravity / Gemini generateContent).
+          thought_signature:
+            (part as any).thoughtSignature ||
+            (part as any).thought_signature ||
+            undefined,
         })) || [];
+
+    // Parallel calls: only the first functionCall carries the signature upstream.
+    // If it arrived as a sibling part, attach it to the first tool that lacks one.
+    if (thinkingSignature && tool_calls.length > 0 && !tool_calls[0].thought_signature) {
+      tool_calls[0].thought_signature = thinkingSignature;
+    }
+
+    rememberToolSignatures(scope, tool_calls);
 
     const textContent =
       nonThinkingParts
@@ -581,26 +721,38 @@ export async function transformResponseOut(
         ?.map((part: Part) => replaceLatexSymbols(part.text || ""))
         ?.join("\n") || "";
 
+    const candidate0 = jsonResponse.candidates[0];
+
+    const visibleText =
+      textContent && textContent !== "(no content)" ? textContent : "";
+
+    // Same abnormal-finish rule as the streaming path.
+    const finishNotice =
+      !visibleText && tool_calls.length === 0
+        ? buildAbnormalFinishNotice(candidate0)
+        : null;
+
+    const rawFinish = normalizeGoogleFinishReason(candidate0?.finishReason);
+
     const res = {
       id: jsonResponse.responseId,
       choices: [
         {
-          finish_reason:
-            (
-              jsonResponse.candidates[0]?.finishReason as string
-            )?.toLowerCase() || null,
+          finish_reason: tool_calls.length > 0 ? "tool_calls" : rawFinish,
           index: 0,
           message: {
-            content: textContent,
+            content: finishNotice || visibleText,
             role: "assistant",
             tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
-            // Add thinking as separate field if available
-            ...(thinkingSignature && {
-              thinking: {
-                content: thinkingContent || "(no content)",
-                signature: thinkingSignature,
-              },
-            }),
+            // Only surface a thinking block when there was real thought text.
+            // Signature-only tool parts must not invent "(no content)" thinking.
+            ...(thinkingSignature &&
+              thinkingContent && {
+                thinking: {
+                  content: thinkingContent,
+                  signature: thinkingSignature,
+                },
+              }),
           },
         },
       ],
@@ -699,7 +851,7 @@ export async function transformResponseOut(
             finish_reason:
               meta?.finishReason ??
               (mode === "direct" || mode === "finish"
-                ? meta?.candidate?.finishReason?.toLowerCase() || null
+                ? normalizeGoogleFinishReason(meta?.candidate?.finishReason)
                 : null),
             index: contentIndex,
             logprobs: null,
@@ -789,27 +941,19 @@ export async function transformResponseOut(
             lastCandidate = candidate;
             const parts = candidate.content?.parts || [];
 
+            // Dialect-aware within-chunk order:
+            // 1) thought:true (public Gemini thinking)
+            // 2) visible text (buffer for Gemini 3 out-of-order, or emit for Antigravity)
+            // 3) thoughtSignature (flush buffer / or no-op if content already emitted)
+            // 4) functionCall tools
+            // This supports both public Gemini (think→sig→text) and Antigravity
+            // (text then signature trailer) without late thinking-after-text.
+
             parts
               .filter((part: any) => part.text && part.thought === true)
               .forEach((part: any) => {
                 sequencer.processThinking(replaceLatexSymbols(part.text), chunk);
               });
-
-            const signature = parts.find(
-              (part: Part) => part.thoughtSignature
-            )?.thoughtSignature;
-            if (signature) {
-              sequencer.processSignatureWithMeta(signature, chunk, {
-                beforeFlush: () => {
-                  contentIndex++;
-                },
-                flushMeta: {
-                  chunk,
-                  candidate,
-                  mode: "buffered",
-                },
-              });
-            }
 
             const tool_calls = parts
               .filter((part: Part) => part.functionCall)
@@ -822,9 +966,11 @@ export async function transformResponseOut(
                   name: part.functionCall?.name,
                   arguments: JSON.stringify(part.functionCall?.args || {}),
                 },
+                // Same-part sibling thoughtSignature (both public Gemini and Antigravity).
                 thought_signature:
                   (part as any).thoughtSignature ||
-                  (part as any).thought_signature,
+                  (part as any).thought_signature ||
+                  undefined,
               }));
 
             const textContent = parts
@@ -832,20 +978,27 @@ export async function transformResponseOut(
               .map((part: Part) => replaceLatexSymbols(part.text || ""))
               .join("\n");
 
-            if (!textContent && sequencer.needsContentPlaceholder) {
-              sequencer.emitContentPlaceholder("(no content)", {
-                chunk,
-                candidate,
-              });
+            const signature = parts.find(
+              (part: Part) => part.thoughtSignature
+            )?.thoughtSignature;
+
+            // Chunk-/sibling-level signature for tools that lack a per-part one.
+            // Do not emit late thinking after content (Antigravity dialect); the
+            // signature still must ride on tool_calls for the next-turn replay.
+            if (signature && tool_calls.length > 0 && !tool_calls[0].thought_signature) {
+              tool_calls[0].thought_signature = signature;
             }
 
+            rememberToolSignatures(scope, tool_calls);
+
             const hasFinalEvent =
-              Boolean(textContent) ||
+              Boolean(textContent && textContent !== "(no content)") ||
               tool_calls.length > 0 ||
               Boolean(candidate.finishReason);
 
             if (
               textContent &&
+              textContent !== "(no content)" &&
               chunk.modelVersion?.includes("3") &&
               sequencer.shouldDeferContent(
                 Boolean(candidate.finishReason),
@@ -853,10 +1006,98 @@ export async function transformResponseOut(
               )
             ) {
               sequencer.bufferContent(textContent);
-              return;
+            } else if (textContent && textContent !== "(no content)") {
+              // Fallback synthetic signature before emitting content when
+              // thinking was seen but this final-ish event has no signature.
+              if (
+                sequencer.hasThinkingContent &&
+                !sequencer.signatureSent &&
+                hasFinalEvent &&
+                !signature
+              ) {
+                const hasBufferedContent = sequencer.hasBufferedContent;
+                sequencer.processSignatureWithMeta(`ccr_${+new Date()}`, chunk, {
+                  beforeFlush: hasBufferedContent
+                    ? () => {
+                        contentIndex++;
+                      }
+                    : undefined,
+                  flushMeta: hasBufferedContent
+                    ? {
+                        chunk,
+                        candidate,
+                        mode: "buffered",
+                        finishReason: null,
+                      }
+                    : undefined,
+                });
+              }
+              sequencer.processContent(textContent, chunk, candidate);
+            } else if (textContent === "(no content)") {
+              // Drop echoed CCR placeholders so they are not re-sent to Claude Code.
             }
 
+            if (signature) {
+              // Tool turns: thoughtSignature often rides on the functionCall part
+              // (Antigravity / Gemini). Acknowledge it without synthesizing empty
+              // thinking or text — those placeholders become "(no content)" in
+              // Claude Code history and the model starts echoing them.
+              if (
+                tool_calls.length > 0 &&
+                !sequencer.hasThinkingContent &&
+                !textContent &&
+                !sequencer.contentSent
+              ) {
+                sequencer.acknowledgeSignature();
+              } else {
+                sequencer.processSignatureWithMeta(signature, chunk, {
+                  beforeFlush: () => {
+                    contentIndex++;
+                  },
+                  flushMeta: {
+                    chunk,
+                    candidate,
+                    mode: "buffered",
+                  },
+                });
+              }
+            }
+
+            // An abnormal finish (MALFORMED_FUNCTION_CALL, MAX_TOKENS, SAFETY,
+            // OTHER…) with nothing to show must not look like a normal empty
+            // turn: report the upstream reason instead of "(no content)". Only
+            // when no tools went out — text after tool_use is illegal Anthropic
+            // block order, and the tool loop carries the turn anyway.
+            const finishNotice =
+              toolCallIndex < 0 && tool_calls.length === 0 && !textContent
+                ? buildAbnormalFinishNotice(candidate)
+                : null;
+
+            // Never invent visible text on tool turns. Also wait until finish
+            // before emitting a placeholder — a later chunk may bring tools or
+            // real text (public Gemini think→sig→tools).
+            // toolCallIndex >= 0 means tools already went out earlier in this
+            // stream: Antigravity splits tool turns into a functionCall chunk
+            // plus a bare `text: ""` + STOP trailer, and the trailer alone would
+            // otherwise pass this guard and emit text after tool_use.
             if (
+              !textContent &&
+              tool_calls.length === 0 &&
+              toolCallIndex < 0 &&
+              candidate.finishReason &&
+              !finishNotice &&
+              sequencer.needsContentPlaceholder
+            ) {
+              sequencer.emitContentPlaceholder("(no content)", {
+                chunk,
+                candidate,
+              });
+            }
+
+            // Thinking without signature on a finishing event (e.g. tool-only).
+            if (
+              !signature &&
+              !textContent &&
               sequencer.hasThinkingContent &&
               !sequencer.signatureSent &&
               hasFinalEvent
@@ -865,28 +1106,46 @@ export async function transformResponseOut(
               sequencer.processSignatureWithMeta(`ccr_${+new Date()}`, chunk, {
                 beforeFlush: hasBufferedContent
                   ? () => {
-                    contentIndex++;
-                  }
+                      contentIndex++;
+                    }
                   : undefined,
                 flushMeta: hasBufferedContent
                   ? {
-                    chunk,
-                    candidate,
-                    mode: "buffered",
-                    finishReason: null,
-                  }
+                      chunk,
+                      candidate,
+                      mode: "buffered",
+                      finishReason: null,
+                    }
                   : undefined,
               });
             }
 
-            if (textContent) {
-              sequencer.processContent(textContent, chunk, candidate);
+            // Gemini 3: content was buffered earlier this chunk; do not also
+            // fall through to tools/finish until signature on a later chunk —
+            // unless this chunk also carries tools/finish/signature.
+            if (
+              textContent &&
+              chunk.modelVersion?.includes("3") &&
+              sequencer.hasBufferedContent &&
+              !signature &&
+              tool_calls.length === 0 &&
+              !candidate.finishReason
+            ) {
+              return;
             }
 
             if (tool_calls.length > 0) {
-              tool_calls.forEach((tool: any) => {
+              tool_calls.forEach((tool: any, toolIdx: number) => {
                 contentIndex++;
                 toolCallIndex++;
+                // Gemini/Antigravity finish with STOP even when returning
+                // functionCall parts. Claude Code's agent loop needs tool_calls
+                // → Anthropic stop_reason tool_use, not end_turn.
+                const finishReason =
+                  candidate.finishReason != null &&
+                  toolIdx === tool_calls.length - 1
+                    ? "tool_calls"
+                    : null;
                 const res: any = {
                   choices: [
                     {
@@ -899,8 +1158,7 @@ export async function transformResponseOut(
                           },
                         ],
                       },
-                      finish_reason:
-                        candidate.finishReason?.toLowerCase() || null,
+                      finish_reason: finishReason,
                       index: contentIndex,
                       logprobs: null,
                     },
@@ -933,10 +1191,15 @@ export async function transformResponseOut(
                 });
               } else if (!textContent && tool_calls.length === 0) {
                 contentIndex++;
-                emitContentChunk(ctx, "", {
+                emitContentChunk(ctx, finishNotice || "", {
                   chunk,
                   candidate,
                   mode: "finish",
+                  // Antigravity's STOP trailer is the only finish-bearing chunk
+                  // when tools arrived in an earlier chunk (that one carries
+                  // finish_reason null). Report tool_calls so Anthropic does not
+                  // depend on the stop_reason safety net alone.
+                  ...(toolCallIndex >= 0 ? { finishReason: "tool_calls" } : {}),
                 });
               }
             }

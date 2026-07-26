@@ -63,6 +63,8 @@ export interface UnifiedMessage {
       name: string;
       arguments: string;
     };
+    /** Gemini/Antigravity thought signature; must round-trip on functionCall parts. */
+    thought_signature?: string;
     cache_control?: {
       type?: string;
       ttl?: "5m" | "1h";
@@ -197,6 +199,7 @@ export interface StreamChunk {
           name?: string;
           arguments?: string;
         };
+        thought_signature?: string;
       }>;
       annotations?: Annotation[];
     };
@@ -247,6 +250,8 @@ export interface LLMProvider {
   baseUrl: string;
   apiKey: string;
   models: string[];
+  /** Optional GCP / Antigravity project id (provider-specific). */
+  project_id?: string;
   transformer?: {
     [key: string]: {
       use?: Transformer[];
@@ -276,6 +281,8 @@ export interface ConfigProvider {
   api_base_url: string;
   api_key: string;
   models: string[];
+  /** Optional GCP / Antigravity project id (kept as `$ENV` placeholders in config). */
+  project_id?: string;
   transformer: {
     use?: TransformerConfigEntry[];
   } & {

@@ -226,8 +226,16 @@ export class AnthropicTransformer implements Transformer {
     };
     if (request.thinking) {
       result.reasoning = {
+        // Claude Code sends effort in output_config (observed: `thinking:
+        // {type:"adaptive"}` + `output_config: {effort:"high"}` and no budget).
         effort: request.output_config?.effort || request.effort,
         enabled: request.thinking.type === "enabled" || request.thinking.type === "adaptive",
+        // Clients that do send an explicit budget keep control of it; backends
+        // on a token-budget dialect (Gemini 2.5, Claude via Antigravity) prefer
+        // this over an effort-derived budget.
+        ...(typeof request.thinking.budget_tokens === "number"
+          ? { max_tokens: request.thinking.budget_tokens }
+          : {}),
       };
     }
 
@@ -497,6 +505,11 @@ export class AnthropicTransformer implements Transformer {
     openaiStream: ReadableStream,
     context: TransformerContext
   ): Promise<ReadableStream> {
+    // Shared with cancel(): client abort must stop the upstream provider stream
+    // (e.g. Cursor SDK) or the next request can hang on a live active run.
+    let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    let markClosed: (() => void) | null = null;
+
     const readable = new ReadableStream({
       start: async (controller) => {
         const encoder = new TextEncoder();
@@ -512,6 +525,9 @@ export class AnthropicTransformer implements Transformer {
         let contentChunks = 0;
         let toolCallChunks = 0;
         let isClosed = false;
+        markClosed = () => {
+          isClosed = true;
+        };
         let isThinkingStarted = false;
         let contentIndex = 0;
         let currentContentBlockIndex = -1; // Track the current content block index
@@ -692,6 +708,7 @@ export class AnthropicTransformer implements Transformer {
 
         try {
           reader = openaiStream.getReader();
+          upstreamReader = reader;
           const decoder = new TextDecoder();
           let buffer = "";
 
@@ -801,21 +818,25 @@ export class AnthropicTransformer implements Transformer {
                 }
 
                 if (choice?.delta?.thinking && !isClosed && !hasFinished) {
-                  // Close any previous content block if open
-                  // if (currentContentBlockIndex >= 0) {
-                  //   const contentBlockStop = {
-                  //     type: "content_block_stop",
-                  //     index: currentContentBlockIndex,
-                  //   };
-                  //   safeEnqueue(
-                  //     encoder.encode(
-                  //       `event: content_block_stop\ndata: ${JSON.stringify(
-                  //         contentBlockStop
-                  //       )}\n\n`
-                  //     )
-                  //   );
-                  //   currentContentBlockIndex = -1;
-                  // }
+                  // Close any previous content block if open (e.g. text emitted
+                  // before a late signature). Anthropic clients require clean
+                  // block boundaries; leaving text open then starting thinking
+                  // causes Claude Code to drop the turn.
+                  if (currentContentBlockIndex >= 0 && !isThinkingStarted) {
+                    const contentBlockStop = {
+                      type: "content_block_stop",
+                      index: currentContentBlockIndex,
+                    };
+                    safeEnqueue(
+                      encoder.encode(
+                        `event: content_block_stop\ndata: ${JSON.stringify(
+                          contentBlockStop
+                        )}\n\n`
+                      )
+                    );
+                    currentContentBlockIndex = -1;
+                    hasTextContentStarted = false;
+                  }
 
                   if (!isThinkingStarted) {
                     const thinkingBlockIndex = assignContentBlockIndex();
@@ -902,6 +923,12 @@ export class AnthropicTransformer implements Transformer {
                         )
                       );
                       currentContentBlockIndex = -1;
+                      // The block just closed may have been a thinking block
+                      // (reasoning providers interleave thinking → text →
+                      // thinking). Clear the flag so a later thinking delta
+                      // opens a fresh block instead of emitting thinking_delta
+                      // against the text block index.
+                      isThinkingStarted = false;
                     }
                   }
 
@@ -1182,8 +1209,19 @@ export class AnthropicTransformer implements Transformer {
                         "model_context_window_exceeded",
                     };
 
-                    const anthropicStopReason =
+                    let anthropicStopReason =
                       stopReasonMapping[choice.finish_reason] || "end_turn";
+                    // Safety net: if any tool_use blocks were streamed, never
+                    // report end_turn — Claude Code won't continue the tool loop.
+                    // Keyed on blocks actually emitted, not on delta.tool_calls
+                    // chunks: an empty `tool_calls: []` delta is truthy and would
+                    // otherwise claim tool_use with no tool_use block to satisfy.
+                    if (
+                      toolCallIndexToContentBlockIndex.size > 0 &&
+                      anthropicStopReason === "end_turn"
+                    ) {
+                      anthropicStopReason = "tool_use";
+                    }
 
                     stopReasonMessageDelta = {
                       type: "message_delta",
@@ -1208,6 +1246,9 @@ export class AnthropicTransformer implements Transformer {
         } catch (error) {
           safeError(error);
         } finally {
+          if (upstreamReader === reader) {
+            upstreamReader = null;
+          }
           if (reader) {
             try {
               reader.releaseLock();
@@ -1218,11 +1259,19 @@ export class AnthropicTransformer implements Transformer {
         }
       },
       cancel: (reason) => {
+        // Stop pumping / enqueueing, then cancel the upstream reader so owns-fetch
+        // providers (Cursor SDK) receive ReadableStream.cancel → run.cancel().
+        markClosed?.();
+        const pending = upstreamReader;
+        upstreamReader = null;
+        if (pending) {
+          void pending.cancel(reason).catch(() => undefined);
+        }
         this.logger.debug(
           {
             reqId: context.req.id,
           },
-          `cancle stream: ${reason}`
+          `cancel stream: ${reason}`
         );
       },
     });
@@ -1247,6 +1296,17 @@ export class AnthropicTransformer implements Transformer {
         throw new Error("No choices found in OpenAI response");
       }
       const content: any[] = [];
+      // Anthropic block order: thinking → server tool use → text → tool_use.
+      // Thinking must lead, otherwise a client replaying this turn (or resuming
+      // a tool loop) sees a signed thinking block that does not start the
+      // assistant message. The streaming path already emits this order.
+      if ((choice.message as any)?.thinking?.content) {
+        content.push({
+          type: "thinking",
+          thinking: (choice.message as any).thinking.content,
+          signature: (choice.message as any).thinking.signature,
+        });
+      }
       if (choice.message.annotations) {
         const id = `srvtoolu_${uuidv4()}`;
         content.push({
@@ -1297,13 +1357,6 @@ export class AnthropicTransformer implements Transformer {
             name: toolCall.function.name,
             input: parsedInput,
           });
-        });
-      }
-      if ((choice.message as any)?.thinking?.content) {
-        content.push({
-          type: "thinking",
-          thinking: (choice.message as any).thinking.content,
-          signature: (choice.message as any).thinking.signature,
         });
       }
       const finishReason = String(choice.finish_reason || "");

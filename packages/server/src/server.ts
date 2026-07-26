@@ -32,6 +32,7 @@ import AdmZip from "adm-zip";
 import { registerCodexAuthRoutes } from "./routes/codex-auth";
 import { registerQwenAuthRoutes } from "./routes/qwen-auth";
 import { registerClaudeAuthRoutes } from "./routes/claude-auth";
+import { registerAntigravityAuthRoutes } from "./routes/antigravity-auth";
 
 export const createServer = async (config: any): Promise<any> => {
   const server = new Server(config);
@@ -135,6 +136,9 @@ export const createServer = async (config: any): Promise<any> => {
   // Register Claude OAuth callback route (http://127.0.0.1:8080/callback)
   await registerClaudeAuthRoutes(app);
 
+  // Antigravity OAuth: host 51121 → this server (compose 51121:3456)
+  await registerAntigravityAuthRoutes(app);
+
   app.post("/v1/messages/count_tokens", async (req: any, reply: any) => {
     const { messages, tools, system, model } = req.body;
     const tokenizerService = (app as any)._server!.tokenizerService as TokenizerService;
@@ -188,12 +192,21 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   app.get("/api/transformers", async (req: any, reply: any) => {
-    const transformers =
-      (app as any)._server!.transformerService.getAllTransformers();
+    const transformerService = (app as any)._server!.transformerService;
+    const transformers = transformerService.getAllTransformers();
+    // Transformers registered by class (so they can take options) expose
+    // `endPoint` only on an instance, so fall back to the routes actually
+    // registered for them.
+    const registeredEndpoints = new Map<string, string | undefined>(
+      transformerService
+        .getTransformersWithEndpoint()
+        .map((entry: any) => [entry.name, entry.transformer.endPoint])
+    );
     const transformerList = Array.from(transformers.entries()).map(
       ([name, transformer]: any) => ({
         name,
-        endpoint: transformer.endPoint || null,
+        endpoint:
+          transformer.endPoint || registeredEndpoints.get(name) || null,
       })
     );
     return { transformers: transformerList };

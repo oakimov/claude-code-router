@@ -98,6 +98,9 @@ interface Transformer {
 - **cerebras**：Cerebras API 格式
 - **openrouter**：OpenRouter API 格式
 - **codex**：Codex（ChatGPT）后端 API
+- **claude-auth**：Claude Pro/Max 订阅 OAuth
+- **antigravity-auth**：Google Antigravity（`cloudcode-pa`）OAuth + 封包
+- **cursor-sdk**：通过 `@cursor/sdk` 进程内运行 Cursor Agent
 - **qwen-auth**：Qwen Chat 认证（基于 JWT）
 - **chrome-on-device**：Chrome 内置 Gemini Nano（本地运行，无需 API 费用）
 - **vercel**：Vercel AI SDK 格式
@@ -115,7 +118,7 @@ CCR server 通过以下方式集成 `@caeliq/llms`：
 
 ### 版本和更新
 
-`@caeliq/llms` 的当前版本是 `1.0.54`。它作为独立的 npm 包发布，可以独立使用或作为 CCR Server 的一部分使用。
+`@caeliq/llms` 的当前版本是 `1.0.56`。它作为独立的 npm 包发布，可以独立使用或作为 CCR Server 的一部分使用。
 
 ## 核心功能
 

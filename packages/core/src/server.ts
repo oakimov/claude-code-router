@@ -67,7 +67,7 @@ function createApp(options: FastifyServerOptions = {}): FastifyInstance {
 
 // Server class
 class Server {
-  private app: FastifyInstance;
+  app: FastifyInstance;
   configService: ConfigService;
   providerService!: ProviderService;
   transformerService: TransformerService;
@@ -228,10 +228,10 @@ class Server {
                   .code(400)
                   .send({ error: "Missing model in request body" });
               }
-              const [provider, ...model] = body.model.split(",");
-              body.model = model.join(",");
+              const [provider, ...modelParts] = body.model.split(",");
+              body.model = modelParts.join(",");
               req.provider = provider;
-              req.model = model;
+              req.model = modelParts.join(",");
               return;
             } catch (err) {
               req.log.error({error: err}, "Error in modelProviderMiddleware:");
@@ -282,3 +282,16 @@ export {
   sanitizeHeadersForLog,
   diffHeadersForLog,
 } from "./utils/redact";
+export {
+  exchangeAuthorizationCode,
+  fetchUserEmail,
+  resolveProjectId,
+  saveTokens,
+  loadTokens,
+  getValidAccessToken,
+  ANTIGRAVITY_CLIENT_ID,
+  ANTIGRAVITY_CLIENT_SECRET,
+  ANTIGRAVITY_REDIRECT_URI,
+  ANTIGRAVITY_SCOPES,
+  type AntigravityTokens,
+} from "./utils/antigravity-auth";

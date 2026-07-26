@@ -5,12 +5,20 @@ FROM node:22.13-alpine AS builder
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm@9 && \
-    rm -rf /root/.npm
-
 # Copy workspace configuration and package files first for caching
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
+
+# Activate the exact pnpm version pinned in package.json's "packageManager"
+# field via corepack, instead of hardcoding a version here that can drift
+# out of sync (this Dockerfile previously pinned pnpm@9, two majors behind).
+# The corepack bundled with node:22.13 ships a stale signing-key snapshot
+# that rejects pnpm releases signed after it was built, so upgrade corepack
+# itself first (pinned, not @latest, to stay within this image's Node engine
+# range and avoid EBADENGINE warnings).
+RUN npm install -g corepack@0.34.0 && \
+    corepack enable && \
+    corepack install && \
+    rm -rf /root/.npm
 COPY scripts ./scripts
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/core/package.json ./packages/core/
@@ -111,7 +119,7 @@ COPY packages/server/ecosystem.config.cjs /app/
 # Create logs directory
 RUN mkdir -p /root/.claude-code-router/logs
 
-# Expose port
+# Expose API port (host 1455/51121 also map here for OAuth callbacks)
 EXPOSE 3456
 
 # Health check

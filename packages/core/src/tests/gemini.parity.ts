@@ -209,6 +209,7 @@ function makeRequestCases(): Record<string, UnifiedChatRequest> {
                 name: "web_search",
                 arguments: '{"query":"X"}',
               },
+              thought_signature: "sig_tool_xyz789",
             },
           ],
         },
@@ -216,6 +217,34 @@ function makeRequestCases(): Record<string, UnifiedChatRequest> {
           role: "tool",
           content: "Results for X",
           tool_call_id: "call_2",
+        },
+      ],
+    },
+
+    // Tool call without per-tool or message signature — public Gemini keeps
+    // omitting thoughtSignature (unchanged). Covered separately with skip opts.
+    "tool-call-missing-signature": {
+      model: "gemini-3-flash",
+      messages: [
+        { role: "user", content: "List files" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_bash",
+              type: "function",
+              function: {
+                name: "Bash",
+                arguments: '{"command":"ls -la"}',
+              },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: "total 0",
+          tool_call_id: "call_bash",
         },
       ],
     },
@@ -694,6 +723,95 @@ function makeStreamCases(): Record<string, GeminiChunk[]> {
         candidates: [{
           content: {
             parts: [{ text: "Just a simple response." }],
+            role: "model",
+          },
+          finishReason: "STOP",
+        }],
+      },
+    ],
+
+    // Antigravity / cloudcode-pa: visible text first, then signature trailer
+    // with empty text. Must emit content and must NOT emit late thinking.
+    "antigravity-content-then-signature": [
+      {
+        responseId: "resp_ag_1",
+        modelVersion: "gemini-3.6-flash",
+        candidates: [{
+          content: {
+            parts: [{ text: "Hello from Antigravity" }],
+            role: "model",
+          },
+          usageMetadata: {
+            promptTokenCount: 10,
+            candidatesTokenCount: 5,
+            totalTokenCount: 80,
+            thoughtsTokenCount: 65,
+          },
+        }],
+      },
+      {
+        responseId: "resp_ag_1",
+        modelVersion: "gemini-3.6-flash",
+        candidates: [{
+          content: {
+            parts: [{ thoughtSignature: "sig_antigravity_trailer", text: "" }],
+            role: "model",
+          },
+          finishReason: "STOP",
+          usageMetadata: {
+            promptTokenCount: 10,
+            candidatesTokenCount: 5,
+            totalTokenCount: 80,
+            thoughtsTokenCount: 65,
+          },
+        }],
+      },
+    ],
+
+    // Same-chunk Antigravity-style: text + signature together (no thought:true).
+    "antigravity-same-chunk-text-and-signature": [
+      {
+        responseId: "resp_ag_2",
+        modelVersion: "gemini-3.6-flash",
+        candidates: [{
+          content: {
+            parts: [
+              { text: "One-shot reply", thoughtSignature: "sig_same_chunk" },
+            ],
+            role: "model",
+          },
+          finishReason: "STOP",
+        }],
+      },
+    ],
+
+    // Antigravity: thoughtSignature is a sibling field on the same part as
+    // functionCall. Must attach to tool_calls and must NOT open late thinking
+    // after prior text (dialect rule).
+    "antigravity-tool-with-sibling-signature": [
+      {
+        responseId: "resp_ag_tool",
+        modelVersion: "gemini-3.6-flash",
+        candidates: [{
+          content: {
+            parts: [{ text: "I'll list the directory." }],
+            role: "model",
+          },
+        }],
+      },
+      {
+        responseId: "resp_ag_tool",
+        modelVersion: "gemini-3.6-flash",
+        candidates: [{
+          content: {
+            parts: [{
+              thoughtSignature: "sig_ag_tool_sibling",
+              functionCall: {
+                id: "G3UHpzGQ",
+                name: "Bash",
+                args: { command: "ls -la", description: "List files" },
+              },
+            }],
             role: "model",
           },
           finishReason: "STOP",

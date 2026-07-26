@@ -211,6 +211,39 @@ interface UnifiedMessage {
 - [Cursor SDK 集成指南](/zh/docs/server/guides/cursor)
 - [CLI 认证命令](/zh/docs/cli/commands/auth)
 
+### antigravity-auth
+
+用于 Google Antigravity 网关（`cloudcode-pa`）的 OAuth + 请求封包中间件。
+
+使用 `ccr antigravity-auth` 认证（可选 `--manual`、`--project <id>`）。令牌保存在 `~/.claude-code-router/antigravity_auth.json`。Docker Compose 发布 `51121:3456`，以便 Google 重定向到 `http://localhost:51121/oauth-callback` 时到达 CCR 服务器。
+
+```json
+{
+  "name": "antigravity",
+  "api_base_url": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+  "api_key": "oauth",
+  "project_id": "$ANTIGRAVITY_PROJECT_ID",
+  "models": ["gemini-3-flash", "claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+  "transformer": {
+    "use": [
+      ["gemini", { "cachedContent": false, "thoughtSignatureFallback": "skip" }],
+      "antigravity-auth"
+    ]
+  }
+}
+```
+
+**功能：**
+- 注入 Antigravity OAuth bearer，并将 Gemini `generateContent` 请求体包装为 Antigravity 请求封包
+- 必须链接在 `gemini`（或兼容的 Gemini 方言转换器）**之后**
+- 在 daily → autopush → prod 主机间对传输 / 权限失败做端点回退
+
+**示例中必需的 Gemini 选项：**
+- `cachedContent: false` — Antigravity 没有 Google `cachedContents` 资源；保留 Gemini 默认值（`true`）会导致 404。详见 [gemini 选项](#选项-cachedcontent-与-thoughtsignaturefallback)。
+- `thoughtSignatureFallback: "skip"` — 默认值的显式写法；当缺少工具调用的 thought signature 时，盖印 Google 的 `skip_thought_signature_validator` 哨兵，避免 Gemini/Antigravity 返回 400。仅在端点拒绝该哨兵时改为 `"none"`。
+
+另见：[CLI 认证命令](/zh/docs/cli/commands/auth)
+
 ### deepseek
 
 专门用于 DeepSeek API 的转换器：
@@ -233,18 +266,52 @@ interface UnifiedMessage {
 
 ### gemini
 
-用于 Google Gemini API 的转换器：
+用于 Google Gemini API 的转换器（也是与 Antigravity 联用的方言阶段）。
 
 ```json
 {
-  "transformers": [
-    {
-      "name": "gemini",
-      "providers": ["gemini"]
-    }
-  ]
+  "name": "gemini",
+  "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models/",
+  "api_key": "$GEMINI_API_KEY",
+  "models": ["gemini-3-flash"],
+  "transformer": {
+    "use": [
+      ["gemini", { "cachedContent": true, "thoughtSignatureFallback": "skip" }]
+    ]
+  }
 }
 ```
+
+**功能：**
+- 将 Claude Code 的 `output_config.effort` 翻译为 Gemini 思考深度：Gemini 3+ 使用 `thinkingLevel`（Gemini 3 Pro 为 `low`/`high`，较新 Pro 增加 `medium`，Flash/Lite 增加 `minimal`），Gemini 2.5 使用 `thinkingBudget` — 切勿同时设置两者
+- 从不重写已配置的模型 id（带 tier 后缀的 id 继续访问同一上游 id）
+- 以下选项同样适用于 `vertex-gemini`
+
+#### 选项：`cachedContent` 与 `thoughtSignatureFallback`
+
+作为 `gemini` / `vertex-gemini` 在 `transformer.use` 中的第二项传入：
+
+```json
+["gemini", { "cachedContent": false, "thoughtSignatureFallback": "skip" }]
+```
+
+**`cachedContent`**（布尔值，**默认 `true`**）
+
+控制 CCR 是否使用 Google 独立的 **`cachedContents` HTTP 资源**，在公共 Gemini API 上存储并复用提示词前缀（system / tools / history）。这是 Gemini 的*服务端*上下文缓存 — **不是** Anthropic 的 `cache_control` 标记，也**不是** Claude Code 本地提示缓存。
+
+| 取值 | 行为 | 何时使用 |
+| --- | --- | --- |
+| `true`（默认） | CCR 可能创建/更新 `cachedContents` 对象，并在后续轮次发送 `cachedContent` 引用 | 公共 Gemini（`generativelanguage.googleapis.com`），需要 Google 侧前缀缓存时 |
+| `false` | 从不调用 `cachedContents` | **Antigravity 必需**（该网关没有 `cachedContents` 端点 — 保留 `true` 会产生 404 与无用重试）。对任何未实现该资源的 Gemini 兼容代理也应设为 `false` |
+
+**`thoughtSignatureFallback`**（`"skip"` \| `"none"`，**默认 `"skip"`**）
+
+Gemini 3（以及 Antigravity）会在每个 `functionCall` part 上附带不透明的 **`thoughtSignature`**。Claude Code 的 Anthropic 协议无法在 `tool_use` 上携带该字段，因此 CCR 按 tool-call id 缓存签名，并在同一工具被重放时还原。当签名确实缺失（缓存未命中，或会话被重路由到另一上游）时，除非请求在该步骤的**第一个** `functionCall` 上包含 Google 文档中的哨兵字符串 `skip_thought_signature_validator`，否则 Gemini 会返回 **400**。
+
+| 取值 | 行为 | 何时使用 |
+| --- | --- | --- |
+| `"skip"`（默认） | 未命中时在首个 function call 上盖印该哨兵，使本轮得以继续。该名称表示“使用 Google 的 *skip_thought_signature_validator* 哨兵”，**不是**“跳过 / 关闭回退”。 | 公共 Gemini 与 Antigravity 保持此值。CCR 在可用时仍优先使用真实缓存签名；哨兵只是最后手段（Google 警告反复使用会降低工具调用质量） |
+| `"none"` | 从不盖印哨兵 | 仅当端点**拒绝**该哨兵时（部分 Vertex 部署有此情况）。在真实签名再次可用之前，缺少缓存签名的工具重放会返回 400 |
 
 ### maxtoken
 

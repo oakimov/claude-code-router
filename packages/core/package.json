@@ -42,7 +42,7 @@
     "@caeliq/ccr-shared": "workspace:*",
     "@cursor/sdk": "^1.0.23",
     "@fastify/cors": "^11.0.1",
-    "@google/genai": "^1.7.0",
+    "@google/genai": "^2.13.0",
     "@huggingface/tokenizers": "^0.0.6",
     "dotenv": "^16.5.0",
     "fastify": "^5.4.0",

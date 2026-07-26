@@ -651,6 +651,11 @@ async function processResponseTransformers(
   let finalResponse = response;
   const skipBodyConversion = bypass || provider.transformer?.passthrough;
 
+  // Response transformers get the provider too: the request-side context
+  // already carries it, and provider identity is what scopes per-provider state
+  // such as the Gemini thought-signature cache.
+  const responseContext = { ...context, provider };
+
   // Execute provider-level response transformers
   if (!bypass && provider.transformer?.use?.length) {
     for (const providerTransformer of Array.from(
@@ -664,7 +669,7 @@ async function processResponseTransformers(
       }
       finalResponse = await providerTransformer.transformResponseOut!(
         finalResponse,
-        context
+        responseContext
       );
     }
   }
@@ -682,7 +687,7 @@ async function processResponseTransformers(
       }
       finalResponse = await modelTransformer.transformResponseOut!(
         finalResponse,
-        context
+        responseContext
       );
     }
   }
@@ -746,7 +751,7 @@ async function formatResponse(
 
       // Only 499 when the TCP socket is actually gone. A disconnect signal
       // alone is not proof — Cursor previously got false 499 JSON bodies
-      // while still connected ("cancle stream: null" then status 499).
+      // while still connected ("cancel stream: null" then status 499).
       if (socketGone) {
         cleanup();
         if (!reply.sent && !reply.raw.destroyed) {

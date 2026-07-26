@@ -28,6 +28,7 @@ import { ChromeOnDeviceTransformer } from "./chrome-on-device.transformer";
 import { OpencodeHeadersTransformer } from "./opencode-headers.transformer";
 import { ClaudeAuthTransformer } from "./claude-auth.transformer";
 import { CursorSdkTransformer } from "./cursor-sdk.transformer";
+import { AntigravityAuthTransformer } from "./antigravity-auth.transformer";
 
 export default {
   AnthropicTransformer,
@@ -60,4 +61,5 @@ export default {
   OpencodeHeadersTransformer,
   ClaudeAuthTransformer,
   CursorSdkTransformer,
+  AntigravityAuthTransformer,
 };

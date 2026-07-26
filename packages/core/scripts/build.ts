@@ -43,15 +43,28 @@ const baseConfig: esbuild.BuildOptions = {
   ],
 };
 
-// Generate type declarations with resolved path aliases
+// Emit real .d.ts files via tsc, fix up @/ aliases, and expose them through
+// a dist/index.d.ts barrel matching the "types" field in package.json.
 function generateTypeDeclarations() {
-  console.log("Skipping type declaration generation (using manual plugins.d.ts)...");
-  // Type declarations are manually maintained in dist/plugins.d.ts
-  // This avoids issues with @/ path aliases in auto-generated declarations
+  console.log("Generating type declarations...");
+  const dtsRoot = path.join(baseUrl, "dist");
+  execSync(
+    "tsc --project tsconfig.json --declaration --emitDeclarationOnly --outDir dist",
+    { cwd: baseUrl, stdio: "inherit" }
+  );
+  replacePathAliases(dtsRoot);
+  const barrel = [
+    'export * from "./server";',
+    'export { default } from "./server";',
+    "",
+  ].join("\n");
+  fs.writeFileSync(path.join(dtsRoot, "index.d.ts"), barrel);
 }
 
-// Replace @/ paths with relative paths in .d.ts files
-function replacePathAliases(dir: string, baseDir = dir) {
+// Replace @/ paths with relative paths in .d.ts files. dtsRoot is the root
+// the declarations were emitted into (mirrors src/'s layout), so aliases
+// resolve relative to it rather than to the original src/ tree.
+function replacePathAliases(dtsRoot: string, dir = dtsRoot) {
   const files = fs.readdirSync(dir);
 
   for (const file of files) {
@@ -59,41 +72,20 @@ function replacePathAliases(dir: string, baseDir = dir) {
     const stat = fs.statSync(fullPath);
 
     if (stat.isDirectory()) {
-      replacePathAliases(fullPath, baseDir);
+      replacePathAliases(dtsRoot, fullPath);
     } else if (file.endsWith(".d.ts")) {
-      let content = fs.readFileSync(fullPath, "utf-8");
+      const content = fs.readFileSync(fullPath, "utf-8");
 
       // Replace @/ imports with relative paths
-      content = content.replace(/from\s+["']@(\/[^"']+)["']/g, (_, importPath) => {
-        const absolutePath = path.resolve(baseUrl, "src", importPath.slice(2));
+      const replaced = content.replace(/from\s+["']@(\/[^"']+)["']/g, (_, importPath) => {
+        const absolutePath = path.resolve(dtsRoot, importPath.slice(1));
         const currentDir = path.dirname(fullPath);
-        const relativePath = path.relative(currentDir, absolutePath);
-        const normalizedPath = relativePath.split(path.sep).join("/");
-        return `from "${normalizedPath}"`;
+        let relativePath = path.relative(currentDir, absolutePath).split(path.sep).join("/");
+        if (!relativePath.startsWith(".")) relativePath = `./${relativePath}`;
+        return `from "${relativePath}"`;
       });
 
-      fs.writeFileSync(fullPath, content);
-    }
-  }
-}
-
-// Copy .d.ts files maintaining directory structure
-function copyDtsFiles(sourceDir: string, targetDir: string) {
-  const files = fs.readdirSync(sourceDir);
-
-  if (!fs.existsSync(targetDir)) {
-    fs.mkdirSync(targetDir, { recursive: true });
-  }
-
-  for (const file of files) {
-    const sourcePath = path.join(sourceDir, file);
-    const targetPath = path.join(targetDir, file);
-    const stat = fs.statSync(sourcePath);
-
-    if (stat.isDirectory()) {
-      copyDtsFiles(sourcePath, targetPath);
-    } else if (file.endsWith(".d.ts")) {
-      fs.copyFileSync(sourcePath, targetPath);
+      if (replaced !== content) fs.writeFileSync(fullPath, replaced);
     }
   }
 }

@@ -4,8 +4,18 @@ export const apiKeyAuth =
   (config: any) =>
     async (req: FastifyRequest, reply: FastifyReply, done: () => void) => {
       // Public endpoints that don't require authentication
-      const publicPaths = ["/", "/health", "/callback", "/auth/callback", "/qwen/auth", "/qwen/forget", "/qwen/status"];
-      if (publicPaths.includes(req.url) || req.url.startsWith("/ui") || req.url.startsWith("/auth") || req.url.startsWith("/qwen/") || req.url.startsWith("/callback")) {
+      const publicPaths = ["/", "/health", "/callback", "/auth/callback", "/oauth-callback", "/qwen/auth", "/qwen/forget", "/qwen/status"];
+      // Match on the path alone — OAuth callbacks arrive as
+      // /oauth-callback?code=…&state=… — and keep /oauth-callback an exact match
+      // so a lookalike path cannot slip past the API key check.
+      const path = req.url.split("?")[0];
+      if (
+        publicPaths.includes(path) ||
+        path.startsWith("/ui") ||
+        path.startsWith("/auth") ||
+        path.startsWith("/qwen/") ||
+        path.startsWith("/callback")
+      ) {
         return done();
       }
 

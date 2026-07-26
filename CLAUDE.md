@@ -80,6 +80,55 @@ pnpm dev:ui         # Develop UI (Vite)
 pnpm release        # Build and publish all packages
 ```
 
+Full trusted-publishing details: `docs/PUBLISHING.md`.
+
+### Version bump (required before tagging a release)
+
+When asked to bump the version for a release, update **all** of the places below in one change. Do not ask which files to touch — follow this checklist. See recent bumps: `2a8509b` (`chore: bump packages to 2.0.1 / 1.0.55`), `3df5edb` (feature + bump to `2.0.2` / `@caeliq/llms@1.0.56`).
+
+There are **two version lines**:
+
+| Line | Current role | Packages |
+|---|---|---|
+| **Product** (`2.0.x`) | CLI / product release; git tag `v2.0.x` matches this | root, `@caeliq/claude-code-router` (cli), `@caeliq/ccr-shared`, `@caeliq/ccr-server`, `@caeliq/ccr-ui` |
+| **Core** (`1.0.x`) | Published as `@caeliq/llms`; independent semver | `packages/core` only |
+
+**Always bump together (keep product versions identical):**
+1. `package.json` (repo root)
+2. `packages/cli/package.json` → `@caeliq/claude-code-router`
+3. `packages/shared/package.json` → `@caeliq/ccr-shared` (release script publishes shared every run; reusing a published version fails)
+4. `packages/server/package.json` → `@caeliq/ccr-server` (not published to npm; ships inside the CLI bundle, but version stays in sync)
+5. `packages/ui/package.json` → `@caeliq/ccr-ui`
+
+**Bump when core changed (usual for any release that touches `packages/core`):**
+6. `packages/core/package.json` → `@caeliq/llms` (own `1.0.x` line; bump patch/minor independently of product)
+
+**Docs that must reflect the new versions:**
+7. `docs/PUBLISHING.md` — update the published-version table at the top, and any example `vX.Y.Z` / `git tag` snippets so they match the new CLI version
+
+**Do not change for a routine bump:**
+- `docs/package.json` (`0.0.0`)
+- Preset / example `"version"` fields (`examples/*`, preset docs)
+- Historical blog posts or backup docs under `docs/i18n/...backup...`
+- Inter-package deps that use `workspace:*` (rewritten to `^<shared version>` at publish time)
+- Stale pinned install examples like `@caeliq/claude-code-router@1.0.8` in README GitHub Actions samples, unless the user explicitly asks to refresh those examples
+
+**Procedure:**
+1. Read current versions from the `package.json` files above.
+2. Apply the requested bump (default: product patch +1; core patch +1 if core changed or if prior releases always shipped both).
+3. Update `docs/PUBLISHING.md` to match.
+4. Verify product versions match across root/cli/shared/server/ui, and confirm core is the intended `1.0.x`:
+   ```bash
+   node -p "require('./package.json').version"
+   node -p "require('./packages/cli/package.json').version"
+   node -p "require('./packages/shared/package.json').version"
+   node -p "require('./packages/server/package.json').version"
+   node -p "require('./packages/ui/package.json').version"
+   node -p "require('./packages/core/package.json').version"
+   ```
+5. Commit message style from history: `chore: bump packages to X.Y.Z / A.B.C for …` or include the bump in the feature commit (`… (vX.Y.Z)` / `Bump packages to X.Y.Z / @caeliq/llms@A.B.C`).
+6. Tagging / publish (only when the user asks): push `main`, then `git tag vX.Y.Z` matching the **CLI** version and `git push github vX.Y.Z`. CI reads versions from `package.json`, not from the tag alone.
+
 ## Core Architecture
 
 ### 1. Routing System
@@ -196,6 +245,9 @@ ccr activate      # Output shell environment variables (for integration)
 ccr ui            # Open Web UI
 ccr statusline    # Integrated statusline (reads JSON from stdin)
 ccr codex-auth    # Authenticate with Codex API via OAuth
+ccr claude-auth   # Authenticate with Claude Pro/Max subscription via OAuth
+ccr qwen-auth     # Authenticate with Qwen Chat (JWT from localStorage)
+ccr antigravity-auth  # Authenticate with Google Antigravity via OAuth
 ccr chrome-bridge # Start Chrome on-device model bridge (Gemini Nano) — must run on host
 ```
 
@@ -306,7 +358,7 @@ ui (standalone frontend application)
 4. **Build tools**:
    - cli/server/shared: esbuild
    - ui: Vite + TypeScript
-5. **@caeliq/llms**: In-monorepo core package (`packages/core`) providing the server framework and transformer functionality; published independently to npm. Type shims live in `packages/server/src/types.d.ts`.
+5. **@caeliq/llms**: In-monorepo core package (`packages/core`) providing the server framework and transformer functionality; published independently to npm. Type declarations are generated into `packages/core/dist/*.d.ts` (barrel `dist/index.d.ts`) during the core build; `packages/server` imports them via the `@caeliq/llms` package entry (no manual `packages/server/src/types.d.ts` shim).
 6. **Code comments**: All comments in code MUST be written in English
 7. **Documentation**: When implementing new features, add documentation to the docs project instead of creating standalone md files
 

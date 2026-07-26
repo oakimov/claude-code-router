@@ -196,6 +196,39 @@ Authenticates requests to Anthropic's API using your Claude Pro or Max subscript
 - Converts Anthropic streaming responses back into Claude Code-compatible output
 - Intended to be used together with `Anthropic` in the provider chain
 
+### antigravity-auth
+
+OAuth + request-envelope middleware for Google's Antigravity gateway (`cloudcode-pa`).
+
+Authenticate with `ccr antigravity-auth` (optional `--manual`, `--project <id>`). Tokens land in `~/.claude-code-router/antigravity_auth.json`. Docker Compose publishes `51121:3456` so Google's redirect to `http://localhost:51121/oauth-callback` reaches the CCR server.
+
+```json
+{
+  "name": "antigravity",
+  "api_base_url": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+  "api_key": "oauth",
+  "project_id": "$ANTIGRAVITY_PROJECT_ID",
+  "models": ["gemini-3-flash", "claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+  "transformer": {
+    "use": [
+      ["gemini", { "cachedContent": false, "thoughtSignatureFallback": "skip" }],
+      "antigravity-auth"
+    ]
+  }
+}
+```
+
+**Features:**
+- Injects Antigravity OAuth bearer tokens and wraps Gemini `generateContent` bodies in the Antigravity request envelope
+- Must be chained **after** `gemini` (or compatible Gemini dialect transformer)
+- Endpoint fallback across daily → autopush → prod hosts for transport / entitlement failures
+
+**Required Gemini options in the example above:**
+- `cachedContent: false` — Antigravity has no Google `cachedContents` resource; leaving the Gemini default (`true`) causes 404s. See [gemini options](#options-cachedcontent-and-thoughtsignaturefallback).
+- `thoughtSignatureFallback: "skip"` — explicit form of the default; on a missing tool-call thought signature, stamp Google's `skip_thought_signature_validator` sentinel so Gemini/Antigravity do not 400. Only change to `"none"` if your endpoint rejects that sentinel.
+
+See also: [CLI auth commands](/docs/cli/commands/auth)
+
 ### cursor-sdk
 
 Runs Cursor models in-process via `@cursor/sdk` (no HTTP fetch to `api_base_url`).
@@ -255,18 +288,52 @@ Specialized transformer for DeepSeek API:
 
 ### gemini
 
-Transformer for Google Gemini API:
+Transformer for Google Gemini API (also the dialect stage used with Antigravity).
 
 ```json
 {
-  "transformers": [
-    {
-      "name": "gemini",
-      "providers": ["gemini"]
-    }
-  ]
+  "name": "gemini",
+  "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models/",
+  "api_key": "$GEMINI_API_KEY",
+  "models": ["gemini-3-flash"],
+  "transformer": {
+    "use": [
+      ["gemini", { "cachedContent": true, "thoughtSignatureFallback": "skip" }]
+    ]
+  }
 }
 ```
+
+**Features:**
+- Translates Claude Code `output_config.effort` into Gemini thinking depth: `thinkingLevel` for Gemini 3+ (`low`/`high` on Gemini 3 Pro, plus `medium` on later Pro minors, plus `minimal` on Flash/Lite) or `thinkingBudget` for Gemini 2.5 — never both
+- Never rewrites the configured model id (tier-suffixed ids keep talking to the same upstream id)
+- Same options below apply to `vertex-gemini`
+
+#### Options: `cachedContent` and `thoughtSignatureFallback`
+
+Pass these as the second element of a `gemini` / `vertex-gemini` entry in `transformer.use`:
+
+```json
+["gemini", { "cachedContent": false, "thoughtSignatureFallback": "skip" }]
+```
+
+**`cachedContent`** (boolean, **default `true`**)
+
+Controls whether CCR uses Google's separate **`cachedContents` HTTP resource** to store and reuse prompt prefixes (system / tools / history) on the public Gemini API. This is Gemini's *server-side* context cache — **not** Anthropic `cache_control` markers and **not** Claude Code's local prompt cache.
+
+| Value | Behavior | When to use |
+| --- | --- | --- |
+| `true` (default) | CCR may create/update a `cachedContents` object and send `cachedContent` references on later turns | Public Gemini (`generativelanguage.googleapis.com`) when you want Google-side prefix caching |
+| `false` | Never call `cachedContents` | **Required for Antigravity** (that gateway has no `cachedContents` endpoint — leaving `true` yields 404s and wasted retries). Also set `false` for any Gemini-compatible proxy that does not implement the resource |
+
+**`thoughtSignatureFallback`** (`"skip"` \| `"none"`, **default `"skip"`**)
+
+Gemini 3 (and Antigravity) attaches an opaque **`thoughtSignature`** to each `functionCall` part. Claude Code's Anthropic wire format cannot carry that field on `tool_use`, so CCR caches signatures by tool-call id and restores them when the same tools are replayed. When a signature is genuinely missing (cache miss, or the session was re-routed to a different upstream), Gemini returns **400** unless the request includes Google's documented sentinel string `skip_thought_signature_validator` on the **first** `functionCall` of that step.
+
+| Value | Behavior | When to use |
+| --- | --- | --- |
+| `"skip"` (default) | On a miss, stamp that sentinel on the first function call so the turn can proceed. The name means “use Google's *skip_thought_signature_validator* sentinel,” **not** “skip / disable the fallback.” | Leave this for public Gemini and Antigravity. CCR still prefers real cached signatures when available; the sentinel is a last resort (Google warns repeated use can degrade tool-calling quality) |
+| `"none"` | Never stamp the sentinel | Only if your endpoint **rejects** the sentinel (reported on some Vertex deployments). Tool replay without a cached signature will then 400 until a real signature is available again |
 
 ### maxtoken
 

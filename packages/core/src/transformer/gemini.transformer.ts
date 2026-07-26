@@ -1,5 +1,9 @@
 import { LLMProvider, UnifiedChatRequest } from "../types/llm";
-import { Transformer } from "../types/transformer";
+import {
+  Transformer,
+  TransformerContext,
+  TransformerOptions,
+} from "../types/transformer";
 import {
   buildRequestBody,
   transformRequestOut,
@@ -8,32 +12,69 @@ import {
 import { attachGeminiCachedContent } from "../utils/gemini-cache";
 
 export class GeminiTransformer implements Transformer {
+  static TransformerName = "gemini";
+
   logger?: any;
   name = "gemini";
-
   endPoint = "/v1beta/models/:modelAndAction";
+
+  private readonly cachedContent: boolean;
+  private readonly thoughtSignatureFallback: "skip" | "none";
+
+  constructor(private readonly options?: TransformerOptions) {
+    // Antigravity chains ["gemini", { cachedContent: false }] — it has no
+    // cachedContents resource. Both dialects default to the sentinel fallback
+    // for unsigned tool replays; "none" opts out.
+    this.cachedContent = options?.cachedContent !== false;
+    this.thoughtSignatureFallback =
+      options?.thoughtSignatureFallback === "none" ? "none" : "skip";
+  }
 
   async transformRequestIn(
     request: UnifiedChatRequest,
     provider: LLMProvider,
     context: any
   ): Promise<Record<string, any>> {
-    const model = context?.req?.model || request.model || provider.models?.[0] || "";
-    const body = await attachGeminiCachedContent({
-      body: buildRequestBody(request),
-      modelResource: model.startsWith("models/") ? model : `models/${model}`,
-      createUrl: new URL("../cachedContents", provider.baseUrl),
-      headers: {
-        "x-goog-api-key": provider.apiKey,
-        Authorization: undefined,
-      },
-      logger: this.logger,
+    const model =
+      request.model ||
+      (typeof context?.req?.model === "string"
+        ? context.req.model
+        : Array.isArray(context?.req?.model)
+          ? context.req.model.join(",")
+          : "") ||
+      provider.models?.[0] ||
+      "";
+
+    const geminiBody = buildRequestBody(request, {
+      thoughtSignatureFallback: this.thoughtSignatureFallback,
+      // Scope cached thought signatures to this provider: a signature is only
+      // valid at the upstream that minted it.
+      signatureScope: provider?.name || this.name,
     });
+
+    const body = this.cachedContent
+      ? await attachGeminiCachedContent({
+          body: geminiBody,
+          modelResource: model.startsWith("models/")
+            ? model
+            : `models/${model}`,
+          createUrl: new URL("../cachedContents", provider.baseUrl),
+          headers: {
+            "x-goog-api-key": provider.apiKey,
+            Authorization: undefined,
+          },
+          logger: this.logger,
+        })
+      : geminiBody;
+
     return {
       body,
       config: {
         url: new URL(
-          `./${model}:${request.stream ? "streamGenerateContent?alt=sse" : "generateContent"
+          `./${model}:${
+            request.stream
+              ? "streamGenerateContent?alt=sse"
+              : "generateContent"
           }`,
           provider.baseUrl
         ),
@@ -49,7 +90,15 @@ export class GeminiTransformer implements Transformer {
     return transformRequestOut(request);
   }
 
-  async transformResponseOut(response: Response): Promise<Response> {
-    return transformResponseOut(response, this.name, this.logger);
+  async transformResponseOut(
+    response: Response,
+    context?: TransformerContext
+  ): Promise<Response> {
+    return transformResponseOut(
+      response,
+      this.name,
+      this.logger,
+      context?.provider?.name || this.name
+    );
   }
 }

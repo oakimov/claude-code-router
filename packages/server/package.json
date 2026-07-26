@@ -19,7 +19,7 @@
   "dependencies": {
     "@cursor/sdk": "^1.0.23",
     "@fastify/multipart": "^9.0.0",
-    "@fastify/static": "^8.2.0",
+    "@fastify/static": "^10.1.2",
     "@caeliq/llms": "workspace:*",
     "adm-zip": "^0.5.16",
     "dotenv": "^16.4.7",

@@ -182,6 +182,36 @@ Claude subscription auth uses OAuth via `ccr claude-auth` and requires the `clau
 }
 ```
 
+### Antigravity
+
+Routes through Google's Antigravity gateway with OAuth via `ccr antigravity-auth`. Chain `gemini` **before** `antigravity-auth`.
+
+```json
+{
+  "name": "antigravity",
+  "api_base_url": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+  "api_key": "oauth",
+  "project_id": "$ANTIGRAVITY_PROJECT_ID",
+  "models": [
+    "gemini-3-pro-high",
+    "gemini-3-flash",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking"
+  ],
+  "transformer": {
+    "use": [
+      ["gemini", { "cachedContent": false, "thoughtSignatureFallback": "skip" }],
+      "antigravity-auth"
+    ]
+  }
+}
+```
+
+- **`cachedContent: false`** — required. Antigravity has no `cachedContents` resource; the Gemini default (`true`) causes 404s.
+- **`thoughtSignatureFallback: "skip"`** — keep the default. On a missing tool-call thought signature, stamp Google's `skip_thought_signature_validator` sentinel so the gateway does not 400. Only set `"none"` if the endpoint rejects that sentinel.
+
+Full option reference: [Transformers → gemini](/docs/server/config/transformers#options-cachedcontent-and-thoughtsignaturefallback). See also [CLI auth commands](/docs/cli/commands/auth).
+
 ### Qwen Chat
 
 Requires JWT authentication via `ccr qwen-auth`.

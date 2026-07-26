@@ -5,7 +5,7 @@
 ## ✨ Features
 
 - **Model Routing**: Route requests to different models based on your needs (e.g., background tasks, thinking, long context).
-- **Multi-Provider Support**: Supports various model providers like OpenRouter, DeepSeek, Ollama, Gemini, Volcengine, SiliconFlow, Codex, Claude subscription, Qwen, Chrome On-Device, and Cursor (SDK).
+- **Multi-Provider Support**: Supports various model providers like OpenRouter, DeepSeek, Ollama, Gemini, Antigravity, Volcengine, SiliconFlow, Codex, Claude subscription, Qwen, Chrome On-Device, and Cursor (SDK).
 - **Request/Response Transformation**: Customize requests and responses for different providers using transformers.
 - **Dynamic Model Switching**: Switch models on-the-fly within Claude Code using the `/model` command.
 - **CLI Model Management**: Manage models and providers directly from the terminal with `ccr model`.
@@ -21,10 +21,11 @@ This fork is based on [claude-code-router](https://github.com/musistudio/claude-
 - **Mistral Integration**: Added specific handling for Mistral's reasoning parameters and decoupled transformation logic.
 - **Build & Deployment**: Integrated the UI package into the Docker build process and added a Docker Compose configuration.
 - **Code Quality**: Localized codebase (English comments), improved error handling, and addressed Copilot review feedback.
-- **Gemini Stability & Tool Use Fixes**: Corrected `thoughtSignature` placement in Gemini request bodies (must be a standalone `thought: true` part, not attached to text/function-call parts); filtered synthetic `ccr_` placeholder signatures from outgoing Gemini requests to prevent Gemini 500 errors; fixed `tool_result` content-array serialization in the Anthropic transformer so models receive plain text instead of JSON-wrapped arrays (resolves "Error editing file" in Claude Code); fixed Fastify `onSend` hook to prevent `invalid type 'object'` unhandled rejections on error responses.
+- **Gemini Stability & Tool Use Fixes**: Corrected `thoughtSignature` placement in Gemini request bodies (Gemini 3 expects it as a sibling field on the `functionCall` part itself, and validates only the first such part per step); filtered synthetic `ccr_` placeholder signatures from outgoing Gemini requests to prevent Gemini 500 errors; fixed `tool_result` content-array serialization in the Anthropic transformer so models receive plain text instead of JSON-wrapped arrays (resolves "Error editing file" in Claude Code); fixed Fastify `onSend` hook to prevent `invalid type 'object'` unhandled rejections on error responses.
 - **Codex (ChatGPT) Integration**: Added Codex transformer for the ChatGPT backend API (Responses API), supporting both OAuth-based authentication (`ccr codex-auth`) and PAT auth via `api_key: "at-..."`, plus SSE streaming, reasoning/thinking content, tool calls with web search, and image handling.
 - **Cursor SDK Integration**: Added `cursor-sdk` transformer that runs Cursor models in-process via `@cursor/sdk`. Default **bridge** mode keeps Claude Code as the tool host (Cursor built-ins denied); supports `plan` / `agent` modes, `crsr_` / `CURSOR_API_KEY` auth, `ccr model get cursor` model discovery, and Docker runtime install of the SDK native packages.
 - **Claude Subscription Integration**: Added `claude-auth` support for routing through a Claude Pro or Max subscription via OAuth (`ccr claude-auth`), using the `claude-auth` + `Anthropic` transformer chain.
+- **Antigravity Integration**: Added Google Antigravity OAuth via `ccr antigravity-auth`, with the `antigravity-auth` + `gemini` transformer chain targeting the Antigravity / `cloudcode-pa` API. Supports Gemini and Claude models under that quota, thought-signature round-tripping / fallback, and Claude tool-schema sanitization for Gemini-backed Claude models. Requires `gemini` options `{"cachedContent": false}` because Antigravity has no Google `cachedContents` resource (leaving the default `true` causes 404s).
 - **Qwen Chat Integration**: Added `qwen-auth` transformer for the Qwen Chat backend (`qwen.aikit.club/v1/chat/completions`), supporting JWT-based authentication (`ccr qwen-auth`) where the user pastes a token copied from `chat.qwen.ai` localStorage, automatic token rotation, and stripping of the trailing `<details>...</details>` metadata block Qwen injects into responses.
 - **DeepSeek Reasoning Replay**: Implemented mandatory reasoning replay for DeepSeek models (e.g., via OpenCode/ZenGo). DeepSeek requires previous assistant reasoning content to be included in subsequent requests — the `reasoning` transformer automatically replays reasoning output from prior turns.
 - **Model Discovery**: Enabled non-interactive model discovery for arbitrary API providers. Using `ccr model get <provider>`, the tool automatically fetches remote models, parses custom JSON structures using configurable paths, and appends missing models to the local configuration while preserving existing settings.
@@ -368,6 +369,46 @@ If the provider returns model changes, `ccr model get <provider>` can append mis
 
 > **Note**: After syncing models into `config.json`, restart the service with `ccr restart` so the updated provider list is picked up by the running server.
 
+#### Antigravity Authentication
+
+Route Claude Code through Google's Antigravity gateway (`cloudcode-pa`) using account OAuth instead of an API key.
+
+```shell
+ccr antigravity-auth
+# or, for headless/remote:
+ccr antigravity-auth --manual
+ccr antigravity-auth --project <gcp-project-id>
+```
+
+This command:
+1. Prints a Google OAuth URL (PKCE; callback `http://localhost:51121/oauth-callback`)
+2. The CCR server handles the public `/oauth-callback` route (Docker maps `51121:3456`, like Codex `1455:3456`)
+3. Tokens land in `~/.claude-code-router/antigravity_auth.json` (mounted config dir in Docker)
+
+Example provider:
+
+```json
+{
+  "name": "antigravity",
+  "api_base_url": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+  "api_key": "oauth",
+  "project_id": "$ANTIGRAVITY_PROJECT_ID",
+  "models": ["gemini-3-flash", "claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+  "transformer": {
+    "use": [
+      ["gemini", { "cachedContent": false, "thoughtSignatureFallback": "skip" }],
+      "antigravity-auth"
+    ]
+  }
+}
+```
+
+Why those Gemini options:
+- **`cachedContent: false`** — Antigravity has no Google `cachedContents` resource. The Gemini default is `true`; leaving it on causes 404s.
+- **`thoughtSignatureFallback: "skip"`** — explicit form of the default. When a tool call is replayed without a cached `thoughtSignature`, CCR stamps Google's `skip_thought_signature_validator` sentinel so the gateway does not 400. Only change this to `"none"` if your endpoint rejects that sentinel.
+
+> **Note**: Keep the CCR server running during auth. Using Antigravity IDE OAuth client credentials from a non-IDE client may violate Google's terms.
+
 #### Codex Provider Authentication
 
 The Codex provider supports two authentication modes:
@@ -707,7 +748,9 @@ Transformers allow you to modify the request and response payloads to ensure com
 
 - `Anthropic`:If you use only the `Anthropic` transformer, it will preserve the original request and response parameters(you can use it to connect directly to an Anthropic endpoint).
 - `deepseek`: Adapts requests/responses for DeepSeek API.
-- `gemini`: Adapts requests/responses for Gemini API.
+- `gemini`: Adapts requests/responses for Gemini API (also the dialect stage used with Antigravity; same options apply to `vertex-gemini`). Claude Code's effort setting (sent as `output_config.effort`) drives thinking depth: `thinkingLevel` for Gemini 3+ (`low`/`high` on Gemini 3 Pro, plus `medium` on later Pro minors, plus `minimal` on Flash/Lite) or `thinkingBudget` for Gemini 2.5 and Claude-via-Antigravity — never both (the API rejects that mix). Efforts outside a family's range round up (`medium` on Gemini 3 Pro, `xhigh`/`max` anywhere → `high`), and the configured model id is never rewritten (a tier-pinned `gemini-3-pro-low` keeps talking to `gemini-3-pro-low`). Pass options as `["gemini", { ... }]`:
+  - **`cachedContent`** (boolean, default `true`): whether CCR may use Google's separate **`cachedContents` HTTP resource** to store/reuse prompt prefixes on the public Gemini API. This is Gemini server-side context cache — **not** Anthropic `cache_control` and **not** Claude Code's local prompt cache. Leave `true` for normal Gemini; set **`false` for Antigravity** (and any gateway without `cachedContents`) or you get 404s.
+  - **`thoughtSignatureFallback`** (`"skip"` \| `"none"`, default `"skip"`): what to do when a replayed tool call has no cached Gemini `thoughtSignature` (Claude Code's Anthropic `tool_use` cannot carry that field, so CCR caches signatures by tool-call id and restores them; a miss otherwise 400s). `"skip"` means stamp Google's documented sentinel `skip_thought_signature_validator` on the **first** `functionCall` of the step — the value name refers to that sentinel, **not** “disable the fallback.” Leave `"skip"` for Gemini/Antigravity; set `"none"` only if the endpoint rejects the sentinel (some Vertex). Real cached signatures are always preferred; the sentinel is a last resort.
 - `mistral`: Adapts requests/responses for Mistral API.
 - `openrouter`: Adapts requests/responses for OpenRouter API. It can also accept a `provider` routing parameter to specify which underlying providers OpenRouter should use. For more details, refer to the [OpenRouter documentation](https://openrouter.ai/docs/features/provider-routing). See an example below:
   ```json
@@ -741,6 +784,7 @@ Transformers allow you to modify the request and response payloads to ensure com
 - `rovo-cli` (experimental): Unofficial support for gpt-5 via Atlassian Rovo Dev CLI [rovo-cli.js](https://gist.github.com/SaseQ/c2a20a38b11276537ec5332d1f7a5e53).
 - `codex`: Adapts requests/responses for the Codex (ChatGPT) backend API. Supports OAuth via `ccr codex-auth` or PAT auth when `api_key` starts with `at-`.
 - `claude-auth`: Authenticates requests to Anthropic's API using your Claude Pro or Max subscription OAuth token. Converts Unified format to Anthropic format and handles SSE response conversion. Use it together with `Anthropic` in the provider chain, and authenticate via `ccr claude-auth`.
+- `antigravity-auth`: OAuth + envelope middleware for Google's Antigravity gateway (`cloudcode-pa`). Chain **after** `gemini`. For Antigravity you must set `cachedContent: false` on the Gemini stage (no `cachedContents` resource there); keep `thoughtSignatureFallback: "skip"` unless the endpoint rejects Google's thought-signature sentinel. Authenticate with `ccr antigravity-auth`.
 - `chrome-on-device`: Routes requests to Chrome's on-device Gemini Nano model via the Prompt API. Uses `responseConstraint` for structured JSON output. Requires a bridge process running on the host (`ccr chrome-bridge`).
 
 **Chrome On-Device Provider Configuration:**
