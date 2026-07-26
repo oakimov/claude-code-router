@@ -34,11 +34,11 @@ COPY packages/cli ./packages/cli
 RUN pnpm install --frozen-lockfile && \
     pnpm store prune
 
-# Build all packages
-WORKDIR /app/packages/core
+# Build all packages (shared before core — core imports @caeliq/ccr-shared)
+WORKDIR /app/packages/shared
 RUN pnpm build
 
-WORKDIR /app/packages/shared
+WORKDIR /app/packages/core
 RUN pnpm build
 
 WORKDIR /app/packages/server
