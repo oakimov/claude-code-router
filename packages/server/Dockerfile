@@ -8,16 +8,13 @@ WORKDIR /app
 # Copy workspace configuration and package files first for caching
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
 
-# Activate the exact pnpm version pinned in package.json's "packageManager"
-# field via corepack, instead of hardcoding a version here that can drift
-# out of sync (this Dockerfile previously pinned pnpm@9, two majors behind).
-# The corepack bundled with node:22.13 ships a stale signing-key snapshot
-# that rejects pnpm releases signed after it was built, so upgrade corepack
-# itself first (pinned, not @latest, to stay within this image's Node engine
-# range and avoid EBADENGINE warnings).
-RUN npm install -g corepack@0.34.0 && \
-    corepack enable && \
-    corepack install && \
+# Install the exact pnpm version from package.json's "packageManager" field.
+# Prefer a direct npm global install over upgrading corepack: under QEMU
+# arm64 emulation, `npm install -g corepack@…` has been observed to SIGILL
+# (exit 132) on GitHub Actions multi-arch builds.
+RUN PNPM_VERSION="$(node -p "require('./package.json').packageManager.replace(/^pnpm@/, '')")" && \
+    test -n "$PNPM_VERSION" && \
+    npm install -g "pnpm@${PNPM_VERSION}" && \
     rm -rf /root/.npm
 COPY scripts ./scripts
 COPY packages/shared/package.json ./packages/shared/
