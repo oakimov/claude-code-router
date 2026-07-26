@@ -35,14 +35,18 @@ export function convertToolsToAnthropic(tools: UnifiedTool[]): AnthropicTool[] {
 export function convertToolsFromOpenAI(
   tools: ChatCompletionTool[]
 ): UnifiedTool[] {
-  return tools.map((tool) => ({
-    type: "function" as const,
-    function: {
-      name: tool.function.name,
-      description: tool.function.description || "",
-      parameters: tool.function.parameters as any,
-    },
-  }));
+  return tools
+    .filter((tool): tool is Extract<ChatCompletionTool, { type: "function" }> =>
+      tool.type === "function" && "function" in tool
+    )
+    .map((tool) => ({
+      type: "function" as const,
+      function: {
+        name: tool.function.name,
+        description: tool.function.description || "",
+        parameters: tool.function.parameters as any,
+      },
+    }));
 }
 
 export function convertToolsFromAnthropic(
@@ -62,14 +66,15 @@ export function convertToOpenAI(
   request: UnifiedChatRequest
 ): OpenAIChatRequest {
   const messages: OpenAIMessage[] = [];
-  const toolResponsesQueue: Map<string, any> = new Map(); // For storing tool responses
+  const toolResponsesQueue: Map<string, any[]> = new Map(); // For storing tool responses
 
   request.messages.forEach((msg) => {
     if (msg.role === "tool" && msg.tool_call_id) {
       if (!toolResponsesQueue.has(msg.tool_call_id)) {
         toolResponsesQueue.set(msg.tool_call_id, []);
       }
-      toolResponsesQueue.get(msg.tool_call_id).push({
+      const responses = toolResponsesQueue.get(msg.tool_call_id)!;
+      responses.push({
         role: "tool",
         content: msg.content,
         tool_call_id: msg.tool_call_id,
@@ -109,9 +114,9 @@ export function convertToOpenAI(
     ) {
       for (const toolCall of msg.tool_calls) {
         if (toolResponsesQueue.has(toolCall.id)) {
-          const responses = toolResponsesQueue.get(toolCall.id);
+          const responses = toolResponsesQueue.get(toolCall.id) || [];
 
-          responses.forEach((response) => {
+          responses.forEach((response: any) => {
             messages.push(response);
           });
 
@@ -133,7 +138,7 @@ export function convertToOpenAI(
 
   if (toolResponsesQueue.size > 0) {
     for (const [id, responses] of toolResponsesQueue.entries()) {
-      responses.forEach((response) => {
+      responses.forEach((response: any) => {
         messages.push(response);
       });
     }

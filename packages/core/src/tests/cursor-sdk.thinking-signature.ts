@@ -9,6 +9,7 @@ function deltaOf(chunk: Record<string, unknown>) {
   return ((chunk.choices as any)?.[0]?.delta || {}) as Record<string, any>;
 }
 
+async function main() {
 {
   const helpers = createSseHelpers("grok-4.5", new TextEncoder());
   const thinking = helpers.thinking("step one");
@@ -24,7 +25,6 @@ function deltaOf(chunk: Record<string, unknown>) {
   assert.equal(deltaOf(signature).thinking?.content, undefined);
   assert.equal(deltaOf(signature).content, undefined);
 }
-
 {
   const helpers = createSseHelpers("grok-4.5", new TextEncoder());
   const completion = accumulateChatCompletion("grok-4.5", [
@@ -115,3 +115,9 @@ function deltaOf(chunk: Record<string, unknown>) {
   assert.ok(textStart > thinkingStop);
   assert.match(output, /"delta":\{"type":"text_delta","text":"final answer"\}/);
 }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

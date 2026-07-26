@@ -18,10 +18,14 @@ import {
   cancelActiveRun,
   globalSessionManager,
   touchSession,
-  withTimeout,
   withSessionSendLock,
   type CursorSdkSession,
 } from "./session";
+import {
+  isCursorAgentBusyError,
+  isCursorSendPoisonError,
+  sendCursorPrompt,
+} from "./send";
 import {
   DEFAULT_CURSOR_MODE,
   coerceThinkingText,
@@ -156,7 +160,7 @@ async function* streamSessionEvents(
   runToken: symbol,
   abortSignal?: AbortSignal
 ): AsyncGenerator<
-  | { kind: "sdk"; message: SDKMessage }
+  | { kind: "sdk"; message: SDKMessage; source: "stream" | "delta" }
   | { kind: "host_tool"; tool: { id: string; name: string; args: Record<string, unknown> } }
   | { kind: "end" }
 > {
@@ -168,13 +172,37 @@ async function* streamSessionEvents(
 
   let pendingNext = iterator.next();
   let emitWait = session.waitForEmit().then(() => "emit" as const);
+  let sdkMessageWait = session.waitForSdkMessage().then(
+    () => "sdk_message" as const
+  );
+
+  const shiftSdkDelta = () => {
+    const idx = session.pendingSdkMessages.findIndex(
+      (entry) => entry.runToken === runToken
+    );
+    if (idx === -1) return undefined;
+    const [entry] = session.pendingSdkMessages.splice(idx, 1);
+    return entry;
+  };
 
   while (true) {
     if (abortSignal?.aborted || session.activeRunToken !== runToken) {
       yield { kind: "end" };
       return;
     }
+
+    const queuedSdkDelta = shiftSdkDelta();
+    if (queuedSdkDelta) {
+      yield {
+        kind: "sdk",
+        message: queuedSdkDelta.message,
+        source: queuedSdkDelta.source,
+      };
+      continue;
+    }
+
     const raced = await Promise.race([
+      sdkMessageWait.then((v) => ({ type: v })),
       pendingNext.then((r) => ({ type: "msg" as const, r })),
       emitWait.then((v) => ({ type: v })),
     ]);
@@ -188,6 +216,18 @@ async function* streamSessionEvents(
         yield { kind: "host_tool", tool };
       }
       emitWait = session.waitForEmit().then(() => "emit" as const);
+      continue;
+    }
+
+    if (raced.type === "sdk_message") {
+      while (true) {
+        const entry = shiftSdkDelta();
+        if (!entry) break;
+        yield { kind: "sdk", message: entry.message, source: entry.source };
+      }
+      sdkMessageWait = session.waitForSdkMessage().then(
+        () => "sdk_message" as const
+      );
       continue;
     }
 
@@ -206,9 +246,24 @@ async function* streamSessionEvents(
       session.metrics.builtinToolCallsSeen += 1;
       // Do not forward Cursor built-ins as Claude Code tools.
     }
-    yield { kind: "sdk", message };
+    yield { kind: "sdk", message, source: "stream" };
     pendingNext = iterator.next();
   }
+}
+
+function sdkMessageFromDelta(
+  session: CursorSdkSession,
+  update: any
+): SDKMessage | undefined {
+  if (!update || update.type !== "thinking-delta") return undefined;
+  const text = coerceThinkingText(update.text);
+  if (!text) return undefined;
+  return {
+    type: "thinking",
+    agent_id: session.agentId,
+    run_id: session.run?.id || "",
+    text,
+  } as SDKMessage;
 }
 
 export async function runCursor(
@@ -247,14 +302,16 @@ export async function runCursor(
   const effort = extractEffort(request);
   const model = await resolveModelSelection(apiKey, modelId, effort);
 
-  const session = await globalSessionManager.getOrCreate({
+  const sessionOptions = {
     key: sessionKey,
     apiKey,
     model,
     mode,
     cursorCwd: options.cursorCwd,
     sandboxEnabled: options.sandboxEnabled,
-  });
+  };
+
+  let session = await globalSessionManager.getOrCreate(sessionOptions);
 
   const toolResults = extractTrailingToolResults(request);
   const hadParked = session.parked.length > 0;
@@ -271,14 +328,122 @@ export async function runCursor(
   // prior turns. Prefer a slim follow-up (trailing tool results / last user turn)
   // over re-embedding the full CCR transcript as plain text.
   const followUpOnly = session.hasSentPrompt;
-  const customTools =
-    mode === "bridge" ? toCustomTools(request, session) : undefined;
-  const sdkSendOptions = {
-    model,
-    mode: mode === "plan" ? ("plan" as const) : ("agent" as const),
-    local: customTools ? { customTools } : undefined,
-  };
   let runToken = session.activeRunToken;
+
+  const clearQueuedSdkMessages = (
+    targetSession: CursorSdkSession,
+    targetRunToken: symbol
+  ) => {
+    targetSession.pendingSdkMessages = targetSession.pendingSdkMessages.filter(
+      (entry) => entry.runToken !== targetRunToken
+    );
+    targetSession.notifySdkMessage();
+  };
+
+  const sdkSendOptionsForSession = (
+    targetSession: CursorSdkSession,
+    targetRunToken: symbol
+  ) => {
+    const customTools =
+      mode === "bridge" ? toCustomTools(request, targetSession) : undefined;
+    return {
+      model,
+      mode: mode === "plan" ? ("plan" as const) : ("agent" as const),
+      local: customTools ? { customTools } : undefined,
+      onDelta: ({ update }: { update: any }) => {
+        const message = sdkMessageFromDelta(targetSession, update);
+        if (message) {
+          targetSession.enqueueSdkMessage(message, targetRunToken);
+        }
+      },
+    };
+  };
+
+  const toProviderError = (err: any) =>
+    Object.assign(new Error(`Cursor SDK error: ${err?.message || err}`), {
+      statusCode: 502,
+      code: "provider_response_error",
+      type: "api_error",
+    });
+
+  const shouldReplayWithFreshSession = (err: any, targetSession: CursorSdkSession) =>
+    targetSession.hasSentPrompt &&
+    !options.abortSignal?.aborted &&
+    (err?.retryFreshCursorSession === true ||
+      isCursorAgentBusyError(err) ||
+      isCursorSendPoisonError(err));
+
+  const startNewPrompt = async (
+    targetSession: CursorSdkSession,
+    followUpOnlyForPrompt: boolean
+  ): Promise<symbol> => {
+    let nextRunToken: symbol | undefined;
+    await withSessionSendLock(targetSession, async () => {
+      // Re-check under the lock: a concurrent request may have started a run.
+      if (targetSession.run || targetSession.streamIterator) {
+        const cancelResult = await cancelActiveRun(targetSession, {
+          rejectParked: true,
+          reason: "cursor-sdk superseded by new prompt",
+          timeoutMs: 2_000,
+          poisonOnFailure: true,
+        });
+        if (cancelResult.failed) {
+          globalSessionManager.invalidate(
+            targetSession,
+            "cursor-sdk active run did not finish cancellation before new prompt"
+          );
+          throw Object.assign(
+            new Error("cursor-sdk active run did not finish cancellation"),
+            { retryFreshCursorSession: true }
+          );
+        }
+      }
+
+      const prompt = toSdkPrompt(request, {
+        mode,
+        workspaceDir: targetSession.workspaceDir,
+        followUpOnly: followUpOnlyForPrompt,
+      });
+
+      nextRunToken = Symbol("cursor-sdk-run");
+      targetSession.activeRunToken = nextRunToken;
+
+      try {
+        const run = await sendCursorPrompt(
+          targetSession,
+          prompt,
+          sdkSendOptionsForSession(targetSession, nextRunToken),
+          {
+            abortSignal: options.abortSignal,
+            logger,
+          }
+        );
+        targetSession.run = run;
+        targetSession.activeRunToken = nextRunToken;
+        targetSession.streamIterator = run.stream()[Symbol.asyncIterator]();
+        targetSession.hasSentPrompt = true;
+      } catch (err: any) {
+        if (nextRunToken && targetSession.activeRunToken === nextRunToken) {
+          targetSession.activeRunToken = undefined;
+          clearQueuedSdkMessages(targetSession, nextRunToken);
+        }
+        if (options.abortSignal?.aborted || isCursorSendPoisonError(err)) {
+          globalSessionManager.invalidate(
+            targetSession,
+            options.abortSignal?.aborted
+              ? "cursor-sdk send aborted"
+              : "cursor-sdk send left session state unsafe"
+          );
+        }
+        logger?.error?.({ err }, "cursor-sdk agent.send failed");
+        throw err;
+      }
+    });
+    if (!nextRunToken) {
+      throw new Error("cursor-sdk agent.send did not produce a run token");
+    }
+    return nextRunToken;
+  };
 
   if (shouldSendNewPrompt) {
     if (followUpOnly && toolResults.length && !session.streamIterator) {
@@ -290,73 +455,31 @@ export async function runCursor(
         "cursor-sdk dead-run recovery: sending follow-up with tool results"
       );
     }
-    await withSessionSendLock(session, async () => {
-      // Re-check under the lock: a concurrent request may have started a run.
-      if (session.run || session.streamIterator) {
-        await cancelActiveRun(session, {
-          rejectParked: true,
-          reason: "cursor-sdk superseded by new prompt",
-          timeoutMs: 2_000,
-        });
+    try {
+      runToken = await startNewPrompt(session, followUpOnly);
+    } catch (err: any) {
+      if (!shouldReplayWithFreshSession(err, session)) {
+        throw toProviderError(err);
       }
-
-      const prompt = toSdkPrompt(request, {
-        mode,
-        workspaceDir: session.workspaceDir,
-        followUpOnly,
-      });
-
-      let sendPromise: ReturnType<typeof session.agent.send> | undefined;
+      logger?.warn?.(
+        {
+          err,
+          sessionKey: session.key,
+          agentId: session.agentId,
+        },
+        "cursor-sdk retrying failed resumed send with fresh session"
+      );
+      globalSessionManager.invalidate(
+        session,
+        "cursor-sdk resumed send failed before streaming"
+      );
+      session = await globalSessionManager.getOrCreate(sessionOptions);
       try {
-        sendPromise = session.agent.send(prompt, sdkSendOptions);
-        const abortPromise = options.abortSignal
-          ? new Promise<never>((_, reject) => {
-              if (options.abortSignal!.aborted) {
-                reject(new Error("cursor-sdk request aborted before send"));
-                return;
-              }
-              options.abortSignal!.addEventListener(
-                "abort",
-                () => reject(new Error("cursor-sdk request aborted during send")),
-                { once: true }
-              );
-            })
-          : undefined;
-        const run = await withTimeout(
-          abortPromise
-            ? Promise.race([sendPromise, abortPromise])
-            : sendPromise,
-          15_000,
-          "Cursor SDK agent.send timed out"
-        );
-        runToken = Symbol("cursor-sdk-run");
-        session.run = run;
-        session.activeRunToken = runToken;
-        session.streamIterator = run.stream()[Symbol.asyncIterator]();
-        session.hasSentPrompt = true;
-      } catch (err: any) {
-        if (sendPromise) {
-          void sendPromise
-            .then((run) => {
-              try {
-                void run.cancel();
-              } catch {
-                // ignore
-              }
-            })
-            .catch(() => undefined);
-        }
-        logger?.error?.({ err }, "cursor-sdk agent.send failed");
-        throw Object.assign(
-          new Error(`Cursor SDK error: ${err?.message || err}`),
-          {
-            statusCode: 502,
-            code: "provider_response_error",
-            type: "api_error",
-          }
-        );
+        runToken = await startNewPrompt(session, false);
+      } catch (retryErr: any) {
+        throw toProviderError(retryErr);
       }
-    });
+    }
   }
 
   if (!runToken) {
@@ -427,6 +550,7 @@ export async function runCursor(
         let allowThinking = true;
         let emittedThinking = false;
         let thinkingSigned = false;
+        let thinkingSource: "stream" | "delta" | undefined;
         let currentRunAssistantText = "";
         let progressContinuationAttempts = 0;
 
@@ -493,13 +617,29 @@ export async function runCursor(
                   },
                   "cursor-sdk continuing progress-only terminal turn"
                 );
-                const run = await withSessionSendLock(session, () =>
-                  session.agent.send(
-                    progressOnlyContinuationPrompt(),
-                    sdkSendOptions
-                  )
-                );
-                runToken = Symbol("cursor-sdk-run");
+                const continuationRunToken = Symbol("cursor-sdk-run");
+                session.activeRunToken = continuationRunToken;
+                let run;
+                try {
+                  run = await withSessionSendLock(session, () =>
+                    sendCursorPrompt(
+                      session,
+                      progressOnlyContinuationPrompt(),
+                      sdkSendOptionsForSession(session, continuationRunToken),
+                      {
+                        abortSignal: options.abortSignal,
+                        logger,
+                      }
+                    )
+                  );
+                } catch (err) {
+                  if (session.activeRunToken === continuationRunToken) {
+                    session.activeRunToken = undefined;
+                    clearQueuedSdkMessages(session, continuationRunToken);
+                  }
+                  throw err;
+                }
+                runToken = continuationRunToken;
                 session.run = run;
                 session.activeRunToken = runToken;
                 session.streamIterator = run.stream()[Symbol.asyncIterator]();
@@ -533,6 +673,9 @@ export async function runCursor(
               }
             } else if (message.type === "thinking") {
               if (!allowThinking) continue;
+              const source = event.source || "stream";
+              if (thinkingSource && thinkingSource !== source) continue;
+              thinkingSource = source;
               const text = coerceThinkingText((message as any).text);
               if (text) {
                 emittedThinking = true;
@@ -593,6 +736,13 @@ export async function runCursor(
           reason: "cursor-sdk stream failed",
           timeoutMs: 2_000,
           onlyRunToken: runToken,
+          poisonOnFailure: true,
+        }).then((result) => {
+          if (result.skipped) return;
+          globalSessionManager.invalidate(
+            session,
+            "cursor-sdk stream failed before terminal state"
+          );
         });
         try {
           controller.error(err);
@@ -607,6 +757,13 @@ export async function runCursor(
         reason: "cursor-sdk client cancelled stream",
         timeoutMs: 2_000,
         onlyRunToken: runToken,
+        poisonOnFailure: true,
+      }).then((result) => {
+        if (result.skipped) return;
+        globalSessionManager.invalidate(
+          session,
+          "cursor-sdk client cancelled stream"
+        );
       });
     },
   });

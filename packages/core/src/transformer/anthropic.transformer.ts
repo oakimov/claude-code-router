@@ -1,6 +1,7 @@
 import { ChatCompletion } from "openai/resources";
 import {
   LLMProvider,
+  MessageContent,
   UnifiedChatRequest,
   UnifiedMessage,
   UnifiedTool,
@@ -302,7 +303,9 @@ export class AnthropicTransformer implements Transformer {
       if (typeof request.system === "string") {
         system = request.system;
       } else if (Array.isArray(request.system) && request.system.length) {
-        system = request.system.map((part) => ({
+        system = request.system
+          .filter((part) => part.type === "text")
+          .map((part) => ({
           type: "text",
           text: part.text,
           ...(part as any).cache_control ? { cache_control: (part as any).cache_control } : {},
@@ -320,7 +323,10 @@ export class AnthropicTransformer implements Transformer {
           if (typeof msg.content === "string") {
             system = msg.content;
           } else if (Array.isArray(msg.content)) {
-            const textParts = msg.content.filter((c: any) => c.type === "text" && c.text);
+            const textParts = msg.content.filter(
+              (c): c is Extract<MessageContent, { type: "text" }> =>
+                c.type === "text" && Boolean(c.text)
+            );
             if (textParts.length === 1 && !textParts[0].cache_control) {
               system = textParts[0].text;
             } else if (textParts.length > 0) {
@@ -1271,6 +1277,7 @@ export class AnthropicTransformer implements Transformer {
       }
       if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
         choice.message.tool_calls.forEach((toolCall) => {
+          if (!("function" in toolCall) || !toolCall.function) return;
           let parsedInput = {};
           try {
             const argumentsStr = toolCall.function.arguments || "{}";
@@ -1299,6 +1306,7 @@ export class AnthropicTransformer implements Transformer {
           signature: (choice.message as any).thinking.signature,
         });
       }
+      const finishReason = String(choice.finish_reason || "");
       const result = {
         id: openaiResponse.id,
         type: "message",
@@ -1308,13 +1316,13 @@ export class AnthropicTransformer implements Transformer {
         stop_reason:
           choice.finish_reason === "stop"
             ? "end_turn"
-            : choice.finish_reason === "length"
+            : finishReason === "length"
             ? "max_tokens"
-            : choice.finish_reason === "tool_calls"
+            : finishReason === "tool_calls"
             ? "tool_use"
-            : choice.finish_reason === "content_filter"
+            : finishReason === "content_filter"
             ? "stop_sequence"
-            : choice.finish_reason === "model_context_window_exceeded"
+            : finishReason === "model_context_window_exceeded"
             ? "model_context_window_exceeded"
             : "end_turn",
         stop_sequence: null,

@@ -10,8 +10,7 @@
  *   npx tsx packages/core/src/tests/gemini.parity.ts --update   # regenerate golden
  */
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 
 import {
   buildRequestBody,
@@ -19,9 +18,7 @@ import {
 } from "../utils/gemini.util";
 import type { UnifiedChatRequest } from "../types/llm";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const GOLDEN_DIR = join(__dirname, "__golden__");
+const GOLDEN_DIR = join(dirname(process.argv[1] || process.cwd()), "__golden__");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -432,6 +429,7 @@ interface GeminiChunk {
     content: { parts: any[]; role?: string };
     finishReason?: string;
     groundingMetadata?: any;
+    usageMetadata?: any;
   }>;
   responseId?: string;
   modelVersion?: string;

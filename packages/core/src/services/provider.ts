@@ -5,6 +5,7 @@ import {
   ModelRoute,
   RequestRouteInfo,
   ConfigProvider,
+  TransformerConfigEntry,
 } from "../types/llm";
 import { ConfigService } from "./config"; 
 import { TransformerService } from "./transformer";
@@ -66,7 +67,7 @@ export class ProviderService {
             } else {
               if (Array.isArray(providerConfig.transformer[key]?.use)) {
                 transformer[key] = {
-                  use: providerConfig.transformer[key].use.map((transformer) => {
+                  use: providerConfig.transformer[key].use.map((transformer: TransformerConfigEntry) => {
                     if (Array.isArray(transformer) && typeof transformer[0] === 'string') {
                       const Constructor = this.transformerService.getTransformer(transformer[0]);
                       if (Constructor) {
@@ -82,7 +83,7 @@ export class ProviderService {
                       }
                       return this.attachTransformerLogger(transformerInstance);
                     }
-                  }).filter((transformer) => typeof transformer !== 'undefined')
+                  }).filter((transformer: unknown) => typeof transformer !== 'undefined')
                 }
               }
             }

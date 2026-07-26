@@ -7,7 +7,7 @@ import { ITokenizer, TokenizerConfig } from '../types/tokenizer';
 /**
  * Token statistics interface
  */
-interface TokenStats {
+export interface TokenStats {
   requestId: string;
   sessionId?: string;
   startTime: number;
@@ -45,6 +45,18 @@ interface TokenSpeedOptions extends CCRPluginOptions {
 
 // Store request-level statistics
 const requestStats = new Map<string, TokenStats>();
+
+export function getTokenSpeedStats(requestId: string): TokenStats | undefined {
+  const stats = requestStats.get(requestId);
+  return stats ? { ...stats, tokenTimestamps: [...stats.tokenTimestamps] } : undefined;
+}
+
+export function getGlobalTokenSpeedStats(): TokenStats[] {
+  return Array.from(requestStats.values()).map((stats) => ({
+    ...stats,
+    tokenTimestamps: [...stats.tokenTimestamps],
+  }));
+}
 
 // Cache tokenizers by provider and model to avoid repeated initialization
 const tokenizerCache = new Map<string, ITokenizer>();

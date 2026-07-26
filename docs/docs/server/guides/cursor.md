@@ -154,6 +154,8 @@ The `cursor-sdk` transformer:
 - supports streaming and non-streaming Claude Code requests
 - maps effort / reasoning fields onto SDK model selection when available
 - keeps Cursor caching native to the SDK agent session, while exposing bounded cache-read usage back to Claude Code from SDK usage deltas
+- forwards Cursor thinking from both `run.stream()` `thinking` messages and `Agent.send({ onDelta })` `thinking-delta` updates, then emits the Anthropic-compatible signature delta Claude Code expects
+- requires Claude Code's `"showThinkingSummaries": true` client setting for interactive display on Claude Code 2.1.89+; without it, CCR still transports the thinking block and Claude Code persists it, but the interactive UI hides the summary
 - treats client stop/interrupt as a real SDK cancellation with bounded cleanup, so the next Claude Code message can start a fresh Cursor run instead of waiting behind a stuck stream
 
 ## Usage

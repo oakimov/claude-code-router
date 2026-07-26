@@ -13,6 +13,8 @@ import type { Tool as AnthropicTool } from "@anthropic-ai/sdk/resources/messages
 import { Transformer } from "./transformer";
 import type { ProviderTokenizerConfig } from "./tokenizer";
 
+export type TransformerConfigEntry = string | [string, Record<string, any>?];
+
 export interface UrlCitation {
   url: string;
   title: string;
@@ -105,8 +107,16 @@ export interface UnifiedChatRequest {
   model: string;
   system?: string | MessageContent[];
   max_tokens?: number;
+  max_completion_tokens?: number;
   temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  repetition_penalty?: number;
   stream?: boolean;
+  stream_options?: {
+    include_usage?: boolean;
+    [key: string]: any;
+  };
   tools?: UnifiedTool[];
   tool_choice?:
     | "auto"
@@ -141,6 +151,7 @@ export interface UnifiedChatRequest {
   anthropic_output_config?: Record<string, any>;
   anthropic_metadata?: Record<string, any>;
   anthropic_stop_sequences?: string[];
+  reasoning_effort?: string;
 }
 
 // Unified response interface
@@ -239,9 +250,10 @@ export interface LLMProvider {
   transformer?: {
     [key: string]: {
       use?: Transformer[];
-    };
+    } | any;
   } & {
     use?: Transformer[];
+    passthrough?: any;
   };
 }
 
@@ -265,11 +277,13 @@ export interface ConfigProvider {
   api_key: string;
   models: string[];
   transformer: {
-    use?: string[] | Array<any>[];
+    use?: TransformerConfigEntry[];
   } & {
-    [key: string]: {
-      use?: string[] | Array<any>[];
-    };
+    [key: string]:
+      | {
+          use?: TransformerConfigEntry[];
+        }
+      | any;
   };
   tokenizer?: ProviderTokenizerConfig;
 }

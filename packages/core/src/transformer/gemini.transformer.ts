@@ -18,7 +18,7 @@ export class GeminiTransformer implements Transformer {
     provider: LLMProvider,
     context: any
   ): Promise<Record<string, any>> {
-    const model = context?.req?.model || request.model || provider.model || "";
+    const model = context?.req?.model || request.model || provider.models?.[0] || "";
     const body = await attachGeminiCachedContent({
       body: buildRequestBody(request),
       modelResource: model.startsWith("models/") ? model : `models/${model}`,
@@ -45,7 +45,9 @@ export class GeminiTransformer implements Transformer {
     };
   }
 
-  transformRequestOut = transformRequestOut;
+  async transformRequestOut(request: any): Promise<UnifiedChatRequest> {
+    return transformRequestOut(request);
+  }
 
   async transformResponseOut(response: Response): Promise<Response> {
     return transformResponseOut(response, this.name, this.logger);

@@ -469,7 +469,8 @@ Example provider:
 - Discover models with `ccr model get cursor` (lists via `Cursor.models.list`, not REST `/models`)
 - Docker Compose passes `CURSOR_API_KEY` into the container when set; local Cursor sandboxing is forced off in Docker
 - Cursor prompt caching is native to the held-open SDK agent session. CCR reports per-request token estimates to Claude Code and maps SDK cache-read deltas back as bounded Anthropic cache-read usage.
-- Stopping a Cursor response cancels the owned SDK run with bounded cleanup so the next Claude Code message can start a fresh run instead of hanging behind a stuck stream.
+- Cursor thinking is forwarded from both SDK stream `thinking` messages and token-level `Agent.send({ onDelta })` `thinking-delta` updates, then closed with a synthetic signature so Claude Code can render it as Anthropic extended thinking. Claude Code 2.1.89+ hides interactive thinking summaries by default; enable `"showThinkingSummaries": true` in the settings file passed to Claude Code to display them. This is a client rendering setting: CCR still transports the thinking block when it is disabled.
+- Stopping a Cursor response cancels the owned SDK run with bounded cleanup and invalidates unsafe SDK sessions; active-run send failures use Cursor's native `local.force` retry before CCR falls back to a fresh full-transcript session.
 
 > **See also**: Full Cursor setup is documented in `docs/docs/server/guides/cursor.md`.
 

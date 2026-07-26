@@ -227,7 +227,7 @@ export class ExtraThinkTagTransformer implements Transformer {
             console.error("Error releasing reader lock:", error);
           }
 
-          if (state === "THINKING") {
+          if ((state as ThinkState) === "THINKING") {
             enqueue({
               choices: [
                 {

@@ -63,7 +63,7 @@ function flattenTypeArrayToAnyOf(
  * @returns {Object} - The processed schema
  */
 function processJsonSchema(_jsonSchema: any): any {
-  const genAISchema = {};
+  const genAISchema: Record<string, any> = {};
   const schemaFieldNames = ["items"];
   const listSchemaFieldNames = ["anyOf"];
   const dictSchemaFieldNames = ["properties"];
@@ -117,7 +117,7 @@ function processJsonSchema(_jsonSchema: any): any {
         // beginning of this function.
         continue;
       }
-      const upperCaseValue = fieldValue.toUpperCase();
+      const upperCaseValue = String(fieldValue).toUpperCase();
       genAISchema["type"] = Object.values(Type).includes(upperCaseValue)
         ? upperCaseValue
         : Type.TYPE_UNSPECIFIED;
@@ -125,7 +125,7 @@ function processJsonSchema(_jsonSchema: any): any {
       genAISchema[fieldName] = processJsonSchema(fieldValue);
     } else if (listSchemaFieldNames.includes(fieldName)) {
       const listSchemaFieldValue = [];
-      for (const item of fieldValue) {
+      for (const item of Array.isArray(fieldValue) ? fieldValue : []) {
         if (item["type"] == "null") {
           genAISchema["nullable"] = true;
           continue;
@@ -134,8 +134,8 @@ function processJsonSchema(_jsonSchema: any): any {
       }
       genAISchema[fieldName] = listSchemaFieldValue;
     } else if (dictSchemaFieldNames.includes(fieldName)) {
-      const dictSchemaFieldValue = {};
-      for (const [key, value] of Object.entries(fieldValue)) {
+      const dictSchemaFieldValue: Record<string, any> = {};
+      for (const [key, value] of Object.entries(fieldValue as Record<string, any>)) {
         dictSchemaFieldValue[key] = processJsonSchema(value);
       }
       genAISchema[fieldName] = dictSchemaFieldValue;
@@ -374,7 +374,12 @@ export function buildRequestBody(
   }
 
   if (request.tool_choice) {
-    const toolConfig = {
+    const toolConfig: {
+      functionCallingConfig: {
+        mode?: string;
+        allowedFunctionNames?: string[];
+      };
+    } = {
       functionCallingConfig: {},
     };
     if (request.tool_choice === "auto") {
@@ -383,10 +388,13 @@ export function buildRequestBody(
       toolConfig.functionCallingConfig.mode = "none";
     } else if (request.tool_choice === "required") {
       toolConfig.functionCallingConfig.mode = "any";
-    } else if (request.tool_choice?.function?.name) {
+    } else if (
+      typeof request.tool_choice === "object" &&
+      request.tool_choice.function?.name
+    ) {
       toolConfig.functionCallingConfig.mode = "any";
       toolConfig.functionCallingConfig.allowedFunctionNames = [
-        request.tool_choice?.function?.name,
+        request.tool_choice.function.name,
       ];
     }
     body.toolConfig = toolConfig;
@@ -452,8 +460,9 @@ export function transformRequestOut(
   if (Array.isArray(tools)) {
     unifiedChatRequest.tools = [];
     tools.forEach((tool) => {
-      if (Array.isArray(tool.functionDeclarations)) {
-        tool.functionDeclarations.forEach((tool) => {
+      const functionDeclarations = (tool as any).functionDeclarations;
+      if (Array.isArray(functionDeclarations)) {
+        functionDeclarations.forEach((tool: any) => {
           unifiedChatRequest.tools!.push({
             type: "function",
             function: {
@@ -569,7 +578,7 @@ export async function transformResponseOut(
     const textContent =
       nonThinkingParts
         ?.filter((part: Part) => part.text)
-        ?.map((part: Part) => replaceLatexSymbols(part.text))
+        ?.map((part: Part) => replaceLatexSymbols(part.text || ""))
         ?.join("\n") || "";
 
     const res = {
@@ -820,7 +829,7 @@ export async function transformResponseOut(
 
             const textContent = parts
               .filter((part: Part) => part.text && part.thought !== true)
-              .map((part: Part) => replaceLatexSymbols(part.text))
+              .map((part: Part) => replaceLatexSymbols(part.text || ""))
               .join("\n");
 
             if (!textContent && sequencer.needsContentPlaceholder) {
@@ -875,7 +884,7 @@ export async function transformResponseOut(
             }
 
             if (tool_calls.length > 0) {
-              tool_calls.forEach((tool) => {
+              tool_calls.forEach((tool: any) => {
                 contentIndex++;
                 toolCallIndex++;
                 const res: any = {
@@ -960,4 +969,6 @@ export async function transformResponseOut(
       },
     });
   }
+
+  return response;
 }

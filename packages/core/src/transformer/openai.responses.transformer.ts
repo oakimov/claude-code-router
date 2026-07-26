@@ -14,13 +14,19 @@ interface ResponsesAPIOutputItem {
   call_id?: string;
   name?: string;
   arguments?: string;
-  content?: Array<{
-    type: string;
-    text?: string;
-    image_url?: string;
-    mime_type?: string;
-    image_base64?: string;
-  }>;
+	  content?: Array<{
+	    type: string;
+	    text?: string;
+	    image_url?: string;
+	    mime_type?: string;
+	    image_base64?: string;
+	    annotations?: Array<{
+	      url?: string;
+	      title?: string;
+	      start_index?: number;
+	      end_index?: number;
+	    }>;
+	  }>;
   reasoning?: string;
 }
 

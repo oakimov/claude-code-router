@@ -57,7 +57,7 @@ export class VertexGeminiTransformer implements Transformer {
     }
 
     const accessToken = await getAccessToken(this.logger);
-    const model = request.model || provider.model || "";
+    const model = request.model || provider.models?.[0] || "";
     const baseUrl =
       provider.baseUrl.endsWith('/') ? provider.baseUrl : provider.baseUrl + '/' || `https://${location}-aiplatform.googleapis.com`;
     const modelResource = `projects/${projectId}/locations/${location}/publishers/google/models/${model}`;

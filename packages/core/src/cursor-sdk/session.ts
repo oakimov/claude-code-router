@@ -1,7 +1,13 @@
 import { createHash } from "crypto";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import { Agent, type ModelSelection, type Run, type SDKAgent } from "@cursor/sdk";
+import {
+  Agent,
+  type ModelSelection,
+  type Run,
+  type SDKAgent,
+  type SDKMessage,
+} from "@cursor/sdk";
 import type { OpenAiUsage } from "./usage";
 import { ensureDenyHooksWorkspace } from "./hooks-template";
 import {
@@ -41,6 +47,13 @@ export type CursorSdkSession = {
     runToken?: symbol;
   }>;
   emitWaiters: Array<() => void>;
+  /** SDK raw delta callbacks waiting to be merged into the current SSE response. */
+  pendingSdkMessages: Array<{
+    message: SDKMessage;
+    runToken?: symbol;
+    source: "delta";
+  }>;
+  sdkMessageWaiters: Array<() => void>;
   /**
    * Serializes cancel/send so a follow-up compact/retry cannot call
    * `agent.send` while a prior run is still marked active in the SDK store.
@@ -48,6 +61,12 @@ export type CursorSdkSession = {
   sendChain: Promise<void>;
   /** True after at least one successful `agent.send` on this session. */
   hasSentPrompt: boolean;
+  /**
+   * Set when the local SDK handles are no longer trustworthy. The manager must
+   * not hand this agent out for a future request.
+   */
+  poisoned?: boolean;
+  poisonReason?: string;
   lastActiveAt: number;
   metrics: {
     customToolCalls: number;
@@ -60,7 +79,26 @@ export type CursorSdkSession = {
   }) => Promise<string>;
   notifyEmit: () => void;
   waitForEmit: () => Promise<void>;
+  enqueueSdkMessage: (message: SDKMessage, runToken?: symbol) => void;
+  notifySdkMessage: () => void;
+  waitForSdkMessage: () => Promise<void>;
 };
+
+export type CancelActiveRunResult = {
+  skipped: boolean;
+  hadRun: boolean;
+  hadIterator: boolean;
+  failed: boolean;
+  timedOut: boolean;
+};
+
+export function markSessionPoisoned(
+  session: CursorSdkSession,
+  reason: string
+): void {
+  session.poisoned = true;
+  session.poisonReason = reason;
+}
 
 /**
  * Drop local run handles and await SDK `run.cancel()` when needed.
@@ -76,10 +114,18 @@ export async function cancelActiveRun(
     reason?: string;
     timeoutMs?: number;
     onlyRunToken?: symbol;
+    poisonOnFailure?: boolean;
   } = {}
-): Promise<void> {
+): Promise<CancelActiveRunResult> {
+  const result: CancelActiveRunResult = {
+    skipped: false,
+    hadRun: Boolean(session.run),
+    hadIterator: Boolean(session.streamIterator),
+    failed: false,
+    timedOut: false,
+  };
   if (options.onlyRunToken && session.activeRunToken !== options.onlyRunToken) {
-    return;
+    return { ...result, skipped: true };
   }
   const run = session.run;
   const iterator = session.streamIterator;
@@ -87,7 +133,9 @@ export async function cancelActiveRun(
   session.streamIterator = undefined;
   session.activeRunToken = undefined;
   session.pendingEmit = [];
+  session.pendingSdkMessages = [];
   session.notifyEmit();
+  session.notifySdkMessage?.();
 
   if (options.rejectParked && session.parked.length) {
     const reason = options.reason || "cursor-sdk run cancelled";
@@ -107,13 +155,22 @@ export async function cancelActiveRun(
         options.timeoutMs ?? 2_000,
         "cursor-sdk stream iterator return timed out"
       );
-    } catch {
-      // ignore
+    } catch (err: any) {
+      result.failed = true;
+      result.timedOut =
+        result.timedOut || /timed out/i.test(String(err?.message || err));
     }
   }
 
-  if (!run) return;
-  if (run.status !== "running") return;
+  if (!run || run.status !== "running") {
+    if (result.failed && options.poisonOnFailure) {
+      markSessionPoisoned(
+        session,
+        options.reason || "cursor-sdk run cancellation did not complete"
+      );
+    }
+    return result;
+  }
 
   try {
     await withTimeout(
@@ -121,9 +178,19 @@ export async function cancelActiveRun(
       options.timeoutMs ?? 2_000,
       "cursor-sdk run cancel timed out"
     );
-  } catch {
-    // Best-effort — next send may still succeed once store marks terminal.
+  } catch (err: any) {
+    result.failed = true;
+    result.timedOut =
+      result.timedOut || /timed out/i.test(String(err?.message || err));
   }
+
+  if (result.failed && options.poisonOnFailure) {
+    markSessionPoisoned(
+      session,
+      options.reason || "cursor-sdk run cancellation did not complete"
+    );
+  }
+  return result;
 }
 
 export async function withTimeout<T>(
@@ -225,7 +292,9 @@ export function buildSessionKey(input: {
 export function isSessionInFlight(session: CursorSdkSession): boolean {
   return Boolean(
     session.streamIterator ||
+      session.activeRunToken ||
       session.parked.length > 0 ||
+      session.pendingSdkMessages.length > 0 ||
       session.run?.status === "running"
   );
 }
@@ -251,6 +320,10 @@ export class SessionManager {
 
   get(key: string): CursorSdkSession | undefined {
     const session = this.sessions.get(key);
+    if (session?.poisoned) {
+      this.invalidate(session, session.poisonReason || "cursor-sdk session poisoned");
+      return undefined;
+    }
     if (session) touchSession(session);
     return session;
   }
@@ -393,6 +466,48 @@ export class SessionManager {
     }
   }
 
+  invalidate(sessionOrKey: CursorSdkSession | string, reason: string): void {
+    const session =
+      typeof sessionOrKey === "string"
+        ? this.sessions.get(sessionOrKey)
+        : sessionOrKey;
+    if (!session) return;
+
+    markSessionPoisoned(session, reason);
+    session.run = undefined;
+    session.streamIterator = undefined;
+    session.activeRunToken = undefined;
+    session.pendingEmit = [];
+    session.pendingSdkMessages = [];
+    if (session.parked.length) {
+      for (const parked of session.parked.splice(0, session.parked.length)) {
+        try {
+          parked.reject(new Error(reason));
+        } catch {
+          // ignore
+        }
+      }
+    }
+    session.notifyEmit();
+    session.notifySdkMessage();
+    if (this.sessions.get(session.key) === session) {
+      this.sessions.delete(session.key);
+    }
+    try {
+      session.agent.close();
+    } catch {
+      // ignore
+    }
+    this.logger?.warn?.(
+      {
+        sessionKey: session.key,
+        agentId: session.agentId,
+        reason,
+      },
+      "cursor-sdk session invalidated"
+    );
+  }
+
   private createSessionRecord(input: {
     key: string;
     agent: SDKAgent;
@@ -408,6 +523,8 @@ export class SessionManager {
       parked: [],
       pendingEmit: [],
       emitWaiters: [],
+      pendingSdkMessages: [],
+      sdkMessageWaiters: [],
       sendChain: Promise.resolve(),
       hasSentPrompt: false,
       lastActiveAt: Date.now(),
@@ -436,6 +553,29 @@ export class SessionManager {
             return;
           }
           session.emitWaiters.push(resolve);
+        }),
+      enqueueSdkMessage: (message, runToken = session.activeRunToken) => {
+        session.pendingSdkMessages.push({
+          message,
+          runToken,
+          source: "delta",
+        });
+        session.notifySdkMessage();
+      },
+      notifySdkMessage: () => {
+        const waiters = session.sdkMessageWaiters.splice(
+          0,
+          session.sdkMessageWaiters.length
+        );
+        for (const w of waiters) w();
+      },
+      waitForSdkMessage: () =>
+        new Promise<void>((resolve) => {
+          if (session.pendingSdkMessages.length) {
+            resolve();
+            return;
+          }
+          session.sdkMessageWaiters.push(resolve);
         }),
     };
     return session;
