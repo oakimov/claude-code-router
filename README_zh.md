@@ -496,6 +496,7 @@ Cursor 提供商使用官方 `@cursor/sdk`（无需浏览器 OAuth CLI）。认�
 ```
 
 - **bridge**（默认）：Claude Code 宿主工具；Cursor 内置工具在 `~/.claude-code-router/cursor-sdk-workspaces/` 下的隔离工作空间中被拒绝
+- Cursor 的 harness 提示词由服务端根据 SDK 工作区根目录生成，因此 bridge 模式会改以主机环境为准锚定模型：从请求的 `<env>` 块中提取项目根目录与平台，并注入到工作区的 `AGENTS.md`、agent 提示词的开头与结尾，以及内置工具的拒绝消息中。参数引用了隔离工作区的主机工具调用会被拦截，返回纠正结果而非转发给 Claude Code，并计入会话指标。隔离工作区随会话释放而删除，残留目录会被定期清理。
 - 使用 `ccr model get cursor` 发现模型（通过 `Cursor.models.list` 列出，而非 REST `/models`）
 - Docker Compose 在设置时将 `CURSOR_API_KEY` 传入容器；Docker 中强制关闭本地 Cursor 沙箱
 - Cursor 提示缓存是持有中 SDK 代理会话的原生特性。CCR 将每次请求的令牌估算报告给 Claude Code，并将 SDK 缓存读取差值映射为有界的 Anthropic 缓存读取用量。

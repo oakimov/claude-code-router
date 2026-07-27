@@ -1,6 +1,6 @@
-# Gemini Nano Bridge: Future Optimizations
+# Provider Bridges: Future Optimizations
 
-This document tracks potential improvements for the `chrome-device-bridge.ts` to further enhance stability and model performance.
+This document tracks potential improvements and known unknowns for the provider bridges. Most of it concerns `chrome-device-bridge.ts` (Gemini Nano); Cursor SDK items are collected at the end.
 
 ## 📖 Core Concepts & Mechanics
 
@@ -31,3 +31,15 @@ Gemini Nano can enter deterministic loops when emitting highly structured conten
 - [x] JSON-robust extraction (`extractJson`).
 - [x] Persistent session management with parameter clamping.
 - [x] Tool Result labeling and result-checking guidelines.
+
+## 🖱 Cursor SDK Bridge
+
+### 1. When does Cursor read workspace `AGENTS.md`? — resolved
+- [x] Answer: **once per session**, when the agent's rules service is constructed.
+- **Evidence**: `@cursor/sdk` `LocalCursorRulesService` sets `this._rules = this.load(...)` in its constructor and only re-reads through an *optional* file watcher (`.cursor/rules/**/*.mdc`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.cursorignore`). Confirmed empirically: a canary line appended to a live session's `AGENTS.md` was not visible to the model on the next turn, so no watcher is active in the headless local runtime.
+- **Consequence**: `refreshWorkspaceGuidance` serves the next agent created against that directory, not the live session. That is fine — a live turn already receives changed host facts through the prompt head/tail, and the in-memory `session.hostEnv` update (used by the scratch-path correction) happens regardless. Documented at the function.
+
+### 2. Model-specific grounding strength — closed, not worth doing
+- [x] Decision: keep grounding uniform across models; rely on `scratchPathViolations` for monitoring.
+- **Measurement**: guidance + tail reminder is 2,002 chars ≈ **501 tokens**. Real Claude Code turns on a live `glm-5.2` session measured 39.8k–53.5k prompt tokens, so the cost is **~1%**, and it sits at the head of the prompt where Cursor's cache absorbs it (one turn reported 583,872 of 651,111 raw prompt tokens as cached).
+- **Why not adaptive**: escalating only after a violation means shipping weaker defaults and waiting for a user-visible failure to trigger the fix, in exchange for ~1%.

@@ -507,6 +507,7 @@ Example provider:
 ```
 
 - **bridge** (default): Claude Code hosts tools; Cursor built-ins are denied in an isolated workspace under `~/.claude-code-router/cursor-sdk-workspaces/`
+- Cursor builds its harness prompt server-side from the SDK workspace root, so bridge mode grounds the model in the host environment instead: the project root and platform from the incoming `<env>` block are injected through the workspace `AGENTS.md`, the head and tail of the agent prompt, and the built-in denial message. Host tool calls whose arguments reference the isolated workspace are intercepted, answered with a correction rather than forwarded to Claude Code, and counted in the session metrics. Isolated workspaces are removed with their session and swept when orphaned.
 - Discover models with `ccr model get cursor` (lists via `Cursor.models.list`, not REST `/models`)
 - Docker Compose passes `CURSOR_API_KEY` into the container when set; local Cursor sandboxing is forced off in Docker
 - Cursor prompt caching is native to the held-open SDK agent session. CCR reports per-request token estimates to Claude Code and maps SDK cache-read deltas back as bounded Anthropic cache-read usage.

@@ -13,10 +13,12 @@ import {
   shouldContinueProgressOnlyTurn,
   toSdkPrompt,
 } from "./prompt";
+import { extractHostEnvironment } from "./host-env";
 import {
   buildSessionKey,
   cancelActiveRun,
   globalSessionManager,
+  refreshWorkspaceGuidance,
   touchSession,
   withSessionSendLock,
   type CursorSdkSession,
@@ -32,7 +34,7 @@ import {
   extractEffort,
   type CursorSdkMode,
 } from "./shared";
-import { toCustomTools } from "./tools";
+import { createTurnToolMetrics, toCustomTools } from "./tools";
 import {
   cacheReadFromSdkDelta,
   estimateRequestPromptTokens,
@@ -302,6 +304,10 @@ export async function runCursor(
   const effort = extractEffort(request);
   const model = await resolveModelSelection(apiKey, modelId, effort);
 
+  // Host facts are re-read every turn: the project root can change between
+  // requests on the same session, and only the host knows where tools land.
+  const hostEnv = extractHostEnvironment(request);
+
   const sessionOptions = {
     key: sessionKey,
     apiKey,
@@ -309,9 +315,11 @@ export async function runCursor(
     mode,
     cursorCwd: options.cursorCwd,
     sandboxEnabled: options.sandboxEnabled,
+    hostEnv,
   };
 
   let session = await globalSessionManager.getOrCreate(sessionOptions);
+  refreshWorkspaceGuidance(session, hostEnv);
 
   const toolResults = extractTrailingToolResults(request);
   const hadParked = session.parked.length > 0;
@@ -345,7 +353,9 @@ export async function runCursor(
     targetRunToken: symbol
   ) => {
     const customTools =
-      mode === "bridge" ? toCustomTools(request, targetSession) : undefined;
+      mode === "bridge"
+        ? toCustomTools(request, targetSession, logger, turnToolMetrics)
+        : undefined;
     return {
       model,
       mode: mode === "plan" ? ("plan" as const) : ("agent" as const),
@@ -358,6 +368,11 @@ export async function runCursor(
       },
     };
   };
+
+  // Owned by this request, not the session: `execute` can fire before the
+  // response stream exists, so it must be counted independently of both the
+  // cumulative session metrics and any mid-request session replacement.
+  const turnToolMetrics = createTurnToolMetrics();
 
   const toProviderError = (err: any) =>
     Object.assign(new Error(`Cursor SDK error: ${err?.message || err}`), {
@@ -403,6 +418,7 @@ export async function runCursor(
         mode,
         workspaceDir: targetSession.workspaceDir,
         followUpOnly: followUpOnlyForPrompt,
+        hostEnv,
       });
 
       nextRunToken = Symbol("cursor-sdk-run");
@@ -474,6 +490,7 @@ export async function runCursor(
         "cursor-sdk resumed send failed before streaming"
       );
       session = await globalSessionManager.getOrCreate(sessionOptions);
+      refreshWorkspaceGuidance(session, hostEnv);
       try {
         runToken = await startNewPrompt(session, false);
       } catch (retryErr: any) {
@@ -499,6 +516,28 @@ export async function runCursor(
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      /**
+       * Must run on every exit path. A bridge turn normally ends by emitting
+       * host tool calls and returning early, so a report placed on the
+       * run-completed path alone never fires for the common case.
+       */
+      const reportScratchViolations = () => {
+        if (turnToolMetrics.scratchViolations <= 0) return;
+        // Surfaces the "model thinks it is confined to its sandbox" failure
+        // per model, without needing debug-level logs.
+        logger?.warn?.(
+          {
+            sessionKey: session.key,
+            model: modelId,
+            scratchViolations: turnToolMetrics.scratchViolations,
+            scratchCorrections: turnToolMetrics.scratchCorrections,
+            metrics: session.metrics,
+            hostProjectRoot: hostEnv.projectRoot,
+          },
+          "cursor-sdk turn produced scratch-workspace tool paths"
+        );
+      };
+
       const enqueue = (chunk: Record<string, unknown>) => {
         collected.push(chunk);
         if (wantsStream) {
@@ -624,7 +663,7 @@ export async function runCursor(
                   run = await withSessionSendLock(session, () =>
                     sendCursorPrompt(
                       session,
-                      progressOnlyContinuationPrompt(),
+                      progressOnlyContinuationPrompt(hostEnv),
                       sdkSendOptionsForSession(session, continuationRunToken),
                       {
                         abortSignal: options.abortSignal,
@@ -720,6 +759,7 @@ export async function runCursor(
           flushThinkingSignature();
           emitFinish("stop");
         }
+
         if (wantsStream) controller.enqueue(helpers.encodeDone());
         controller.close();
       } catch (err: any) {
@@ -749,6 +789,8 @@ export async function runCursor(
         } catch {
           // already closed
         }
+      } finally {
+        reportScratchViolations();
       }
     },
     cancel() {

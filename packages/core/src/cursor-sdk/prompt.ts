@@ -1,22 +1,12 @@
 import type { UnifiedChatRequest, UnifiedMessage } from "@/types/llm";
 import type { SDKImage, SDKUserMessage } from "@cursor/sdk";
-import { CUSTOM_USER_TOOLS_SERVER } from "./shared";
-
-function contentToText(content: UnifiedMessage["content"]): string {
-  if (content == null) return "";
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return String(content);
-  return content
-    .map((part) => {
-      if (typeof part === "string") return part;
-      if (part && typeof part === "object" && "text" in part) {
-        return String((part as any).text || "");
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n");
-}
+import { contentToText, CUSTOM_USER_TOOLS_SERVER } from "./shared";
+import {
+  describeHostEnvironment,
+  extractHostEnvironment,
+  hostPathRule,
+  type HostEnvironment,
+} from "./host-env";
 
 function extractImages(content: UnifiedMessage["content"]): SDKImage[] {
   if (!Array.isArray(content)) return [];
@@ -49,23 +39,98 @@ function toolCatalog(request: UnifiedChatRequest): string {
     .join("\n");
 }
 
+/**
+ * Lines that must outrank Cursor's server-built harness prompt.
+ *
+ * Cursor tells the model — at system level — that its workspace root is the
+ * local scratch directory. That claim is self-consistent (the sandbox really is
+ * Linux, really is at that path, really is empty), so a model resolving the
+ * conflict against the host's own environment block tends to trust the sandbox
+ * and refuse to leave it. The fix is not "ignore your cwd" but the actual
+ * topology: tools execute on a different machine.
+ */
+function remoteExecutionRules(
+  workspaceDir: string,
+  hostEnv: HostEnvironment
+): string[] {
+  const lines = [
+    "You are a remote reasoning agent driving Claude Code (the host).",
+    "Tools do not run where you are running: every tool call is executed by the host on the user's machine, and only the result is sent back to you.",
+    `Your local environment is disposable scratch space: ${workspaceDir}`,
+    "It is empty and contains none of the user's files. Never read, list, search, or verify paths against it, and never prefix a host tool path with it.",
+    "Your own cwd, OS, and workspace root describe that scratch container only — they say nothing about the user's project, so never reason from them or report them to the user.",
+  ];
+
+  const hostLines = describeHostEnvironment(hostEnv);
+  if (hostLines.length) {
+    lines.push(
+      "The user's project lives on the host machine, which is where every tool call lands:"
+    );
+    lines.push(...hostLines);
+  }
+  lines.push(hostPathRule(hostEnv));
+
+  lines.push(
+    `Host tools are exposed via MCP server "${CUSTOM_USER_TOOLS_SERVER}" using bare tool names.`,
+    "Cursor built-in tools are denied here. That denial only routes tool use through the host — it is not a restriction on the user's project, which stays fully reachable through the host tools."
+  );
+  return lines;
+}
+
 export function buildBridgeSystemGuidance(
   request: UnifiedChatRequest,
-  workspaceDir: string
+  workspaceDir: string,
+  hostEnv: HostEnvironment = extractHostEnvironment(request)
 ): string {
   return [
-    "You are running inside the Claude Code Router Cursor SDK bridge.",
-    "Claude Code (the host) owns filesystem, shell, and project tools.",
-    "Cursor built-in tools are denied in this workspace — do not call them.",
-    `Host tools are exposed via MCP server "${CUSTOM_USER_TOOLS_SERVER}" using bare tool names.`,
-    `Isolated agent cwd (do not treat as the user project): ${workspaceDir}`,
-    "Pass absolute paths into host tools when referring to the user's real project files.",
+    ...remoteExecutionRules(workspaceDir, hostEnv),
     "A progress update such as 'Checking...', 'Inspecting...', or 'Let me look...' is not a final answer.",
     "After progress narration, call a host tool in the same turn; if no tool is needed, provide the complete user-facing answer before finishing.",
     "Never end a turn with progress narration alone.",
     "Available host tools:",
     toolCatalog(request),
   ].join("\n");
+}
+
+/**
+ * Short restatement appended after the transcript. The guidance above is far
+ * from the generation point once history is flattened in; this is the last
+ * thing the model reads before answering.
+ */
+export function buildBridgeTailReminder(
+  workspaceDir: string,
+  hostEnv: HostEnvironment
+): string {
+  const lines = [
+    "[bridge reminder]",
+    `Tools run on the host machine, not here. ${workspaceDir} is empty scratch space — never treat it as the project, and never build a tool path from it.`,
+    hostPathRule(hostEnv),
+  ];
+  return lines.join("\n");
+}
+
+/** Rules document for the sandbox workspace, injected by Cursor as project rules. */
+export function buildWorkspaceRulesDocument(
+  workspaceDir: string,
+  hostEnv: HostEnvironment
+): string {
+  return [
+    "# Agent rules",
+    "",
+    ...remoteExecutionRules(workspaceDir, hostEnv).map((line) =>
+      line.startsWith("- ") ? line : `- ${line}`
+    ),
+    "",
+  ].join("\n");
+}
+
+/** One-line rationale attached to Cursor built-in denials. */
+export function buildDenyGuidance(hostEnv: HostEnvironment): string {
+  return [
+    "Your local filesystem is empty scratch space on a different machine from the user's project.",
+    "The project is reachable only through the host tools, and it is not restricted.",
+    hostPathRule(hostEnv),
+  ].join(" ");
 }
 
 const PROGRESS_ONLY_PATTERNS = [
@@ -103,16 +168,20 @@ export function shouldContinueProgressOnlyTurn(input: {
   );
 }
 
-export function progressOnlyContinuationPrompt(): SDKUserMessage {
-  return {
-    text: [
-      "Continue the same turn now.",
-      "Your previous assistant message was only progress narration and ended without a host tool call or a complete answer.",
-      "Do not repeat the progress update.",
-      "If evidence is still needed, call an available host tool immediately; otherwise provide the complete user-facing answer now.",
-      "Do not finish until the requested work or answer is complete.",
-    ].join(" "),
-  };
+export function progressOnlyContinuationPrompt(
+  hostEnv?: HostEnvironment
+): SDKUserMessage {
+  const lines = [
+    "Continue the same turn now.",
+    "Your previous assistant message was only progress narration and ended without a host tool call or a complete answer.",
+    "Do not repeat the progress update.",
+    "If evidence is still needed, call an available host tool immediately; otherwise provide the complete user-facing answer now.",
+    "Do not finish until the requested work or answer is complete.",
+  ];
+  if (hostEnv?.known) {
+    lines.push(hostPathRule(hostEnv));
+  }
+  return { text: lines.join(" ") };
 }
 
 /**
@@ -126,13 +195,17 @@ export function toSdkPrompt(
     workspaceDir: string;
     /** When true, only the latest user turn (+ guidance) is sent — session already has history. */
     followUpOnly?: boolean;
+    hostEnv?: HostEnvironment;
   }
 ): SDKUserMessage {
   const messages = request.messages || [];
   const parts: string[] = [];
+  const hostEnv = options.hostEnv || extractHostEnvironment(request);
 
   if (options.mode === "bridge") {
-    parts.push(buildBridgeSystemGuidance(request, options.workspaceDir));
+    parts.push(
+      buildBridgeSystemGuidance(request, options.workspaceDir, hostEnv)
+    );
     parts.push("");
   } else if (options.mode === "plan") {
     parts.push(
@@ -180,6 +253,12 @@ export function toSdkPrompt(
       images = [...images, ...extractImages(msg.content)];
       if (text) parts.push(`[user]\n${text}`);
     }
+  }
+
+  // Recency guard: the guidance above is far from the generation point once the
+  // transcript is flattened in, so restate the topology rule last.
+  if (options.mode === "bridge") {
+    parts.push(buildBridgeTailReminder(options.workspaceDir, hostEnv));
   }
 
   // Prefer the last user text as the primary prompt body if follow-up only and we have it.

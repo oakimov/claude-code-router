@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import {
   Agent,
@@ -10,11 +10,15 @@ import {
 } from "@cursor/sdk";
 import type { OpenAiUsage } from "./usage";
 import { ensureDenyHooksWorkspace } from "./hooks-template";
+import { EMPTY_HOST_ENVIRONMENT, type HostEnvironment } from "./host-env";
 import {
   CURSOR_SDK_WORKSPACES_ROOT,
+  ORPHAN_WORKSPACE_TTL_MS,
   SESSION_IDLE_TTL_MS,
   SESSION_LRU_MAX,
+  WORKSPACE_SWEEP_INTERVAL_MS,
   hashSessionFingerprint,
+  isManagedWorkspacePath,
   type CursorSdkMode,
 } from "./shared";
 
@@ -34,6 +38,8 @@ export type CursorSdkSession = {
   agentId: string;
   mode: CursorSdkMode;
   workspaceDir: string;
+  /** Host machine facts for this session, refreshed each turn. */
+  hostEnv: HostEnvironment;
   run?: Run;
   streamIterator?: AsyncIterator<any>;
   activeRunToken?: symbol;
@@ -61,6 +67,8 @@ export type CursorSdkSession = {
   sendChain: Promise<void>;
   /** True after at least one successful `agent.send` on this session. */
   hasSentPrompt: boolean;
+  /** Fingerprint of the host env baked into the workspace rules/deny hooks. */
+  guidanceFingerprint?: string;
   /**
    * Set when the local SDK handles are no longer trustworthy. The manager must
    * not hand this agent out for a future request.
@@ -71,6 +79,10 @@ export type CursorSdkSession = {
   metrics: {
     customToolCalls: number;
     builtinToolCallsSeen: number;
+    /** Host tool calls whose arguments pointed at the scratch workspace. */
+    scratchPathViolations: number;
+    /** Violations answered with a corrective result instead of execution. */
+    scratchPathCorrections: number;
   };
   parkHostTool: (tool: {
     id: string;
@@ -256,14 +268,62 @@ export function shouldEnableCursorSandbox(requested?: boolean): boolean {
   return true;
 }
 
-function ensureWorkspace(sessionKey: string): string {
+function ensureWorkspace(sessionKey: string, hostEnv?: HostEnvironment): string {
   if (!existsSync(CURSOR_SDK_WORKSPACES_ROOT)) {
     mkdirSync(CURSOR_SDK_WORKSPACES_ROOT, { recursive: true });
   }
   const dir = join(CURSOR_SDK_WORKSPACES_ROOT, sessionKey);
   mkdirSync(dir, { recursive: true });
-  ensureDenyHooksWorkspace(dir);
+  ensureDenyHooksWorkspace(dir, hostEnv);
   return dir;
+}
+
+/**
+ * Adopt this turn's host facts and re-stamp workspace rules when they changed.
+ * Cheap: files are only rewritten when their content actually differs.
+ *
+ * Cursor loads workspace rules when the agent's rules service is constructed,
+ * i.e. once per session — verified by appending a canary line to a live
+ * session's AGENTS.md, which the model did not see. So this rewrite serves the
+ * *next* agent created against this directory; the live turn picks up changed
+ * host facts through the prompt, and `session.hostEnv` (used by the scratch
+ * path correction) is updated here regardless.
+ */
+export function refreshWorkspaceGuidance(
+  session: CursorSdkSession,
+  hostEnv: HostEnvironment
+): boolean {
+  // A turn that carries no environment block must not erase known host facts.
+  if (!hostEnv.known && session.hostEnv?.known) return false;
+
+  const changed = session.guidanceFingerprint !== hostEnv.fingerprint;
+  session.hostEnv = hostEnv;
+  if (session.mode !== "bridge" || !changed) return false;
+
+  try {
+    ensureDenyHooksWorkspace(session.workspaceDir, hostEnv);
+    session.guidanceFingerprint = hostEnv.fingerprint;
+    return true;
+  } catch {
+    // Never fail a turn over guidance refresh — the prompt still carries it.
+    return false;
+  }
+}
+
+/** Remove a scratch workspace, but only one this module created. */
+function removeManagedWorkspace(
+  dir: string,
+  logger?: any,
+  root: string = CURSOR_SDK_WORKSPACES_ROOT
+): boolean {
+  if (!isManagedWorkspacePath(dir, root)) return false;
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch (err) {
+    logger?.debug?.({ err, dir }, "cursor-sdk workspace cleanup failed");
+    return false;
+  }
 }
 
 export function buildSessionKey(input: {
@@ -306,6 +366,8 @@ export function touchSession(session: CursorSdkSession): void {
 export class SessionManager {
   private sessions = new Map<string, CursorSdkSession>();
   private cleanupTimer?: ReturnType<typeof setInterval>;
+  /** Epoch 0 so the first eviction tick performs a sweep. */
+  private lastSweepAt = 0;
 
   constructor(private logger?: any) {
     this.cleanupTimer = setInterval(() => this.evictIdle(), 60_000);
@@ -335,19 +397,21 @@ export class SessionManager {
     mode: CursorSdkMode;
     cursorCwd?: string;
     sandboxEnabled?: boolean;
+    hostEnv?: HostEnvironment;
   }): Promise<CursorSdkSession> {
     const existing = this.get(options.key);
     if (existing) return existing;
 
     this.evictIfNeeded();
 
+    const hostEnv = options.hostEnv || EMPTY_HOST_ENVIRONMENT;
     const workspaceDir =
       options.mode === "agent" && options.cursorCwd
         ? options.cursorCwd
-        : ensureWorkspace(options.key);
+        : ensureWorkspace(options.key, hostEnv);
 
     if (options.mode === "bridge") {
-      ensureDenyHooksWorkspace(workspaceDir);
+      ensureDenyHooksWorkspace(workspaceDir, hostEnv);
     }
 
     const agentMode = options.mode === "plan" ? "plan" : "agent";
@@ -371,6 +435,8 @@ export class SessionManager {
       agent,
       mode: options.mode,
       workspaceDir,
+      hostEnv,
+      guidanceFingerprint: hostEnv.fingerprint,
     });
 
     this.sessions.set(options.key, session);
@@ -394,8 +460,13 @@ export class SessionManager {
     mode: CursorSdkMode;
     workspaceDir: string;
     sandboxEnabled?: boolean;
+    hostEnv?: HostEnvironment;
   }): Promise<CursorSdkSession> {
     const sandboxEnabled = shouldEnableCursorSandbox(options.sandboxEnabled);
+    const hostEnv = options.hostEnv || EMPTY_HOST_ENVIRONMENT;
+    if (options.mode === "bridge") {
+      ensureDenyHooksWorkspace(options.workspaceDir, hostEnv);
+    }
     const agent = await Agent.resume(options.agentId, {
       apiKey: options.apiKey,
       model: options.model,
@@ -410,6 +481,8 @@ export class SessionManager {
       agent,
       mode: options.mode,
       workspaceDir: options.workspaceDir,
+      hostEnv,
+      guidanceFingerprint: hostEnv.fingerprint,
     });
     this.sessions.set(options.key, session);
     return session;
@@ -464,6 +537,9 @@ export class SessionManager {
     } catch {
       // ignore
     }
+    // Scratch workspaces are per-session and hold only generated files. Left
+    // behind they accumulate forever on the mounted config volume.
+    removeManagedWorkspace(session.workspaceDir, this.logger);
   }
 
   invalidate(sessionOrKey: CursorSdkSession | string, reason: string): void {
@@ -513,6 +589,8 @@ export class SessionManager {
     agent: SDKAgent;
     mode: CursorSdkMode;
     workspaceDir: string;
+    hostEnv: HostEnvironment;
+    guidanceFingerprint?: string;
   }): CursorSdkSession {
     const session: CursorSdkSession = {
       key: input.key,
@@ -520,6 +598,7 @@ export class SessionManager {
       agentId: input.agent.agentId,
       mode: input.mode,
       workspaceDir: input.workspaceDir,
+      hostEnv: input.hostEnv,
       parked: [],
       pendingEmit: [],
       emitWaiters: [],
@@ -527,8 +606,14 @@ export class SessionManager {
       sdkMessageWaiters: [],
       sendChain: Promise.resolve(),
       hasSentPrompt: false,
+      guidanceFingerprint: input.guidanceFingerprint,
       lastActiveAt: Date.now(),
-      metrics: { customToolCalls: 0, builtinToolCallsSeen: 0 },
+      metrics: {
+        customToolCalls: 0,
+        builtinToolCallsSeen: 0,
+        scratchPathViolations: 0,
+        scratchPathCorrections: 0,
+      },
       parkHostTool: ({ id, name, args }) => {
         let resolve!: (result: string) => void;
         let reject!: (err: Error) => void;
@@ -614,6 +699,50 @@ export class SessionManager {
         void this.dispose(key);
       }
     }
+    this.sweepOrphanWorkspaces(now);
+  }
+
+  /**
+   * Remove scratch workspaces left by earlier processes. `dispose` handles the
+   * live case; this collects what a crash, kill, or pre-cleanup build left on
+   * the volume. Rate limited and restricted to managed directories.
+   */
+  sweepOrphanWorkspaces(
+    now = Date.now(),
+    root: string = CURSOR_SDK_WORKSPACES_ROOT
+  ): number {
+    if (now - this.lastSweepAt < WORKSPACE_SWEEP_INTERVAL_MS) return 0;
+    this.lastSweepAt = now;
+
+    let entries: string[];
+    try {
+      entries = readdirSync(root);
+    } catch {
+      return 0;
+    }
+
+    const live = new Set(
+      [...this.sessions.values()].map((session) => session.workspaceDir)
+    );
+    let removed = 0;
+
+    for (const entry of entries) {
+      const dir = join(root, entry);
+      if (live.has(dir) || !isManagedWorkspacePath(dir, root)) continue;
+      try {
+        const stat = statSync(dir);
+        if (!stat.isDirectory()) continue;
+        if (now - stat.mtimeMs <= ORPHAN_WORKSPACE_TTL_MS) continue;
+      } catch {
+        continue;
+      }
+      if (removeManagedWorkspace(dir, this.logger, root)) removed++;
+    }
+
+    if (removed) {
+      this.logger?.info?.({ removed, root }, "cursor-sdk orphan workspaces swept");
+    }
+    return removed;
   }
 }
 

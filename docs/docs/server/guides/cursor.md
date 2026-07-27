@@ -105,6 +105,40 @@ Isolated workspaces live under:
 ~/.claude-code-router/cursor-sdk-workspaces/
 ```
 
+#### Host environment grounding
+
+Cursor builds its harness prompt server-side from the SDK workspace root, so the model is told — at system level — that the isolated workspace *is* its project. When CCR runs in Docker that claim is self-consistent (Linux, `/root/...`, empty directory), while the user's real project lives on the Claude Code host. Models that treat system context as authoritative can conclude they are confined to the workspace and start prefixing tool paths with it.
+
+To prevent that, bridge mode extracts the host's `<env>` block (project root, platform, OS version, and any other reported facts) from each incoming request and states the real topology — *tools execute on a different machine* — in three places:
+
+- `AGENTS.md` inside the workspace, which Cursor injects as project rules
+- the head and the tail of the prompt sent to the agent
+- the message returned when a Cursor built-in is denied
+
+Host facts are re-read every turn, and the workspace files are rewritten only when the reported environment actually changes. Cursor loads workspace rules once per agent session, so a rewrite applies to the next session for that directory — a live turn always receives the current facts through the prompt itself. When a request carries no environment block, CCR never guesses a root — it falls back to instructing the model to use only absolute host paths that appear in the conversation.
+
+:::warning
+Do not set `cursorCwd` to the host project path when CCR runs in a container. The path is created if missing, which yields an empty phantom directory at the real project path inside the container.
+:::
+
+#### Scratch-path detection
+
+Guidance is preventive, so bridge mode also checks the arguments of every host tool call. If any string argument references the scratch workspace — including inside a shell command such as `cd <workspace> && ls` — the call is **not** forwarded to Claude Code. The model receives a corrective tool result naming the offending argument and the real host root, and retries.
+
+The correction applies at most three times per session; after that calls are forwarded unchanged, since a model that keeps insisting may be acting on an explicit user request about that path.
+
+Detection is skipped entirely when the host project root itself lives under the scratch root. Occurrences are counted in the session metrics (`scratchPathViolations`, `scratchPathCorrections`), logged per call at `warn`, and summarized per turn:
+
+```text
+cursor-sdk turn produced scratch-workspace tool paths
+```
+
+Grep for that message to compare model behaviour — this is the failure mode that affects strict system-prompt models but not Cursor-native ones.
+
+#### Workspace lifecycle
+
+Scratch workspaces are removed when their session is disposed (idle TTL, LRU eviction, or explicit disposal). Directories left behind by a crash or kill are swept hourly once they are older than 24 hours. Both paths only ever remove a directory that is a direct child of the workspace root **and** whose name is a 32-character session key, so a `cursorCwd` supplied for `agent` mode is never touched.
+
 ### Plan / agent modes
 
 - **plan** — planning/chat assistant; do not execute tools

@@ -1,8 +1,11 @@
-import { chmodSync, mkdirSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { EMPTY_HOST_ENVIRONMENT, type HostEnvironment } from "./host-env";
+import { buildDenyGuidance, buildWorkspaceRulesDocument } from "./prompt";
 import { CURSOR_BUILTIN_DENY_LIST, CUSTOM_USER_TOOLS_SERVER } from "./shared";
 
-const DENY_SCRIPT = `#!/usr/bin/env node
+function buildDenyScript(denyMessage: string): string {
+  return `#!/usr/bin/env node
 const chunks = [];
 process.stdin.on("data", (c) => chunks.push(c));
 process.stdin.on("end", () => {
@@ -31,10 +34,7 @@ process.stdin.on("end", () => {
     return;
   }
 
-  const denyMessage =
-    "CCR Cursor SDK bridge: do not use Cursor built-in tools. " +
-    "Call host tools via MCP server '${CUSTOM_USER_TOOLS_SERVER}' " +
-    "using the bare Claude Code tool names (Read, Bash, Edit, …).";
+  const denyMessage = ${JSON.stringify(denyMessage)};
 
   process.stdout.write(
     JSON.stringify({
@@ -45,14 +45,44 @@ process.stdin.on("end", () => {
   );
 });
 `;
+}
 
-export function ensureDenyHooksWorkspace(workspaceDir: string): void {
+/**
+ * A denied built-in is where the model forms its "I am confined" belief, so the
+ * denial has to carry the topology with it — not just the routing rule.
+ */
+function denyMessageFor(hostEnv: HostEnvironment): string {
+  return [
+    "CCR Cursor SDK bridge: do not use Cursor built-in tools.",
+    `Call host tools via MCP server '${CUSTOM_USER_TOOLS_SERVER}' using the bare Claude Code tool names (Read, Bash, Edit, …).`,
+    buildDenyGuidance(hostEnv),
+  ].join(" ");
+}
+
+/** Write only on change — this runs per turn once host facts are known. */
+function writeIfChanged(
+  path: string,
+  content: string,
+  mode: number
+): void {
+  try {
+    if (readFileSync(path, "utf-8") === content) return;
+  } catch {
+    // missing or unreadable — fall through to write
+  }
+  writeFileSync(path, content, { encoding: "utf-8", mode });
+}
+
+export function ensureDenyHooksWorkspace(
+  workspaceDir: string,
+  hostEnv: HostEnvironment = EMPTY_HOST_ENVIRONMENT
+): void {
   const cursorDir = join(workspaceDir, ".cursor");
   const hooksDir = join(cursorDir, "hooks");
   mkdirSync(hooksDir, { recursive: true });
 
   const denyScriptPath = join(hooksDir, "deny-builtin.cjs");
-  writeFileSync(denyScriptPath, DENY_SCRIPT, { encoding: "utf-8", mode: 0o700 });
+  writeIfChanged(denyScriptPath, buildDenyScript(denyMessageFor(hostEnv)), 0o700);
   try {
     chmodSync(denyScriptPath, 0o700);
   } catch {
@@ -90,15 +120,18 @@ export function ensureDenyHooksWorkspace(workspaceDir: string): void {
     },
   };
 
-  writeFileSync(
+  writeIfChanged(
     join(cursorDir, "hooks.json"),
     JSON.stringify(hooksJson, null, 2),
-    { encoding: "utf-8", mode: 0o600 }
+    0o600
   );
 
-  // Empty AGENTS.md so ambient project instructions aren't invented.
-  writeFileSync(join(workspaceDir, "AGENTS.md"), "", {
-    encoding: "utf-8",
-    mode: 0o600,
-  });
+  // AGENTS.md is Cursor's project-rules channel: it is injected at a higher
+  // priority than the flattened user turn, so it is the only place the bridge
+  // can contradict the server-built claim that this workspace is the project.
+  writeIfChanged(
+    join(workspaceDir, "AGENTS.md"),
+    buildWorkspaceRulesDocument(workspaceDir, hostEnv),
+    0o600
+  );
 }
