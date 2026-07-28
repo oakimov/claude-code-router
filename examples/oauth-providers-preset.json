@@ -1,0 +1,92 @@
+{
+  "name": "oauth-providers",
+  "version": "1.0.0",
+  "description": "Claude (OAuth), Codex (OAuth) and Cursor (SDK) providers — suitable as a template for routing between Anthropic, OpenAI and Cursor models",
+  "author": "CCR Team",
+  "keywords": [
+    "claude",
+    "anthropic",
+    "codex",
+    "chatgpt",
+    "cursor",
+    "oauth"
+  ],
+  "ccrVersion": "2.1.0",
+  "Providers": [
+    {
+      "name": "claude",
+      "api_base_url": "https://api.anthropic.com",
+      "api_key": "no-key",
+      "models": [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-fable-5",
+        "claude-haiku-4-5-20251001",
+        "claude-opus-4-8",
+        "claude-sonnet-4-6"
+      ],
+      "transformer": {
+        "use": [
+          "claude-auth",
+          "Anthropic"
+        ]
+      }
+    },
+    {
+      "name": "codex",
+      "api_base_url": "https://chatgpt.com/backend-api/codex",
+      "api_key": "oauth_dummy_key",
+      "models": [
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.4-mini",
+        "codex-auto-review"
+      ],
+      "transformer": {
+        "use": [
+          "codex"
+        ]
+      }
+    },
+    {
+      "name": "cursor",
+      "api_base_url": "https://cursor.com",
+      "api_key": "$CURSOR_API_KEY",
+      "models": [
+        "composer-2.5",
+        "composer-2",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-fable-5",
+        "claude-haiku-4-5",
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "grok-4.5",
+        "kimi-k2.7-code"
+      ],
+      "transformer": {
+        "use": [
+          [
+            "cursor-sdk",
+            {
+              "cursorMode": "bridge"
+            }
+          ]
+        ]
+      }
+    }
+  ],
+  "Router": {
+    "default": "claude,claude-sonnet-5",
+    "think": "codex,gpt-5.6-sol",
+    "background": "cursor,claude-haiku-4-5",
+    "webSearch": "claude,claude-opus-5",
+    "longContext": "cursor,composer-2.5",
+    "longContextThreshold": 60000
+  },
+  "HOST": "0.0.0.0"
+}

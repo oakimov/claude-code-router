@@ -123,7 +123,7 @@ The CCR server integrates `@caeliq/llms` through:
 
 ### Version and Updates
 
-The current version of `@caeliq/llms` is `1.0.56`. It's published as an independent npm package and can be used standalone or as part of CCR Server.
+The current version of `@caeliq/llms` is `1.0.58`. It's published as an independent npm package and can be used standalone or as part of CCR Server.
 
 ## Core Features
 

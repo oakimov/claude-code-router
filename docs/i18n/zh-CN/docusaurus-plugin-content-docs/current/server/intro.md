@@ -118,7 +118,7 @@ CCR server 通过以下方式集成 `@caeliq/llms`：
 
 ### 版本和更新
 
-`@caeliq/llms` 的当前版本是 `1.0.56`。它作为独立的 npm 包发布，可以独立使用或作为 CCR Server 的一部分使用。
+`@caeliq/llms` 的当前版本是 `1.0.58`。它作为独立的 npm 包发布，可以独立使用或作为 CCR Server 的一部分使用。
 
 ## 核心功能
 

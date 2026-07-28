@@ -8,6 +8,16 @@ dist
 tsconfig.tsbuildinfo
 packages/server/ccr-config
 
+# Firecrawl and Playwright artifacts
+.firecrawl/
+.playwright/
+
+# Claude
+.claude/settings.local.json
+
+# Cursor artifacts
+.cursor/
+
 # Temporary package.json backups from scripts/release.sh
 packages/*/.backup/
 

@@ -4,7 +4,7 @@
   "description": "Multi-provider configuration example - supports switching between OpenAI and DeepSeek",
   "author": "CCR Team",
   "keywords": ["openai", "deepseek", "multi-provider"],
-  "ccrVersion": "2.0.0",
+  "ccrVersion": "2.1.0",
   "Providers": [
     {
       "name": "openai",

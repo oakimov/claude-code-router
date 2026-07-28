@@ -139,6 +139,11 @@ cursor-sdk turn produced scratch-workspace tool paths
 
 隔离工作区会在其会话释放时删除（空闲 TTL、LRU 淘汰或显式释放）。因崩溃或强制结束而残留的目录，会在超过 24 小时后由每小时一次的清理任务回收。两条路径都只会删除同时满足以下条件的目录：位于工作区根目录的直接子级，**且**名称为 32 位会话键，因此为 `agent` 模式提供的 `cursorCwd` 永远不会被删除。
 
+### Plan / agent 模式
+
+- **plan** — 规划/对话助手；不执行工具
+- **agent** — Cursor agent，使用其自身的本地工具语义；若希望由 Claude Code 拥有工具，请优先使用 bridge
+
 ## 模型发现
 
 Cursor 模型通过 `@cursor/sdk` 列出（不是 REST `/models`）：
@@ -173,13 +178,49 @@ environment:
 
 即使配置了沙箱，Docker 内也会禁用。
 
+## 转换器行为
+
+`cursor-sdk` 转换器：
+
+- 在进程内运行 `@cursor/sdk` Agent 的 create/send/stream
+- 通过 `__providerResponse` 返回已就绪的 `Response`（跳过对提供商 URL 的 HTTP `fetch`）
+- 向 AnthropicTransformer 发出 OpenAI chat.completion / chat.completion.chunk SSE
+- 支持 Claude Code 的流式与非流式请求
+- 在 SDK 可用时，将 effort / reasoning 字段映射到 SDK 模型选择
+- 保持 Cursor 缓存在 SDK agent 会话内原生处理，同时从 SDK usage delta 向 Claude Code 暴露有界的 cache-read usage
+- 从 `run.stream()` 的 `thinking` 消息以及 `Agent.send({ onDelta })` 的 `thinking-delta` 更新转发 Cursor thinking，并发出 Claude Code 所期望的 Anthropic 兼容 `signature_delta`
+- 在 Claude Code 2.1.89+ 上，交互式显示需要客户端设置 `"showThinkingSummaries": true`；若未设置，CCR 仍会传输 thinking 块且 Claude Code 会持久化它，但交互 UI 会隐藏摘要
+- 在 Anthropic 边界对 Claude Code 的尾部 turn 做一次分类，使用确切的协议标记而非提示文本正则，并将该意图保留在请求本地上下文中，而不会序列化到上游
+- 通过一个有界、可重放的响应生产者合并相同的重叠重试，从而保证一个逻辑 turn 只存在一个 `agent.send` 与一个 Cursor 迭代消费者
+- 将最后一个订阅者的 stop/interrupt 视为真实的 SDK 取消，并在可以创建替换会话之前等待有界的退役
+- 仅当挂起的 run 仍然活跃、工具结果集合完全匹配且没有有意义的 steering 时才继续；被拒结果+替换文本、无匹配/死掉的 run、清理失败以及会话记录偏离，都会退役 agent 并重放完整会话记录
+- 仅当下一条主机会话记录恰好是已提交的 assistant 文本/工具调用再加一条支持的 user 消息时，才会用精简提示复用空闲 agent；更大的后缀会完全重放，且从不会用 `local.force` 代替生命周期或会话记录对齐
+
+## 用法
+
+```json
+{
+  "Router": {
+    "default": "cursor,composer-2",
+    "think": "cursor,claude-opus-4-8",
+    "background": "cursor,claude-haiku-4-5"
+  }
+}
+```
+
 ## 故障排除
 
-**找不到 Cursor API key**：将 `Providers[].api_key` 设为以 `crsr_` 开头的密钥，或导出 `CURSOR_API_KEY`。
+**找不到 Cursor API key**：将 `Providers[].api_key` 设为以 `crsr_` 开头的密钥，或导出 `CURSOR_API_KEY`。`$CURSOR_API_KEY` 这类占位符只有在环境变量真正被设置时才会生效。
 
 **密钥前缀错误**：Cursor 控制台密钥以 `crsr_` 开头，不是 `sk-`。
 
 **Node engines 错误**：本地安装 / 发布需要 Node **≥ 22.13.0**。
+
+**`ccr model get cursor` 没有返回模型**：确认认证以及提供商使用了 `cursor-sdk`。写入模型后请重启。
+
+**工具在 Cursor 内运行，而不是 Claude Code**：使用 `cursorMode: "bridge"`（默认），且不要启用会改变托管假设的不支持沙箱选项。
+
+**负载下会话被释放 / 流中断**：会话有上限（32），且在非进行中时会在 15 分钟后被空闲淘汰。长对话请优先使用稳定的会话头。
 
 ## 相关文档
 
