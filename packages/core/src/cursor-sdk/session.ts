@@ -9,6 +9,7 @@ import {
   type SDKMessage,
 } from "@cursor/sdk";
 import type { OpenAiUsage } from "./usage";
+import type { CursorTranscriptCommit } from "./turn-identity";
 import { ensureDenyHooksWorkspace } from "./hooks-template";
 import { EMPTY_HOST_ENVIRONMENT, type HostEnvironment } from "./host-env";
 import {
@@ -42,6 +43,13 @@ export type CursorSdkSession = {
   hostEnv: HostEnvironment;
   run?: Run;
   streamIterator?: AsyncIterator<any>;
+  /**
+   * The one outstanding `iterator.next()` owned by this SDK run. It survives
+   * the HTTP tool-call boundary so a continuation never starts a second
+   * consumer on Cursor's single-consumer iterator.
+   */
+  streamNext?: Promise<IteratorResult<any>>;
+  streamNextRunToken?: symbol;
   activeRunToken?: symbol;
   lastSdkUsageRaw?: OpenAiUsage;
   parked: ParkedTool[];
@@ -67,6 +75,13 @@ export type CursorSdkSession = {
   sendChain: Promise<void>;
   /** True after at least one successful `agent.send` on this session. */
   hasSentPrompt: boolean;
+  /**
+   * Exact host-visible transcript represented by this agent after the last
+   * completed response. Unknown means tail-only reuse is forbidden.
+   */
+  transcriptCommit?: CursorTranscriptCommit;
+  /** Agent/model/workspace/tool configuration paired with transcriptCommit. */
+  compatibilityStamp?: string;
   /** Fingerprint of the host env baked into the workspace rules/deny hooks. */
   guidanceFingerprint?: string;
   /**
@@ -100,6 +115,8 @@ export type CancelActiveRunResult = {
   skipped: boolean;
   hadRun: boolean;
   hadIterator: boolean;
+  runCancelFailed: boolean;
+  iteratorReturnFailed: boolean;
   failed: boolean;
   timedOut: boolean;
 };
@@ -133,6 +150,8 @@ export async function cancelActiveRun(
     skipped: false,
     hadRun: Boolean(session.run),
     hadIterator: Boolean(session.streamIterator),
+    runCancelFailed: false,
+    iteratorReturnFailed: false,
     failed: false,
     timedOut: false,
   };
@@ -141,13 +160,19 @@ export async function cancelActiveRun(
   }
   const run = session.run;
   const iterator = session.streamIterator;
+  const pendingNext = session.streamNext;
   session.run = undefined;
   session.streamIterator = undefined;
+  session.streamNext = undefined;
+  session.streamNextRunToken = undefined;
   session.activeRunToken = undefined;
   session.pendingEmit = [];
   session.pendingSdkMessages = [];
   session.notifyEmit();
   session.notifySdkMessage?.();
+  // The iterator cancellation below should settle this read. Keep a rejection
+  // handler attached after dropping session ownership.
+  void pendingNext?.catch(() => undefined);
 
   if (options.rejectParked && session.parked.length) {
     const reason = options.reason || "cursor-sdk run cancelled";
@@ -160,41 +185,50 @@ export async function cancelActiveRun(
     }
   }
 
-  if (iterator && typeof iterator.return === "function") {
+  const settleCancellation = async (
+    operation: () => Promise<unknown>,
+    timeoutMessage: string,
+    operationKind: "run" | "iterator"
+  ): Promise<void> => {
     try {
       await withTimeout(
-        iterator.return(undefined),
+        Promise.resolve().then(operation),
         options.timeoutMs ?? 2_000,
-        "cursor-sdk stream iterator return timed out"
+        timeoutMessage
       );
     } catch (err: any) {
       result.failed = true;
+      if (operationKind === "run") result.runCancelFailed = true;
+      if (operationKind === "iterator") result.iteratorReturnFailed = true;
       result.timedOut =
-        result.timedOut || /timed out/i.test(String(err?.message || err));
+        result.timedOut ||
+        String(err?.message || err).toLowerCase().includes("timed out");
     }
-  }
+  };
 
-  if (!run || run.status !== "running") {
-    if (result.failed && options.poisonOnFailure) {
-      markSessionPoisoned(
-        session,
-        options.reason || "cursor-sdk run cancellation did not complete"
-      );
-    }
-    return result;
-  }
-
-  try {
-    await withTimeout(
-      run.cancel(),
-      options.timeoutMs ?? 2_000,
-      "cursor-sdk run cancel timed out"
+  const cancellations: Promise<void>[] = [];
+  // Cancel the run before closing its async iterator. A real async generator's
+  // return() queues behind an outstanding next(), while run.cancel() is what
+  // releases that next(). Running both together also keeps one bounded deadline.
+  if (run?.status === "running") {
+    cancellations.push(
+      settleCancellation(
+        () => run.cancel(),
+        "cursor-sdk run cancel timed out",
+        "run"
+      )
     );
-  } catch (err: any) {
-    result.failed = true;
-    result.timedOut =
-      result.timedOut || /timed out/i.test(String(err?.message || err));
   }
+  if (iterator && typeof iterator.return === "function") {
+    cancellations.push(
+      settleCancellation(
+        () => iterator.return!(undefined),
+        "cursor-sdk stream iterator return timed out",
+        "iterator"
+      )
+    );
+  }
+  await Promise.all(cancellations);
 
   if (result.failed && options.poisonOnFailure) {
     markSessionPoisoned(
@@ -352,6 +386,7 @@ export function buildSessionKey(input: {
 export function isSessionInFlight(session: CursorSdkSession): boolean {
   return Boolean(
     session.streamIterator ||
+      session.streamNext ||
       session.activeRunToken ||
       session.parked.length > 0 ||
       session.pendingSdkMessages.length > 0 ||
@@ -365,6 +400,16 @@ export function touchSession(session: CursorSdkSession): void {
 
 export class SessionManager {
   private sessions = new Map<string, CursorSdkSession>();
+  /** Per-key teardown barriers so reconnects cannot overtake SDK cancellation. */
+  private retirements = new Map<
+    string,
+    {
+      tail: Promise<void>;
+      pending: Map<CursorSdkSession, Promise<boolean>>;
+    }
+  >();
+  /** Per-key creation barriers so retirement waiters cannot create sibling agents. */
+  private creations = new Map<string, Promise<void>>();
   private cleanupTimer?: ReturnType<typeof setInterval>;
   /** Epoch 0 so the first eviction tick performs a sweep. */
   private lastSweepAt = 0;
@@ -390,6 +435,75 @@ export class SessionManager {
     return session;
   }
 
+  async retireSession(
+    session: CursorSdkSession,
+    reason: string,
+    cleanup: () => Promise<boolean>
+  ): Promise<boolean> {
+    // Detach immediately even when another stale object with the same key is
+    // still cleaning up. A queued retirement must never leave this session
+    // available for another send.
+    markSessionPoisoned(session, reason);
+    if (this.sessions.get(session.key) === session) {
+      this.sessions.delete(session.key);
+    }
+
+    let queue = this.retirements.get(session.key);
+    if (!queue) {
+      queue = {
+        tail: Promise.resolve(),
+        pending: new Map<CursorSdkSession, Promise<boolean>>(),
+      };
+      this.retirements.set(session.key, queue);
+    }
+    const duplicate = queue.pending.get(session);
+    if (duplicate) {
+      await duplicate.catch(() => undefined);
+      return false;
+    }
+
+    const hasPendingCleanup = queue.pending.size > 0;
+    const previous = queue.tail;
+    const runCleanup = async () => {
+      this.logger?.debug?.(
+        {
+          sessionKey: session.key,
+          agentId: session.agentId,
+          reason,
+        },
+        "cursor-sdk session retirement started"
+      );
+      return cleanup();
+    };
+    // Preserve the existing synchronous-start behavior for the first cleanup.
+    // Later different-session objects are chained immediately into `tail`, so
+    // getOrCreate cannot slip into the gap between their cleanup operations.
+    const task = hasPendingCleanup
+      ? previous.then(runCleanup)
+      : runCleanup();
+    queue.pending.set(session, task);
+    const barrier = task.then(
+      () => undefined,
+      () => undefined
+    );
+    queue.tail = barrier;
+
+    try {
+      return await task;
+    } finally {
+      if (queue.pending.get(session) === task) {
+        queue.pending.delete(session);
+      }
+      if (
+        this.retirements.get(session.key) === queue &&
+        queue.tail === barrier &&
+        queue.pending.size === 0
+      ) {
+        this.retirements.delete(session.key);
+      }
+    }
+  }
+
   async getOrCreate(options: {
     key: string;
     apiKey: string;
@@ -399,57 +513,83 @@ export class SessionManager {
     sandboxEnabled?: boolean;
     hostEnv?: HostEnvironment;
   }): Promise<CursorSdkSession> {
-    const existing = this.get(options.key);
-    if (existing) return existing;
-
-    this.evictIfNeeded();
-
-    const hostEnv = options.hostEnv || EMPTY_HOST_ENVIRONMENT;
-    const workspaceDir =
-      options.mode === "agent" && options.cursorCwd
-        ? options.cursorCwd
-        : ensureWorkspace(options.key, hostEnv);
-
-    if (options.mode === "bridge") {
-      ensureDenyHooksWorkspace(workspaceDir, hostEnv);
+    // A client can reconnect before ReadableStream cancellation finishes, and
+    // several reconnects can wake together. Wait for both retirement and any
+    // in-progress replacement creation, then re-check the manager state.
+    while (true) {
+      const retirement = this.retirements.get(options.key);
+      if (retirement) {
+        await retirement.tail;
+        continue;
+      }
+      const existing = this.get(options.key);
+      if (existing) return existing;
+      const creation = this.creations.get(options.key);
+      if (!creation) break;
+      await creation;
     }
 
-    const agentMode = options.mode === "plan" ? "plan" : "agent";
-    const sandboxEnabled = shouldEnableCursorSandbox(options.sandboxEnabled);
-
-    const agent = await Agent.create({
-      apiKey: options.apiKey,
-      model: options.model,
-      name: `ccr-${options.key.slice(0, 8)}`,
-      mode: agentMode,
-      local: {
-        cwd: workspaceDir,
-        settingSources: [],
-        sandboxOptions: { enabled: sandboxEnabled },
-        enableAgentRetries: true,
-      },
+    let releaseCreation!: () => void;
+    const creation = new Promise<void>((resolve) => {
+      releaseCreation = resolve;
     });
+    this.creations.set(options.key, creation);
 
-    const session = this.createSessionRecord({
-      key: options.key,
-      agent,
-      mode: options.mode,
-      workspaceDir,
-      hostEnv,
-      guidanceFingerprint: hostEnv.fingerprint,
-    });
+    try {
+      this.evictIfNeeded();
 
-    this.sessions.set(options.key, session);
-    this.logger?.info?.(
-      {
-        sessionKey: options.key,
-        agentId: agent.agentId,
+      const hostEnv = options.hostEnv || EMPTY_HOST_ENVIRONMENT;
+      const workspaceDir =
+        options.mode === "agent" && options.cursorCwd
+          ? options.cursorCwd
+          : ensureWorkspace(options.key, hostEnv);
+
+      if (options.mode === "bridge") {
+        ensureDenyHooksWorkspace(workspaceDir, hostEnv);
+      }
+
+      const agentMode = options.mode === "plan" ? "plan" : "agent";
+      const sandboxEnabled = shouldEnableCursorSandbox(options.sandboxEnabled);
+
+      const agent = await Agent.create({
+        apiKey: options.apiKey,
+        model: options.model,
+        name: `ccr-${options.key.slice(0, 8)}`,
+        mode: agentMode,
+        local: {
+          cwd: workspaceDir,
+          settingSources: [],
+          sandboxOptions: { enabled: sandboxEnabled },
+          enableAgentRetries: true,
+        },
+      });
+
+      const session = this.createSessionRecord({
+        key: options.key,
+        agent,
         mode: options.mode,
-        sandboxEnabled,
-      },
-      "cursor-sdk session created"
-    );
-    return session;
+        workspaceDir,
+        hostEnv,
+        guidanceFingerprint: hostEnv.fingerprint,
+      });
+
+      this.sessions.set(options.key, session);
+      this.logger?.info?.(
+        {
+          sessionKey: options.key,
+          agentId: agent.agentId,
+          mode: options.mode,
+          sandboxEnabled,
+        },
+        "cursor-sdk session created"
+      );
+      return session;
+    } finally {
+      if (this.creations.get(options.key) === creation) {
+        this.creations.delete(options.key);
+      }
+      releaseCreation();
+    }
   }
 
   async resume(options: {
@@ -494,6 +634,20 @@ export class SessionManager {
   ): number {
     let resolved = 0;
     const unmatched: string[] = [];
+
+    // Ids are sanitized for Anthropic's tool_use.id alphabet, so two distinct
+    // upstream ids can in principle collapse onto one. findIndex+splice would
+    // then pair a result with the wrong call and never report it.
+    const duplicates = session.parked
+      .map((p) => p.id)
+      .filter((id, i, all) => id && all.indexOf(id) !== i);
+    if (duplicates.length) {
+      this.logger?.warn?.(
+        { sessionKey: session.key, duplicates: [...new Set(duplicates)] },
+        "cursor-sdk parked tools share an id; results may mispair"
+      );
+    }
+
     for (const result of results) {
       let idx = -1;
       if (result.toolCallId) {
@@ -552,6 +706,9 @@ export class SessionManager {
     markSessionPoisoned(session, reason);
     session.run = undefined;
     session.streamIterator = undefined;
+    void session.streamNext?.catch(() => undefined);
+    session.streamNext = undefined;
+    session.streamNextRunToken = undefined;
     session.activeRunToken = undefined;
     session.pendingEmit = [];
     session.pendingSdkMessages = [];

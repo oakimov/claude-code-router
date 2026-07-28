@@ -9,6 +9,10 @@ import { AnthropicTransformer } from "../transformer/anthropic.transformer";
 async function testCancelPropagatesToUpstreamReader() {
   let upstreamCancelReason: unknown = "not-called";
   let upstreamPulls = 0;
+  let releaseUpstreamCancel!: () => void;
+  const upstreamCancelGate = new Promise<void>((resolve) => {
+    releaseUpstreamCancel = resolve;
+  });
 
   const upstream = new ReadableStream<Uint8Array>({
     pull(controller) {
@@ -26,8 +30,9 @@ async function testCancelPropagatesToUpstreamReader() {
         new TextEncoder().encode(`data: ${JSON.stringify(chunk)}\n\n`)
       );
     },
-    cancel(reason) {
+    async cancel(reason) {
       upstreamCancelReason = reason;
+      await upstreamCancelGate;
     },
   });
 
@@ -54,9 +59,12 @@ async function testCancelPropagatesToUpstreamReader() {
   const reader = out.body.getReader();
   // Allow the Anthropic start() loop to acquire the upstream reader.
   await new Promise((r) => setTimeout(r, 20));
-  await reader.cancel("client_aborted");
+  let cancellationSettled = false;
+  const cancellation = reader.cancel("client_aborted").then(() => {
+    cancellationSettled = true;
+  });
 
-  // Give cancel() microtasks a chance to run.
+  // Give cancel() microtasks a chance to reach the upstream barrier.
   await new Promise((r) => setTimeout(r, 20));
 
   assert.equal(
@@ -64,6 +72,14 @@ async function testCancelPropagatesToUpstreamReader() {
     "client_aborted",
     "upstream ReadableStream.cancel must receive the client abort reason"
   );
+  assert.equal(
+    cancellationSettled,
+    false,
+    "downstream cancellation must await upstream teardown"
+  );
+  releaseUpstreamCancel();
+  await cancellation;
+  assert.equal(cancellationSettled, true);
   assert.ok(
     logs.some((msg) => msg.startsWith("cancel stream:")),
     `expected "cancel stream" log, got: ${JSON.stringify(logs)}`

@@ -190,7 +190,11 @@ The `cursor-sdk` transformer:
 - keeps Cursor caching native to the SDK agent session, while exposing bounded cache-read usage back to Claude Code from SDK usage deltas
 - forwards Cursor thinking from both `run.stream()` `thinking` messages and `Agent.send({ onDelta })` `thinking-delta` updates, then emits the Anthropic-compatible signature delta Claude Code expects
 - requires Claude Code's `"showThinkingSummaries": true` client setting for interactive display on Claude Code 2.1.89+; without it, CCR still transports the thinking block and Claude Code persists it, but the interactive UI hides the summary
-- treats client stop/interrupt as a real SDK cancellation with bounded cleanup, so the next Claude Code message can start a fresh Cursor run instead of waiting behind a stuck stream
+- classifies Claude Code's trailing turn once at the Anthropic boundary, using exact protocol markers rather than prompt-text regexes, and keeps that intent in request-local context instead of serializing it upstream
+- coalesces identical overlapping retries through one bounded, replayable response producer, so only one `agent.send` and one Cursor iterator consumer exist for a logical turn
+- treats the last-subscriber stop/interrupt as a real SDK cancellation and awaits bounded retirement before a replacement session can be created
+- resumes only a live parked run with an exact set of tool results and no meaningful steering; rejected-result plus replacement-text, unmatched/dead runs, cleanup failures, and transcript divergence retire the agent and replay the full transcript
+- reuses an idle agent with a slim prompt only when the next host transcript is the exact committed assistant text/tool calls plus one supported user message; larger suffixes are fully replayed, and `local.force` is never used as a substitute for lifecycle or transcript alignment
 
 ## Usage
 

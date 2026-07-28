@@ -1,4 +1,5 @@
 import { LLMProvider, UnifiedChatRequest } from "./llm";
+import type { UnifiedRequestRuntime } from "./turn-intent";
 
 export interface TransformerOptions {
   [key: string]: any;
@@ -18,6 +19,11 @@ interface TransformerWithInstanceName {
 export type TransformerConstructor = TransformerWithStaticName;
 
 export interface TransformerContext {
+  req?: any;
+  provider?: any;
+  signal?: AbortSignal;
+  /** Protocol semantics that must not be serialized into the provider body. */
+  unifiedRequest?: UnifiedRequestRuntime;
   [key: string]: any;
 }
 

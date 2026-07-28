@@ -1,4 +1,8 @@
 import type { UnifiedChatRequest, UnifiedMessage } from "@/types/llm";
+import {
+  ANTHROPIC_SYNTHETIC_INTERRUPT_MARKERS,
+  type UnifiedTurnIntent,
+} from "@/types/turn-intent";
 import type { SDKImage, SDKUserMessage } from "@cursor/sdk";
 import { contentToText, CUSTOM_USER_TOOLS_SERVER } from "./shared";
 import {
@@ -184,6 +188,33 @@ export function progressOnlyContinuationPrompt(
   return { text: lines.join(" ") };
 }
 
+function isSyntheticInterruptMarker(text: string): boolean {
+  const normalized = text.trim();
+  return ANTHROPIC_SYNTHETIC_INTERRUPT_MARKERS.some(
+    (marker) => normalized === marker
+  );
+}
+
+function hasMeaningfulUserContent(content: UnifiedMessage["content"]): boolean {
+  if (!Array.isArray(content)) {
+    const text = contentToText(content);
+    // Claude Code's interruption marker is protocol metadata, not steering.
+    // classifyAnthropicTurnIntent already excludes it; this fallback path runs
+    // when no turnIntent was recovered and must reach the same verdict.
+    return text.trim().length > 0 && !isSyntheticInterruptMarker(text);
+  }
+
+  return content.some((part) => {
+    if (!part || typeof part !== "object") return false;
+    if ("text" in part) {
+      const text = String((part as any).text || "");
+      return text.trim().length > 0 && !isSyntheticInterruptMarker(text);
+    }
+    // Images and any future non-text user content are real steering input.
+    return true;
+  });
+}
+
 /**
  * Flatten Unified chat history into a single SDK prompt for a fresh/continued send.
  * Live parked tool results are resolved via customTools.execute — not only this text.
@@ -196,6 +227,8 @@ export function toSdkPrompt(
     /** When true, only the latest user turn (+ guidance) is sent — session already has history. */
     followUpOnly?: boolean;
     hostEnv?: HostEnvironment;
+    /** Protocol semantics recovered before Anthropic content was flattened. */
+    turnIntent?: UnifiedTurnIntent;
   }
 ): SDKUserMessage {
   const messages = request.messages || [];
@@ -222,7 +255,12 @@ export function toSdkPrompt(
 
   const nonSystem = messages.filter((m) => m.role !== "system");
   const history = options.followUpOnly
-    ? nonSystem.slice(-Math.max(1, countTrailingToolRoundtrip(nonSystem) + 1))
+    ? nonSystem.slice(
+        -Math.max(
+          1,
+          countTrailingToolRoundtrip(nonSystem, options.turnIntent) + 1
+        )
+      )
     : nonSystem;
 
   let images: SDKImage[] = [];
@@ -266,24 +304,74 @@ export function toSdkPrompt(
   return images.length ? { text, images } : { text };
 }
 
-function countTrailingToolRoundtrip(messages: UnifiedMessage[]): number {
-  let n = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
+function countTrailingToolRoundtrip(
+  messages: UnifiedMessage[],
+  turnIntent?: UnifiedTurnIntent
+): number {
+  let i = messages.length - 1;
+  let syntheticUserCount = 0;
+  if (
+    turnIntent?.interruption === "synthetic_client_interrupt" &&
+    turnIntent.steering === "none" &&
+    messages[i]?.role === "user"
+  ) {
+    syntheticUserCount = 1;
+    i -= 1;
+  }
+
+  let toolCount = 0;
+  for (; i >= 0; i--) {
     if (messages[i].role === "tool") {
-      n++;
+      toolCount += 1;
       continue;
     }
     break;
   }
-  return n;
+  return toolCount > 0 ? syntheticUserCount + toolCount : 0;
 }
 
-export function extractTrailingToolResults(
-  request: UnifiedChatRequest
-): Array<{ toolCallId: string; content: string }> {
+export type TrailingCursorToolTurn = {
+  toolResults: Array<{
+    toolCallId: string;
+    content: string;
+    isError?: boolean;
+  }>;
+  /**
+   * Claude Code can reject a tool and append a replacement instruction in the
+   * same Anthropic user block. AnthropicTransformer splits that block into
+   * Unified `tool` then `user` messages. Only meaningful replacement content
+   * counts here; Claude Code's synthetic interruption marker alone does not.
+   */
+  hasTrailingUserInput: boolean;
+};
+
+export function analyzeTrailingCursorToolTurn(
+  request: UnifiedChatRequest,
+  turnIntent?: UnifiedTurnIntent
+): TrailingCursorToolTurn {
+  if (turnIntent) {
+    return {
+      toolResults: turnIntent.trailingToolResults.map((result) => ({
+        toolCallId: result.toolCallId,
+        content: result.content,
+        isError: result.isError,
+      })),
+      hasTrailingUserInput: turnIntent.steering === "meaningful",
+    };
+  }
+
   const results: Array<{ toolCallId: string; content: string }> = [];
   const messages = request.messages || [];
-  for (let i = messages.length - 1; i >= 0; i--) {
+  let i = messages.length - 1;
+  let hasTrailingUserInput = false;
+
+  while (i >= 0 && messages[i].role === "user") {
+    hasTrailingUserInput =
+      hasTrailingUserInput || hasMeaningfulUserContent(messages[i].content);
+    i -= 1;
+  }
+
+  for (; i >= 0; i--) {
     const msg = messages[i];
     if (msg.role !== "tool") break;
     results.unshift({
@@ -291,5 +379,16 @@ export function extractTrailingToolResults(
       content: contentToText(msg.content),
     });
   }
-  return results;
+
+  return {
+    toolResults: results,
+    hasTrailingUserInput,
+  };
+}
+
+export function extractTrailingToolResults(
+  request: UnifiedChatRequest,
+  turnIntent?: UnifiedTurnIntent
+): Array<{ toolCallId: string; content: string }> {
+  return analyzeTrailingCursorToolTurn(request, turnIntent).toolResults;
 }

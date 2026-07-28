@@ -15,6 +15,8 @@ import { v4 as uuidv4 } from "uuid";
 import { createApiError } from "@/api/middleware";
 import { formatBase64 } from "@/utils/image";
 import { applyRawAnthropicPromptCaching } from "@/utils/cacheControl";
+import { sanitizeToolCallId } from "@/utils/toolCallId";
+import { buildAnthropicRequestRuntime } from "@/types/turn-intent";
 
 function toAnthropicCacheUsage(usage: any): Record<string, number> {
   const cached = usage?.prompt_tokens_details?.cached_tokens || 0;
@@ -65,8 +67,12 @@ export class AnthropicTransformer implements Transformer {
 
   async transformRequestOut(
     request: Record<string, any>,
-    context?: any
+    context?: TransformerContext
   ): Promise<UnifiedChatRequest> {
+    if (context) {
+      context.unifiedRequest = buildAnthropicRequestRuntime(request);
+    }
+
     const messages: UnifiedMessage[] = [];
 
     if (request.system) {
@@ -120,7 +126,8 @@ export class AnthropicTransformer implements Transformer {
                           .map((c: any) => c.text)
                           .join("\n") || JSON.stringify(tool.content)
                       : JSON.stringify(tool.content),
-                  tool_call_id: tool.tool_use_id,
+                  tool_call_id:
+                    sanitizeToolCallId(tool.tool_use_id) ?? tool.tool_use_id,
                   cache_control: tool.cache_control,
                 };
                 messages.push(toolMessage);
@@ -182,7 +189,7 @@ export class AnthropicTransformer implements Transformer {
             if (toolCallParts.length) {
               assistantMessage.tool_calls = toolCallParts.map((tool: any) => {
                 return {
-                  id: tool.id,
+                  id: sanitizeToolCallId(tool.id) ?? tool.id,
                   type: "function" as const,
                   function: {
                     name: tool.name,
@@ -353,7 +360,10 @@ export class AnthropicTransformer implements Transformer {
         // Unified tool messages → Anthropic tool_result blocks, merged into preceding user message
         const toolResult: any = {
           type: "tool_result",
-          tool_use_id: msg.tool_call_id,
+          // Sanitized on both sides of the pair so ids minted before the fix
+          // (or by any provider using a non-conforming alphabet) still match.
+          tool_use_id:
+            sanitizeToolCallId(msg.tool_call_id) ?? msg.tool_call_id,
           content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
           ...(msg.cache_control ? { cache_control: msg.cache_control } : {}),
         };
@@ -393,7 +403,7 @@ export class AnthropicTransformer implements Transformer {
             try { input = JSON.parse(tc.function.arguments || "{}"); } catch (e) { (logger?.error ?? console.error)("Failed to parse tool_call arguments for tool '%s': %s", tc.function.name, e); }
             content.push({
               type: "tool_use",
-              id: tc.id,
+              id: sanitizeToolCallId(tc.id) ?? tc.id,
               name: tc.function.name,
               input,
               ...(tc.cache_control
@@ -1031,8 +1041,13 @@ export class AnthropicTransformer implements Transformer {
                         )}\n\n`
                       )
                     );
-                    currentContentBlockIndex = -1;
                   });
+                  // Annotation blocks open and close within this loop, so they
+                  // never become "current". Clearing currentContentBlockIndex
+                  // here would strand a block this loop did not close — a
+                  // tool_use still streaming arguments (the close above is
+                  // gated on hasTextContentStarted) is only reachable through
+                  // this index, and every later close path requires it >= 0.
                 }
 
                 if (choice?.delta?.tool_calls && !isClosed && !hasFinished) {
@@ -1065,14 +1080,25 @@ export class AnthropicTransformer implements Transformer {
                         );
                         currentContentBlockIndex = -1;
                       }
+                      // Text/thinking bookkeeping is sticky across block opens.
+                      // Leaving hasTextContentStarted true makes a later
+                      // delta.content emit text_delta against this tool_use
+                      // index — Claude Code then drops the turn with
+                      // "Content block is not a text block".
+                      hasTextContentStarted = false;
+                      isThinkingStarted = false;
 
                       const newContentBlockIndex = assignContentBlockIndex();
                       toolCallIndexToContentBlockIndex.set(
                         toolCallIndex,
                         newContentBlockIndex
                       );
+                      // Last line of defence: an id that leaves here unsanitized
+                      // is echoed back by the client on every later request and
+                      // poisons the conversation permanently.
                       const toolCallId =
-                        toolCall.id || `call_${Date.now()}_${toolCallIndex}`;
+                        sanitizeToolCallId(toolCall.id) ||
+                        `call_${Date.now()}_${toolCallIndex}`;
                       const toolCallName =
                         toolCall.function?.name || `tool_${toolCallIndex}`;
                       const contentBlockStart = {
@@ -1258,14 +1284,17 @@ export class AnthropicTransformer implements Transformer {
           }
         }
       },
-      cancel: (reason) => {
+      cancel: async (reason) => {
         // Stop pumping / enqueueing, then cancel the upstream reader so owns-fetch
         // providers (Cursor SDK) receive ReadableStream.cancel → run.cancel().
         markClosed?.();
         const pending = upstreamReader;
         upstreamReader = null;
         if (pending) {
-          void pending.cancel(reason).catch(() => undefined);
+          // Propagate the teardown promise too. Otherwise Readable.fromWeb()
+          // reports cancellation complete while the Cursor SDK run is still
+          // active, letting a reconnect race the old agent cleanup.
+          await pending.cancel(reason).catch(() => undefined);
         }
         this.logger.debug(
           {
@@ -1353,7 +1382,7 @@ export class AnthropicTransformer implements Transformer {
 
           content.push({
             type: "tool_use",
-            id: toolCall.id,
+            id: sanitizeToolCallId(toolCall.id) ?? toolCall.id,
             name: toolCall.function.name,
             input: parsedInput,
           });

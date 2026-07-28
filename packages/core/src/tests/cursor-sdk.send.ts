@@ -19,6 +19,29 @@ async function main() {
     true
   );
 
+  // Both matchers gate retire-and-replay. Substring matches that are too broad
+  // silently churn healthy sessions on unrelated failures.
+  for (const notBusy of [
+    "Agent abc has no active run to cancel",
+    "active runtime failure while starting the agent",
+  ]) {
+    assert.equal(isCursorAgentBusyError(new Error(notBusy)), false, notBusy);
+  }
+  for (const notPoison of [
+    "Failed to access network filesystem path /mnt/share",
+    "tool wrote to the network drive",
+  ]) {
+    assert.equal(isCursorSendPoisonError(new Error(notPoison)), false, notPoison);
+  }
+  for (const poison of [
+    "network error while contacting Cursor",
+    "network request failed",
+    "network timeout after 30s",
+    "network connection reset",
+  ]) {
+    assert.equal(isCursorSendPoisonError(new Error(poison)), true, poison);
+  }
+
   const sendOptionsSeen: any[] = [];
   const customTools = { tools: [] };
   const fakeRun = {
@@ -50,15 +73,16 @@ async function main() {
     },
   };
 
-  const run = await sendCursorPrompt(
-    busySession,
-    { text: "hello" } as any,
-    { mode: "agent", local: { customTools } }
+  await assert.rejects(
+    sendCursorPrompt(
+      busySession,
+      { text: "hello" } as any,
+      { mode: "agent", local: { customTools } }
+    ),
+    /already has active run/
   );
-  assert.equal(run, fakeRun);
-  assert.equal(sendOptionsSeen.length, 2);
+  assert.equal(sendOptionsSeen.length, 1);
   assert.deepEqual(sendOptionsSeen[0].local, { customTools });
-  assert.deepEqual(sendOptionsSeen[1].local, { customTools, force: true });
 
   let shouldNotSend = false;
   const alreadyAborted = new AbortController();
@@ -109,6 +133,7 @@ async function main() {
     ...fakeRun,
     cancel: async () => {
       cancelledLateRun = true;
+      throw new Error("late run cancellation failed");
     },
   });
   await new Promise((resolve) => setTimeout(resolve, 0));

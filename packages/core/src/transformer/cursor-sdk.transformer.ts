@@ -1,5 +1,9 @@
 import type { UnifiedChatRequest } from "@/types/llm";
-import type { Transformer, TransformerOptions } from "@/types/transformer";
+import type {
+  Transformer,
+  TransformerContext,
+  TransformerOptions,
+} from "@/types/transformer";
 import { runCursor, type CursorSdkRunnerOptions } from "@/cursor-sdk/runner";
 import {
   CURSOR_SDK_TRANSFORMER_NAME,
@@ -16,6 +20,22 @@ export interface CursorSdkTransformerOptions extends TransformerOptions {
   cursorCwd?: string;
   /** Opt-in only; forced off in Docker. Default false. */
   sandboxEnabled?: boolean;
+}
+
+export function buildCursorSdkRunnerOptions(
+  options: CursorSdkTransformerOptions,
+  context?: TransformerContext,
+  logger?: any
+): CursorSdkRunnerOptions {
+  return {
+    cursorMode: (options.cursorMode as CursorSdkMode) || DEFAULT_CURSOR_MODE,
+    cursorCwd: options.cursorCwd,
+    sandboxEnabled: options.sandboxEnabled,
+    abortSignal: context?.signal,
+    logger,
+    turnIntent: context?.unifiedRequest?.turnIntent,
+    sourceSessionIdentity: context?.unifiedRequest?.sourceSessionIdentity,
+  };
 }
 
 /**
@@ -38,18 +58,13 @@ export class CursorSdkTransformer implements Transformer {
   async transformRequestIn(
     request: UnifiedChatRequest,
     provider: any,
-    context?: any
+    context?: TransformerContext
   ): Promise<Record<string, any>> {
-    const cursorMode =
-      (this.options.cursorMode as CursorSdkMode) || DEFAULT_CURSOR_MODE;
-
-    const runnerOptions: CursorSdkRunnerOptions = {
-      cursorMode,
-      cursorCwd: this.options.cursorCwd,
-      sandboxEnabled: this.options.sandboxEnabled,
-      abortSignal: context?.signal,
-      logger: this.logger,
-    };
+    const runnerOptions = buildCursorSdkRunnerOptions(
+      this.options,
+      context,
+      this.logger
+    );
 
     const nativeRequest = {
       ...request,

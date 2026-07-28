@@ -9,37 +9,41 @@ export const CURSOR_SEND_TIMEOUT_MESSAGE = "Cursor SDK agent.send timed out";
 export function isCursorAgentBusyError(err: unknown): boolean {
   const e = (err || {}) as { name?: unknown; message?: unknown; status?: unknown };
   const name = typeof e.name === "string" ? e.name : "";
-  const message = typeof e.message === "string" ? e.message : String(err);
+  const message = (
+    typeof e.message === "string" ? e.message : String(err)
+  ).toLowerCase();
   return (
     name === "AgentBusyError" ||
     e.status === 409 ||
-    /already has active run|active run|agent busy/i.test(message)
+    // Anchored to the SDK's phrasing. A bare "active run" also matches
+    // "no active run" and "active runtime …", which are not busy signals.
+    message.includes("already has active run") ||
+    message.includes("agent busy")
   );
 }
 
 export function isCursorSendPoisonError(err: unknown): boolean {
   const e = (err || {}) as { name?: unknown; message?: unknown; status?: unknown };
   const name = typeof e.name === "string" ? e.name : "";
-  const message = typeof e.message === "string" ? e.message : String(err);
+  const message = (
+    typeof e.message === "string" ? e.message : String(err)
+  ).toLowerCase();
   return (
     name === "AgentNotFoundError" ||
     name === "NetworkError" ||
     e.status === 503 ||
     e.status === 504 ||
-    /agent not found|request aborted (?:before|during) send|agent\.send timed out|network/i.test(
-      message
-    )
+    message.includes("agent not found") ||
+    message.includes("request aborted before send") ||
+    message.includes("request aborted during send") ||
+    message.includes("agent.send timed out") ||
+    // Only genuine transport failures. A bare "network" also matches messages
+    // like "Failed to access network filesystem path", which is not poison.
+    message.includes("network error") ||
+    message.includes("network request failed") ||
+    message.includes("network timeout") ||
+    message.includes("network connection")
   );
-}
-
-function withLocalForce(sendOptions: Record<string, any>): Record<string, any> {
-  return {
-    ...sendOptions,
-    local: {
-      ...(sendOptions.local || {}),
-      force: true,
-    },
-  };
 }
 
 function abortRace(abortSignal?: AbortSignal):
@@ -87,13 +91,10 @@ async function sendAttempt(
   } catch (err) {
     if (sendPromise) {
       void sendPromise
-        .then((run) => {
-          try {
-            void run.cancel();
-          } catch {
-            // ignore
-          }
-        })
+        // A timed-out/aborted send may still resolve with a live run. Chain its
+        // cancellation so both synchronous throws and async rejections are
+        // observed instead of becoming process-level unhandled rejections.
+        .then((run) => run.cancel())
         .catch(() => undefined);
     }
     throw err;
@@ -111,21 +112,5 @@ export async function sendCursorPrompt(
     logger?: any;
   } = {}
 ) {
-  try {
-    return await sendAttempt(session, prompt, sendOptions, options.abortSignal);
-  } catch (err) {
-    if (options.abortSignal?.aborted || !isCursorAgentBusyError(err)) {
-      throw err;
-    }
-    options.logger?.warn?.(
-      { err, sessionKey: session.key, agentId: session.agentId },
-      "cursor-sdk agent busy; retrying send with local.force"
-    );
-    return sendAttempt(
-      session,
-      prompt,
-      withLocalForce(sendOptions),
-      options.abortSignal
-    );
-  }
+  return sendAttempt(session, prompt, sendOptions, options.abortSignal);
 }

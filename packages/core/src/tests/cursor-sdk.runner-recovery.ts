@@ -96,6 +96,7 @@ async function main() {
   const oldPrompts: string[] = [];
   const oldOptions: any[] = [];
   const freshPrompts: string[] = [];
+  const freshOptions: any[] = [];
   const invalidated: string[] = [];
 
   const oldSession = fakeSession({
@@ -114,8 +115,9 @@ async function main() {
     key: "runner-recovery",
     agentId: "fresh-agent",
     hasSentPrompt: false,
-    async send(prompt) {
+    async send(prompt, options) {
       freshPrompts.push(prompt.text);
+      freshOptions.push(options);
       return fakeRun("fresh response");
     },
   });
@@ -149,12 +151,11 @@ async function main() {
     const body = await response.text();
 
     assert.equal(getCalls, 2);
-    assert.equal(oldOptions.length, 2);
-    assert.equal(oldOptions[1].local.force, true);
-    assert.equal(oldPrompts.every((text) => text.includes("[user]\nsecond user")), true);
-    assert.equal(oldPrompts.some((text) => text.includes("first answer")), false);
+    assert.equal(oldOptions.length, 0);
+    assert.equal(oldPrompts.length, 0);
     assert.equal(invalidated.some((entry) => entry.startsWith("old-agent:")), true);
     assert.equal(freshPrompts.length, 1);
+    assert.equal(freshOptions[0]?.local?.force, undefined);
     assert.match(freshPrompts[0], /\[user\]\nfirst user/);
     assert.match(freshPrompts[0], /\[assistant\]\nfirst answer/);
     assert.match(freshPrompts[0], /\[user\]\nsecond user/);

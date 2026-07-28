@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import type { SDKCustomTool, SDKCustomToolResult, SDKJsonValue } from "@cursor/sdk";
 import type { UnifiedChatRequest } from "@/types/llm";
 import { EMPTY_HOST_ENVIRONMENT } from "./host-env";
+import { sanitizeToolCallId } from "@/utils/toolCallId";
 import type { CursorSdkSession } from "./session";
 import {
   buildScratchPathCorrection,
@@ -68,7 +69,11 @@ export function toCustomTools(
       description: tool.function.description || `Claude Code host tool: ${name}`,
       inputSchema: normalizeInputSchema(tool.function.parameters),
       async execute(args, context) {
-        const toolCallId = context.toolCallId || randomUUID();
+        // The SDK hands back two ids joined by a newline (`call-…-3\nfc_…_0`).
+        // Anthropic rejects the whole request if that reaches a tool_use.id,
+        // and the bad id would persist in the transcript for every later turn.
+        const toolCallId =
+          sanitizeToolCallId(context.toolCallId) || randomUUID();
         const toolArgs = (args || {}) as Record<string, unknown>;
         const hostEnv = session.hostEnv || EMPTY_HOST_ENVIRONMENT;
 

@@ -119,6 +119,165 @@ async function testThinkingAfterTextOpensNewThinkingBlock() {
   assert.equal(starts, stops, "every content block must be closed exactly once");
 }
 
+/**
+ * Annotations must not strand the block they interrupt. The annotation loop
+ * opens and closes its own blocks, so clearing currentContentBlockIndex there
+ * orphans a tool_use that is still streaming — every later close path is gated
+ * on that index, so the block would never be closed at all.
+ *
+ * The close before annotations is deliberately limited to text blocks: a
+ * tool_use may still be streaming argument JSON, and closing it early would
+ * emit input_json_delta after content_block_stop. So the tool_use has to stay
+ * open across the annotation and be closed afterwards, not before.
+ */
+async function testAnnotationsDoNotStrandOpenBlocks() {
+  const cases: Array<{ name: string; chunks: Array<Record<string, unknown>> }> = [
+    {
+      name: "tool_use → annotations → text",
+      chunks: [
+        chunk({
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { name: "Bash", arguments: '{"command":"ls"}' },
+            },
+          ],
+        }),
+        chunk({
+          annotations: [
+            { url_citation: { url: "https://example.test", title: "Example" } },
+          ],
+        }),
+        chunk({ content: "after citations" }),
+        chunk({}, "stop"),
+      ],
+    },
+    {
+      name: "annotations arriving mid tool_use arguments",
+      chunks: [
+        chunk({
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { name: "Bash", arguments: '{"command":' },
+            },
+          ],
+        }),
+        chunk({
+          annotations: [
+            { url_citation: { url: "https://example.test", title: "Example" } },
+          ],
+        }),
+        chunk({ tool_calls: [{ index: 0, function: { arguments: '"ls"}' } }] }),
+        chunk({}, "stop"),
+      ],
+    },
+  ];
+
+  for (const { name, chunks: streamChunks } of cases) {
+    const events = await collectEvents(streamChunks);
+
+    const opened = new Set<number>();
+    const closed = new Set<number>();
+    for (const e of events) {
+      if (e.event === "content_block_start") opened.add(e.data.index);
+      if (e.event === "content_block_stop") closed.add(e.data.index);
+    }
+
+    const leaked = [...opened].filter((i) => !closed.has(i));
+    assert.deepEqual(
+      leaked,
+      [],
+      `${name}: block(s) ${leaked.join(",")} opened but never closed`
+    );
+
+    // A delta after its block closed is a protocol violation — the client has
+    // already committed the block and cannot accept more content for it.
+    const stopped = new Set<number>();
+    for (const e of events) {
+      if (e.event === "content_block_stop") stopped.add(e.data.index);
+      if (e.event === "content_block_delta") {
+        assert.equal(
+          stopped.has(e.data.index),
+          false,
+          `${name}: ${e.data.delta.type} arrived after content_block_stop on index ${e.data.index}`
+        );
+      }
+    }
+
+    for (const index of closed) {
+      const stops = events.filter(
+        (e) => e.event === "content_block_stop" && e.data.index === index
+      ).length;
+      assert.equal(stops, 1, `${name}: index ${index} closed ${stops} times`);
+    }
+  }
+}
+
+/**
+ * text → tool_use → text must open a fresh text block. If hasTextContentStarted
+ * stays sticky after tool_use opens, text_delta lands on the tool_use index and
+ * Claude Code drops the turn with "Content block is not a text block".
+ */
+async function testTextAfterToolUseOpensNewTextBlock() {
+  const events = await collectEvents([
+    chunk({ content: "hello" }),
+    chunk({
+      tool_calls: [
+        {
+          index: 0,
+          id: "call_1",
+          type: "function",
+          function: { name: "Bash", arguments: '{"command":"ls"}' },
+        },
+      ],
+    }),
+    chunk({ content: "after tools" }),
+    chunk({}, "stop"),
+  ]);
+
+  const blockTypes = new Map<number, string>();
+  for (const e of events) {
+    if (e.event === "content_block_start") {
+      blockTypes.set(e.data.index, e.data.content_block.type);
+    }
+  }
+
+  for (const e of events) {
+    if (e.event !== "content_block_delta") continue;
+    const type = blockTypes.get(e.data.index);
+    if (e.data.delta.type === "text_delta") {
+      assert.equal(
+        type,
+        "text",
+        `text_delta landed on a ${type} block (index ${e.data.index})`
+      );
+    }
+    if (e.data.delta.type === "input_json_delta") {
+      assert.equal(
+        type,
+        "tool_use",
+        `input_json_delta landed on a ${type} block (index ${e.data.index})`
+      );
+    }
+  }
+
+  const textBlocks = [...blockTypes.entries()].filter(([, type]) => type === "text");
+  assert.equal(
+    textBlocks.length,
+    2,
+    "expected a second text block after tool_use"
+  );
+
+  const starts = events.filter((e) => e.event === "content_block_start").length;
+  const stops = events.filter((e) => e.event === "content_block_stop").length;
+  assert.equal(starts, stops, "every content block must be closed exactly once");
+}
+
 /** An empty tool_calls delta must not claim tool_use. */
 async function testEmptyToolCallsDeltaKeepsEndTurn() {
   const events = await collectEvents([
@@ -250,6 +409,8 @@ async function testNonStreamingBlockOrder() {
 
 async function main() {
   await testThinkingAfterTextOpensNewThinkingBlock();
+  await testTextAfterToolUseOpensNewTextBlock();
+  await testAnnotationsDoNotStrandOpenBlocks();
   await testEmptyToolCallsDeltaKeepsEndTurn();
   await testStreamedToolUseUpgradesStopReason();
   await testNonStreamingBlockOrder();
