@@ -23,23 +23,6 @@ declare module 'minimist' {
   export = minimist;
 }
 
-declare module '@inquirer/prompts' {
-  export function select<T>(config: {
-    message: string;
-    choices: Array<{ name: string; value: T; description?: string }>;
-    pageSize?: number;
-  }): Promise<T>;
-  export function input(config: {
-    message: string;
-    default?: string;
-    validate?: (value: string) => boolean | string | Promise<boolean | string>;
-  }): Promise<string>;
-  export function confirm(config: {
-    message: string;
-    default?: boolean;
-  }): Promise<boolean>;
-}
-
 declare module 'find-process' {
   export default function find(
     type: 'pid' | 'name' | 'port',

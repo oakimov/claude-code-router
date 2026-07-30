@@ -43,3 +43,20 @@ Gemini Nano can enter deterministic loops when emitting highly structured conten
 - [x] Decision: keep grounding uniform across models; rely on `scratchPathViolations` for monitoring.
 - **Measurement**: guidance + tail reminder is 2,002 chars ≈ **501 tokens**. Real Claude Code turns on a live `glm-5.2` session measured 39.8k–53.5k prompt tokens, so the cost is **~1%**, and it sits at the head of the prompt where Cursor's cache absorbs it (one turn reported 583,872 of 651,111 raw prompt tokens as cached).
 - **Why not adaptive**: escalating only after a violation means shipping weaker defaults and waiting for a user-visible failure to trigger the fix, in exchange for ~1%.
+
+## 🔒 Temporary security overrides (`pnpm-workspace.yaml`)
+
+These pins clear product high-severity advisories that cannot be fixed by upgrading our direct deps alone. Remove each override once upstream ships a clean tree.
+
+### 1. `undici@<6.27.0` → `^6.28.0`
+- [ ] Drop when `@cursor/sdk` no longer pulls vulnerable `undici@5.x`.
+- **Why**: `@cursor/sdk` → `@connectrpc/connect-node@1.x` declares `undici: ^5.28.4`. Patched undici for the WebSocket GHSAs is `>=6.27`. Connect-node only uses undici for a Node `<18` `Headers` polyfill (dead on our Node `>=22.13`); the package must still resolve at load time.
+- **Scope**: version selector `<6.27.0` so `@caeliq/llms`'s direct `undici@^7` stays untouched.
+- **Exit**: Cursor ships SDK on `@connectrpc/connect-node@2.x` (no undici dep) or connect-node 1.x raises its undici range; then delete the override and re-audit.
+
+### 2. `react-router-dom>react-router` → `8.3.0`
+- [ ] Drop when `react-router-dom` ships a line that depends on `react-router>=8.3.0` (or migrate UI to RR v8 properly).
+- **Why**: GHSA-qwww-vcr4-c8h2 (RSC CSRF) needs `react-router>=8.3.0`. Latest `react-router-dom` is still `7.18.2` (pins `react-router@7.18.2`). UI is a SPA (`createMemoryRouter`) and does not use RSC; the override is audit hygiene, not an RSC feature enablement.
+- **Scope**: nested under `react-router-dom` so Docusaurus (RR 5) is not force-upgraded.
+- **Peers**: UI `react` / `react-dom` bumped to `^19.2.7` for RR 8 peers. `pnpm peers check` may still warn about docs' React 18 vs RR 8 in the workspace graph — ignore unless docs paths resolve RR 8.
+- **Exit**: bump `packages/ui` to `react-router-dom@8` when published; remove the nested override and re-audit.

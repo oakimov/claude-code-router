@@ -121,6 +121,17 @@ export type CancelActiveRunResult = {
   timedOut: boolean;
 };
 
+const CURSOR_AGENT_DISPOSE_TIMEOUT_MS = 2_000;
+
+function isAbortError(error: unknown): boolean {
+  const candidate = error as { name?: unknown; message?: unknown };
+  return (
+    candidate?.name === "AbortError" ||
+    String(candidate?.message || error).toLowerCase() ===
+      "this operation was aborted"
+  );
+}
+
 export function markSessionPoisoned(
   session: CursorSdkSession,
   reason: string
@@ -428,7 +439,17 @@ export class SessionManager {
   get(key: string): CursorSdkSession | undefined {
     const session = this.sessions.get(key);
     if (session?.poisoned) {
-      this.invalidate(session, session.poisonReason || "cursor-sdk session poisoned");
+      const reason =
+        session.poisonReason || "cursor-sdk session poisoned";
+      void this.retireSession(session, reason, async () => {
+        await this.invalidate(session, reason);
+        return true;
+      }).catch((err) => {
+        this.logger?.warn?.(
+          { err, sessionKey: session.key, agentId: session.agentId, reason },
+          "cursor-sdk poisoned session retirement failed"
+        );
+      });
       return undefined;
     }
     if (session) touchSession(session);
@@ -524,6 +545,13 @@ export class SessionManager {
       }
       const existing = this.get(options.key);
       if (existing) return existing;
+      // get() starts a retirement when it discovers a poisoned session.
+      // Re-check before creating so disposal cannot be overtaken.
+      const discoveredRetirement = this.retirements.get(options.key);
+      if (discoveredRetirement) {
+        await discoveredRetirement.tail;
+        continue;
+      }
       const creation = this.creations.get(options.key);
       if (!creation) break;
       await creation;
@@ -681,27 +709,29 @@ export class SessionManager {
   async dispose(key: string): Promise<void> {
     const session = this.sessions.get(key);
     if (!session) return;
-    this.sessions.delete(key);
-    await cancelActiveRun(session, {
-      rejectParked: true,
-      reason: "cursor-sdk session disposed",
+    const reason = "cursor-sdk session disposed";
+    await this.retireSession(session, reason, async () => {
+      await cancelActiveRun(session, {
+        rejectParked: true,
+        reason,
+      });
+      await this.disposeAgent(session, reason);
+      // Scratch workspaces are per-session and hold only generated files. Left
+      // behind they accumulate forever on the mounted config volume.
+      removeManagedWorkspace(session.workspaceDir, this.logger);
+      return true;
     });
-    try {
-      session.agent.close();
-    } catch {
-      // ignore
-    }
-    // Scratch workspaces are per-session and hold only generated files. Left
-    // behind they accumulate forever on the mounted config volume.
-    removeManagedWorkspace(session.workspaceDir, this.logger);
   }
 
-  invalidate(sessionOrKey: CursorSdkSession | string, reason: string): void {
+  invalidate(
+    sessionOrKey: CursorSdkSession | string,
+    reason: string
+  ): Promise<void> {
     const session =
       typeof sessionOrKey === "string"
         ? this.sessions.get(sessionOrKey)
         : sessionOrKey;
-    if (!session) return;
+    if (!session) return Promise.resolve();
 
     markSessionPoisoned(session, reason);
     session.run = undefined;
@@ -726,11 +756,6 @@ export class SessionManager {
     if (this.sessions.get(session.key) === session) {
       this.sessions.delete(session.key);
     }
-    try {
-      session.agent.close();
-    } catch {
-      // ignore
-    }
     this.logger?.warn?.(
       {
         sessionKey: session.key,
@@ -739,6 +764,41 @@ export class SessionManager {
       },
       "cursor-sdk session invalidated"
     );
+    return this.disposeAgent(session, reason);
+  }
+
+  private async disposeAgent(
+    session: CursorSdkSession,
+    reason: string
+  ): Promise<void> {
+    try {
+      // SDKAgent.close() is fire-and-forget and leaves releaseExecutorLease()
+      // unobserved. The SDK's canonical async disposer owns that promise.
+      // Attach a catch before racing the timeout so a late AbortError cannot
+      // become an unhandledRejection after withTimeout has already rejected.
+      const disposal = session.agent[Symbol.asyncDispose]();
+      void disposal.catch(() => undefined);
+      await withTimeout(
+        disposal,
+        CURSOR_AGENT_DISPOSE_TIMEOUT_MS,
+        "cursor-sdk agent disposal timed out"
+      );
+    } catch (err) {
+      const details = {
+        err,
+        sessionKey: session.key,
+        agentId: session.agentId,
+        reason,
+      };
+      if (isAbortError(err)) {
+        this.logger?.debug?.(
+          details,
+          "cursor-sdk agent disposal observed expected cancellation"
+        );
+      } else {
+        this.logger?.warn?.(details, "cursor-sdk agent disposal failed");
+      }
+    }
   }
 
   private createSessionRecord(input: {

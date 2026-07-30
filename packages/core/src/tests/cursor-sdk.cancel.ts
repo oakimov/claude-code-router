@@ -117,7 +117,13 @@ async function main() {
   assert.equal(generatorCancellation.iteratorReturnFailed, false);
   assert.equal(generatorSession.poisoned, undefined);
 
-  let closed = false;
+  const unhandledRejections: unknown[] = [];
+  const onUnhandledRejection = (reason: unknown) => {
+    unhandledRejections.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+  let closeCalled = false;
+  let disposed = false;
   let invalidatedRejected = false;
   const manager = new SessionManager();
   const invalidatedSession: any = {
@@ -125,7 +131,13 @@ async function main() {
     agentId: "agent-poisoned",
     agent: {
       close() {
-        closed = true;
+        closeCalled = true;
+      },
+      async [Symbol.asyncDispose]() {
+        disposed = true;
+        throw Object.assign(new Error("This operation was aborted"), {
+          name: "AbortError",
+        });
       },
     },
     pendingEmit: [{ id: "old", name: "Bash", args: {} }],
@@ -145,7 +157,12 @@ async function main() {
     },
   };
   (manager as any).sessions.set("poisoned-session", invalidatedSession);
-  manager.invalidate(invalidatedSession, "unsafe for reuse");
+  try {
+    await manager.invalidate(invalidatedSession, "unsafe for reuse");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+  }
   assert.equal(manager.get("poisoned-session"), undefined);
   assert.equal(invalidatedSession.poisoned, true);
   assert.equal(invalidatedSession.run, undefined);
@@ -157,15 +174,24 @@ async function main() {
   assert.equal(invalidatedRejected, true);
   assert.equal(invalidatedSession.invalidatedNotified, true);
   assert.equal(invalidatedSession.invalidatedSdkNotified, true);
-  assert.equal(closed, true);
+  assert.equal(closeCalled, false);
+  assert.equal(disposed, true);
+  assert.deepEqual(unhandledRejections, []);
 
-  let retirementClosed = false;
+  let retirementDisposalStarted = false;
+  let retirementDisposed = false;
+  let releaseAgentDisposal!: () => void;
+  const agentDisposalGate = new Promise<void>((resolve) => {
+    releaseAgentDisposal = resolve;
+  });
   const retiringSession: any = {
     key: "retiring-session",
     agentId: "agent-retiring",
     agent: {
-      close() {
-        retirementClosed = true;
+      async [Symbol.asyncDispose]() {
+        retirementDisposalStarted = true;
+        await agentDisposalGate;
+        retirementDisposed = true;
       },
     },
     run: { status: "running", cancel: async () => undefined },
@@ -189,7 +215,7 @@ async function main() {
     async () => {
       retirementCleanupStarted = true;
       await retirementGate;
-      manager.invalidate(retiringSession, "retirement finished");
+      await manager.invalidate(retiringSession, "retirement finished");
       return true;
     }
   );
@@ -200,7 +226,7 @@ async function main() {
     retiringSession.streamIterator,
     "retirement must preserve the iterator for cancellation"
   );
-  assert.equal(retirementClosed, false);
+  assert.equal(retirementDisposalStarted, false);
 
   const originalAgentCreate = Agent.create;
   let createCalls = 0;
@@ -241,6 +267,16 @@ async function main() {
     );
 
     releaseRetirement();
+    for (let i = 0; i < 10 && !retirementDisposalStarted; i += 1) {
+      await Promise.resolve();
+    }
+    assert.equal(retirementDisposalStarted, true);
+    assert.equal(
+      createCalls,
+      0,
+      "replacement creation must wait for SDK agent disposal"
+    );
+    releaseAgentDisposal();
     assert.equal(await retirement, true);
     for (let i = 0; i < 10 && createCalls === 0; i += 1) {
       await Promise.resolve();
@@ -252,7 +288,7 @@ async function main() {
     const [replacementA, replacementB] = await reconnects;
     assert.equal(replacementA, replacementB);
     assert.equal(replacementA.agentId, "agent-replacement");
-    assert.equal(retirementClosed, true);
+    assert.equal(retirementDisposed, true);
   } finally {
     (Agent as any).create = originalAgentCreate;
   }

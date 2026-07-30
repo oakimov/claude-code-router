@@ -386,7 +386,7 @@ async function retireCursorSession(
           timeoutMs: 2_000,
           poisonOnFailure: true,
         });
-        globalSessionManager.invalidate(session, options.reason);
+        await globalSessionManager.invalidate(session, options.reason);
         return true;
       })
   );

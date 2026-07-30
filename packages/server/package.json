@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "node ../../scripts/build-server.js",
-    "dev": "ts-node src/index.ts"
+    "dev": "tsx src/index.ts"
   },
   "keywords": [
     "claude",
@@ -17,26 +17,26 @@
   "author": "caeliq",
   "license": "MIT",
   "dependencies": {
-    "@cursor/sdk": "^1.0.23",
-    "@fastify/multipart": "^9.0.0",
-    "@fastify/static": "^10.1.2",
     "@caeliq/llms": "workspace:*",
-    "adm-zip": "^0.5.16",
-    "dotenv": "^16.4.7",
+    "@cursor/sdk": "^1.0.23",
+    "@fastify/multipart": "^9.3.0",
+    "@fastify/static": "^10.1.2",
+    "adm-zip": "^0.6.0",
+    "dotenv": "^16.6.1",
     "json5": "^2.2.3",
     "lru-cache": "^11.2.2",
     "rotating-file-stream": "^3.2.7",
-    "shell-quote": "^1.8.3",
-    "tiktoken": "^1.0.21",
-    "uuid": "^11.1.0"
+    "shell-quote": "^1.10.0",
+    "tiktoken": "^1.0.22",
+    "uuid": "^11.1.1"
   },
   "devDependencies": {
     "@caeliq/ccr-shared": "workspace:*",
     "@types/adm-zip": "^0.5.7",
-    "@types/node": "^24.0.15",
-    "esbuild": "^0.25.1",
-    "fastify": "^5.4.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.8.2"
+    "@types/node": "^24.7.0",
+    "esbuild": "^0.25.10",
+    "fastify": "^5.10.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.3"
   }
 }

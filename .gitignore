@@ -1,4 +1,5 @@
 node_modules
+.pnpm-store/
 .env
 log.txt
 .idea
@@ -17,6 +18,7 @@ packages/server/ccr-config
 
 # Cursor artifacts
 .cursor/
+.vs/
 
 # Temporary package.json backups from scripts/release.sh
 packages/*/.backup/

@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "node ../../scripts/build-cli.js",
-    "dev": "ts-node src/cli.ts"
+    "dev": "tsx src/cli.ts"
   },
   "keywords": [
     "claude",
@@ -24,15 +24,15 @@
   "devDependencies": {
     "@caeliq/ccr-server": "workspace:*",
     "@caeliq/ccr-shared": "workspace:*",
-    "@inquirer/prompts": "^5.0.0",
-    "@types/node": "^24.0.15",
-    "adm-zip": "^0.5.16",
-    "esbuild": "^0.25.1",
+    "@inquirer/prompts": "^8.5.2",
+    "@types/node": "^24.7.0",
+    "adm-zip": "^0.6.0",
+    "esbuild": "^0.25.10",
     "find-process": "^2.0.0",
     "minimist": "^1.2.8",
     "openurl": "^1.1.1",
-    "puppeteer-core": "^24.0.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.8.2"
+    "puppeteer-core": "^24.43.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.3"
   }
 }

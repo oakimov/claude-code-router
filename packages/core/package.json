@@ -41,26 +41,26 @@
     "@anthropic-ai/sdk": "^0.54.0",
     "@caeliq/ccr-shared": "workspace:*",
     "@cursor/sdk": "^1.0.23",
-    "@fastify/cors": "^11.0.1",
+    "@fastify/cors": "^11.1.0",
     "@google/genai": "^2.13.0",
     "@huggingface/tokenizers": "^0.0.6",
-    "dotenv": "^16.5.0",
-    "fastify": "^5.4.0",
+    "dotenv": "^16.6.1",
+    "fastify": "^5.10.0",
     "fastify-plugin": "^5.1.0",
-    "google-auth-library": "^10.1.0",
+    "google-auth-library": "^10.4.0",
     "json5": "^2.2.3",
-    "jsonrepair": "^3.13.0",
+    "jsonrepair": "^3.13.1",
     "latex-to-unicode": "^0.1.0",
     "lru-cache": "^11.2.2",
-    "openai": "^5.6.0",
-    "tiktoken": "^1.0.21",
-    "undici": "^7.10.0",
-    "uuid": "^11.1.0"
+    "openai": "^5.23.2",
+    "tiktoken": "^1.0.22",
+    "undici": "^7.29.0",
+    "uuid": "^11.1.1"
   },
   "devDependencies": {
-    "@types/node": "^24.0.15",
-    "esbuild": "^0.25.1",
-    "tsx": "^4.20.3",
-    "typescript": "^5.8.2"
+    "@types/node": "^24.7.0",
+    "esbuild": "^0.25.10",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.3"
   }
 }

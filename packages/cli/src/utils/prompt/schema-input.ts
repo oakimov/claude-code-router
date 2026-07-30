@@ -15,12 +15,7 @@ import {
   sortFieldsByDependencies,
   getAffectedFields,
 } from '@caeliq/ccr-shared';
-import input from '@inquirer/input';
-import confirm from '@inquirer/confirm';
-import select from '@inquirer/select';
-import password from '@inquirer/password';
-import checkbox from '@inquirer/checkbox';
-import editor from '@inquirer/editor';
+import { input, confirm, select, password, checkbox, editor } from '@inquirer/prompts';
 
 // ANSI color codes
 export const COLORS = {

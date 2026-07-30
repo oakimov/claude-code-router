@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents (Cursor, Claude Code, Codex, and others) when working with code in this repository.
 
 ## Project Overview
 
@@ -70,8 +70,8 @@ pnpm build:ui       # Build UI
 
 #### Development mode
 ```bash
-pnpm dev:cli        # Develop CLI (ts-node)
-pnpm dev:server     # Develop Server (ts-node)
+pnpm dev:cli        # Develop CLI (tsx)
+pnpm dev:server     # Develop Server (tsx)
 pnpm dev:ui         # Develop UI (Vite)
 ```
 
