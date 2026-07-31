@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Send, Copy, Square, History, Maximize } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
 import MonacoEditor from '@monaco-editor/react';
 import { RequestHistoryDrawer } from './RequestHistoryDrawer';
 import { requestHistoryDB } from '@/lib/db';

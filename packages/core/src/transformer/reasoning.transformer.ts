@@ -79,7 +79,6 @@ export class ReasoningTransformer implements Transformer {
         return response;
       }
 
-      const encoder = new TextEncoder();
       let reasoningContent = "";
       let isReasoningComplete = false;
       const recorder = shouldRecordDeepSeekReasoning
@@ -186,7 +185,7 @@ export class ReasoningTransformer implements Transformer {
               const modifiedLine = `data: ${JSON.stringify(data)}\n\n`;
               controller.enqueue(encoder.encode(modifiedLine));
             }
-          } catch (e) {
+          } catch {
             // If JSON parsing fails, pass through the original line
             controller.enqueue(encoder.encode(line + "\n"));
           }

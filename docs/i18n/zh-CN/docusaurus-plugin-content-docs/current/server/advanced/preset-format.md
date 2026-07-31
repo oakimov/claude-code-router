@@ -1153,8 +1153,8 @@ A: 使用条件选择语言：
 
 ## 相关文档
 
-- [预设配置使用指南](/zh/docs/advanced/presets)
-- [配置基础](/zh/docs/config/basic)
-- [Provider 配置](/zh/docs/config/providers)
-- [路由配置](/zh/docs/config/routing)
-- [转换器配置](/zh/docs/config/transformers)
+- [预设配置使用指南](/docs/presets/intro)
+- [配置基础](/docs/server/config/basic)
+- [Provider 配置](/docs/server/config/providers)
+- [路由配置](/docs/server/config/routing)
+- [转换器配置](/docs/server/config/transformers)

@@ -13,6 +13,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { homedir, arch, platform, release } from "node:os";
 import { dirname, join } from "node:path";
+import { resolveCodexPat } from "@caeliq/ccr-shared";
 
 const DEFAULT_AUTH_FILE = join(
   homedir(),
@@ -366,8 +367,8 @@ async function resolvePat(pat: string): Promise<CliCodexAuth> {
 export async function resolveCliCodexAuth(
   configuredApiKey: string | undefined
 ): Promise<CliCodexAuth> {
-  const apiKey = configuredApiKey?.trim();
-  if (apiKey?.startsWith("at-")) return resolvePat(apiKey);
+  const pat = resolveCodexPat(configuredApiKey, { allowBareEnvName: true });
+  if (pat) return resolvePat(pat);
 
   const tokens = await validOAuthTokens();
   return {

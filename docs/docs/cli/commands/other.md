@@ -79,5 +79,5 @@ ccr ui
 
 ## Related Documentation
 
-- [Getting Started](/docs/intro) - Introduction to Claude Code Router
-- [Configuration](/docs/config/basic) - Configuration guide
+- [Getting Started](/docs/cli/intro) - Introduction to Claude Code Router
+- [Configuration](/docs/server/config/basic) - Configuration guide

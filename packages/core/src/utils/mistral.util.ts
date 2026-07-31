@@ -8,40 +8,6 @@ import {
 import { normalizeToolParameters } from "./schema";
 import { deriveCacheSessionKey } from "./cacheControl";
 
-// Type definitions for Mistral API responses
-interface MistralStreamChunk {
-  id: string;
-  object: "chat.completion.chunk";
-  created: number;
-  model: string;
-  choices: Array<{
-    index: number;
-    delta: {
-      role?: string;
-      content?: string | null;
-      reasoning_content?: string;
-      thinking?: { content?: string; signature?: string };
-      tool_calls?: Array<{
-        index: number;
-        id: string;
-        function: { name: string; arguments: string };
-      }>;
-    };
-    finish_reason: string | null;
-  }>;
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-  };
-}
-
-interface MistralMessageContent {
-  type: "thinking" | "text";
-  text?: string;
-  thinking?: any;
-}
-
 /**
  * Helper to flatten array content to strings and remove cache_control
  */
@@ -61,7 +27,7 @@ function transformMessage(msg: any): any {
     if (hasImages || hasThinking) {
       clonedMsg.content = contentArray.map((part) => {
         if ((part as any).type === "text") {
-          const { cache_control, ...rest } = part as TextContent;
+          const { cache_control: _cache_control, ...rest } = part as TextContent;
           return rest;
         }
         return part;
@@ -133,7 +99,7 @@ const NON_REASONING = new Set([
 export function buildRequestBody(
   request: UnifiedChatRequest,
   context?: any,
-  provider?: any
+  _provider?: any
 ): Record<string, any> {
   const req = { ...request };
 
@@ -165,7 +131,7 @@ export function buildRequestBody(
   // message-level cleanup above.
   if (Array.isArray(req.tools)) {
     req.tools = req.tools.map((tool) => {
-      const { cache_control, ...rest } = tool as any;
+      const { cache_control: _cache_control, ...rest } = tool as any;
       if (rest?.function?.parameters) {
         return {
           ...rest,

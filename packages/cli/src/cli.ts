@@ -257,7 +257,7 @@ async function main() {
     case "status":
       await showStatus();
       break;
-    case "statusline":
+    case "statusline": {
       // Read JSON input from stdin
       let inputData = "";
       process.stdin.setEncoding("utf-8");
@@ -281,6 +281,7 @@ async function main() {
         }
       });
       break;
+    }
     case "model": {
       const modelSubcommand = process.argv[3];
 
@@ -314,14 +315,16 @@ async function main() {
       console.error(`Unknown model subcommand: ${modelSubcommand}`);
       console.error("Usage: ccr model get <provider>");
       process.exit(1);
+      break;
     }
     case "preset":
       await handlePresetCommand(process.argv.slice(3));
       break;
-    case "install":
+    case "install": {
       const presetName = process.argv[3];
       await handleInstallCommand(presetName);
       break;
+    }
     case "codex-auth":
       await runCodexAuth();
       break;
@@ -385,7 +388,7 @@ async function main() {
         executeCodeCommand(codeArgs);
       }
       break;
-    case "ui":
+    case "ui": {
       // Check if service is running
       if (!isRunning) {
         console.log("Service not running, starting service...");
@@ -512,6 +515,7 @@ async function main() {
       });
       openResult.unref();
       break;
+    }
     case "-v":
     case "version":
       console.log(`claude-code-router version: ${version}`);

@@ -38,7 +38,7 @@ function removeUriFormat(schema: any): any {
   if (!schema || typeof schema !== "object") return schema;
 
   if (schema.type === "string" && schema.format === "uri") {
-    const { format, ...rest } = schema;
+    const { format: _format, ...rest } = schema;
     return rest;
   }
 
@@ -97,7 +97,7 @@ export function sanitizeJsonSchema(
       continue;
     }
 
-    let value = schema[key];
+    const value = schema[key];
 
     // Step 2: Remove enum from non-string types
     if (key === "enum" && schema.type && schema.type !== "string") {
@@ -201,7 +201,7 @@ export function collapseTypelessUnions(schema: any): any {
   const chosen = branches.find((b: any) => b.type) || branches[0];
   if (!chosen) return result;
 
-  const { anyOf, oneOf, description, ...rest } = result;
+  const { anyOf: _anyOf, oneOf: _oneOf, description, ...rest } = result;
   // Describe the dropped branches once each, without re-nesting the note a
   // deeper collapse already added.
   const alternatives = [

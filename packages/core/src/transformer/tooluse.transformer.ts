@@ -7,8 +7,8 @@ export class TooluseTransformer implements Transformer {
 
   async transformRequestIn(
     request: UnifiedChatRequest,
-    provider?: any,
-    context?: any
+    _provider?: any,
+    _context?: any
   ): Promise<any> {
     request.messages.push({
       role: "system",
@@ -69,8 +69,6 @@ Examples:
         return response;
       }
 
-      const decoder = new TextDecoder();
-      const encoder = new TextEncoder();
       let exitToolIndex = -1;
       let exitToolResponse = "";
 
@@ -113,7 +111,7 @@ Examples:
                     data
                   )}\n\n`;
                   controller.enqueue(encoder.encode(modifiedLine));
-                } catch (e) {}
+                } catch {}
                 return;
               }
             }
@@ -125,7 +123,7 @@ Examples:
               const modifiedLine = `data: ${JSON.stringify(data)}\n\n`;
               controller.enqueue(encoder.encode(modifiedLine));
             }
-          } catch (e) {
+          } catch {
             // If JSON parsing fails, pass through the original line
             controller.enqueue(encoder.encode(line + "\n"));
           }

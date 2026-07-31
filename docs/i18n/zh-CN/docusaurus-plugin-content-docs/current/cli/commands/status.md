@@ -58,6 +58,6 @@ PID: 12345
 
 ## 相关命令
 
-- [ccr start](/zh/docs/cli/start) - 启动服务器
-- [ccr stop](/zh/docs/cli/other-commands#ccr-stop) - 停止服务器
-- [ccr restart](/zh/docs/cli/other-commands#ccr-restart) - 重启服务器
+- [ccr start](/docs/cli/commands/start) - 启动服务器
+- [ccr stop](/docs/cli/commands/other#ccr-stop) - 停止服务器
+- [ccr restart](/docs/cli/commands/other#ccr-restart) - 重启服务器

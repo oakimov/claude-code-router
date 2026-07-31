@@ -1,6 +1,5 @@
 import { useTranslation } from "react-i18next";
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { createPortal } from "react-dom";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Dialog,
   DialogContent,
@@ -161,8 +160,8 @@ const IconSearchInput = React.memo(({ value, onChange, fontFamily, t }: IconSear
     }
     
     const term = searchTerm.toLowerCase();
-    let filtered = icons;
-    
+    let filtered: IconData[];
+
     // If special characters are entered (possibly pasted icon), search for corresponding icon
     if (term.length === 1 || /[\u{2000}-\u{2FFFF}]/u.test(searchTerm)) {
       const pastedIcon = icons.find(icon => icon.char === searchTerm);
@@ -430,10 +429,6 @@ export function StatusLineConfigDialog({
   const [selectedModuleIndex, setSelectedModuleIndex] = useState<number | null>(
     null
   );
-  const [hexBackgroundColors, setHexBackgroundColors] = useState<Set<string>>(
-    new Set()
-  );
-
   // Add Powerline separator style
   useEffect(() => {
     const styleElement = document.createElement("style");
@@ -529,8 +524,6 @@ export function StatusLineConfigDialog({
         });
       }
     });
-
-    setHexBackgroundColors(hexColors);
 
     // Create dynamic style element
     const styleElement = document.createElement("style");

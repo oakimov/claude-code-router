@@ -104,5 +104,5 @@ Configured Models:
 
 ## Related Commands
 
-- [ccr start](/docs/cli/start) - Start the server
-- [ccr config](/docs/cli/other-commands#ccr-config) - Edit configuration
+- [ccr start](/docs/cli/commands/start) - Start the server
+- [ccr config](/docs/cli/config/basic) - Edit configuration

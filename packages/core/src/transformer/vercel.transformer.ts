@@ -15,8 +15,8 @@ export class VercelTransformer implements Transformer {
 
   async transformRequestIn(
     request: UnifiedChatRequest,
-    provider?: any,
-    context?: any
+    _provider?: any,
+    _context?: any
   ): Promise<UnifiedChatRequest> {
     // Vercel AI Gateway drives Anthropic prompt caching via
     // providerOptions.gateway.caching = "auto" (set below), which inserts its
@@ -237,7 +237,7 @@ export class VercelTransformer implements Transformer {
 
                 const modifiedLine = `data: ${JSON.stringify(data)}\n\n`;
                 controller.enqueue(encoder.encode(modifiedLine));
-              } catch (e) {
+              } catch {
                 // If JSON parsing fails, data might be incomplete, pass through the original line
                 controller.enqueue(encoder.encode(line + "\n"));
               }

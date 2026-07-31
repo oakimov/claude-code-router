@@ -1,4 +1,4 @@
-import type { StatusLineConfig, StatusLineModuleConfig } from "@/types";
+import type { StatusLineConfig } from "@/types";
 
 // Validation results (keep interface but not used)
 export interface ValidationResult {
@@ -11,7 +11,7 @@ export interface ValidationResult {
  * @param config the configuration object to validate
  * @returns always returns validation success
  */
-export function validateStatusLineConfig(config: unknown): ValidationResult {
+export function validateStatusLineConfig(_config: unknown): ValidationResult {
   // No longer performing any validation
   return { isValid: true, errors: [] };
 }

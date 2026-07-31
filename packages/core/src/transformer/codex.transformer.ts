@@ -3,6 +3,8 @@ import { execFileSync } from "child_process";
 import { arch as osArch, platform as osPlatform, release as osRelease } from "os";
 import { UnifiedChatRequest, MessageContent } from "@/types/llm";
 import { Transformer } from "@/types/transformer";
+import { resolveCodexPat } from "@caeliq/ccr-shared";
+import { sanitizeResponsesCallId } from "@/utils/toolCallId";
 import {
   applyRequestCacheKey,
   validateOpenAIToolCalls,
@@ -351,7 +353,7 @@ export class CodexTransformer implements Transformer {
     }
 
     request = applyRequestCacheKey(request, context);
-    let messages = validateOpenAIToolCalls(request.messages);
+    const messages = validateOpenAIToolCalls(request.messages);
     request.messages = messages;
 
     const input: any[] = [];
@@ -362,7 +364,7 @@ export class CodexTransformer implements Transformer {
     );
     if (systemMessages.length > 0) {
       const firstSystem = systemMessages[0];
-      let instructionsText = "";
+      let instructionsText: string;
       if (Array.isArray(firstSystem.content)) {
         instructionsText = firstSystem.content
           .map((item) => {
@@ -406,7 +408,8 @@ export class CodexTransformer implements Transformer {
       if (message.role === "tool") {
         const toolMessage: any = { ...message };
         toolMessage.type = "function_call_output";
-        toolMessage.call_id = message.tool_call_id;
+        toolMessage.call_id =
+          sanitizeResponsesCallId(message.tool_call_id) ?? message.tool_call_id;
         toolMessage.output = message.content;
         delete toolMessage.cache_control;
         delete toolMessage.role;
@@ -424,7 +427,7 @@ export class CodexTransformer implements Transformer {
             type: "function_call",
             arguments: tool.function.arguments,
             name: tool.function.name,
-            call_id: tool.id,
+            call_id: sanitizeResponsesCallId(tool.id) ?? tool.id,
           });
         });
         return;
@@ -555,12 +558,9 @@ export class CodexTransformer implements Transformer {
   }
 
   private async resolveAuth(provider: any): Promise<ResolvedCodexAuth> {
-    const apiKey =
-      typeof provider?.apiKey === "string"
-        ? provider.apiKey.trim()
-        : provider?.apiKey;
-    if (typeof apiKey === "string" && apiKey.startsWith("at-")) {
-      return this.resolvePatAuth(apiKey);
+    const pat = resolveCodexPat(provider?.apiKey, { allowBareEnvName: true });
+    if (pat) {
+      return this.resolvePatAuth(pat);
     }
     return toCodexOAuthAuth(await getValidAccessToken());
   }
@@ -585,11 +585,7 @@ export class CodexTransformer implements Transformer {
       return null;
     }
 
-    const apiKey =
-      typeof provider?.apiKey === "string"
-        ? provider.apiKey.trim()
-        : provider?.apiKey;
-    if (typeof apiKey === "string" && apiKey.startsWith("at-")) {
+    if (resolveCodexPat(provider?.apiKey, { allowBareEnvName: true })) {
       return null;
     }
 
@@ -674,7 +670,6 @@ export class CodexTransformer implements Transformer {
     context?: { req?: { id?: string } }
   ): Promise<Response> {
     const contentType = response.headers.get("Content-Type") || "";
-    const codexTransformer = this;
     const reqId = context?.req?.id;
     // Wrap the body in try/finally to guarantee streamIntent cleanup on any
     // unexpected throw (e.g. response.json() parse error, downstream buffer
@@ -682,7 +677,7 @@ export class CodexTransformer implements Transformer {
     // entry in the map for the lifetime of the process.
     const prevIntent = reqId ? this.streamIntent.get(reqId) : undefined;
     try {
-      return await this.transformResponseOutInner(response, contentType, codexTransformer, reqId, prevIntent);
+      return await this.transformResponseOutInner(response, contentType, this, reqId, prevIntent);
     } finally {
       if (reqId) this.streamIntent.delete(reqId);
     }
@@ -776,22 +771,17 @@ export class CodexTransformer implements Transformer {
       // codex API only streams, so consume the full SSE stream and assemble
       // a single OpenAI ChatCompletion JSON so the SDK can parse it.
       if (!wantsStream) {
-        try {
-          const completion = await this.collectSseIntoChatCompletion(
-            response,
-            resolveModel
-          );
-          return new Response(JSON.stringify(completion), {
-            status: response.status,
-            statusText: response.statusText,
-            headers: { "Content-Type": "application/json" },
-          });
-        } catch (e) {
-          throw e;
-        }
+        const completion = await this.collectSseIntoChatCompletion(
+          response,
+          resolveModel
+        );
+        return new Response(JSON.stringify(completion), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
-      let isStreamEnded = false;
       let currentIndex = -1;
       let lastEventType = "";
 
@@ -813,7 +803,6 @@ export class CodexTransformer implements Transformer {
           if (line.startsWith("data: ")) {
             const dataStr = line.slice(5).trim();
             if (dataStr === "[DONE]") {
-              isStreamEnded = true;
               ctx.controller.enqueue(encodeSSEData("[DONE]", ctx.encoder));
               return;
             }
@@ -1024,7 +1013,10 @@ export class CodexTransformer implements Transformer {
               tool_calls: [
                 {
                   index: 0,
-                  id: data.item.call_id || data.item.id,
+                  id:
+                    sanitizeResponsesCallId(
+                      data.item.call_id || data.item.id
+                    ) || data.item.call_id || data.item.id,
                   function: {
                     name: data.item.name || "",
                     arguments: "",
@@ -1436,7 +1428,7 @@ export class CodexTransformer implements Transformer {
     // Accumulator state — mirrors convertStreamEvent output shape
     let contentText = "";
     let reasoningText = "";
-    let annotations: any[] = [];
+    const annotations: any[] = [];
     const toolCallsMap = new Map<number, any>();
     let finishReason: string | null = null;
     let usage: any = undefined;
@@ -1675,7 +1667,10 @@ export class CodexTransformer implements Transformer {
     if (functionCallOutput) {
       toolCalls = [
         {
-          id: functionCallOutput.call_id || functionCallOutput.id,
+          id:
+            sanitizeResponsesCallId(
+              functionCallOutput.call_id || functionCallOutput.id
+            ) || functionCallOutput.call_id || functionCallOutput.id,
           function: {
             name: functionCallOutput.name,
             arguments: functionCallOutput.arguments,

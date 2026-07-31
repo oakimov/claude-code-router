@@ -1,10 +1,13 @@
-![](blog/images/claude-code-router-img.png)
+![Claude Code Router — adaptive model routing, tool use, and thinking](blog/images/claude-code-router-img.png)
 
 [![](https://img.shields.io/github/license/musistudio/claude-code-router)](https://github.com/musistudio/claude-code-router/blob/main/LICENSE)
 
+Claude Code Router is an adaptive LLM gateway for Claude Code. It routes each request to the most suitable model and provider while preserving tool calls, streaming, extended thinking, and multi-turn context across different APIs.
+
 ## ✨ Features
 
-- **Model Routing**: Route requests to different models based on your needs (e.g., background tasks, thinking, long context).
+- **Adaptive Model Routing**: Route requests by scenario, including background tasks, thinking, long context, web search, and image workflows.
+- **Tool Use & Thinking**: Preserve tool calls, tool results, and reasoning content across providers with different API formats.
 - **Multi-Provider Support**: Supports various model providers like OpenRouter, DeepSeek, Ollama, Gemini, Antigravity, Volcengine, SiliconFlow, Codex, Claude subscription, Qwen, Chrome On-Device, and Cursor (SDK).
 - **Request/Response Transformation**: Customize requests and responses for different providers using transformers.
 - **Dynamic Model Switching**: Switch models on-the-fly within Claude Code using the `/model` command.
@@ -42,7 +45,7 @@ This fork is based on [claude-code-router](https://github.com/musistudio/claude-
 
 Before you begin, ensure you have the following installed on your system:
 - **Docker & Docker Compose** (Recommended): The primary way to run the router. See [Docker Install Guide](https://docs.docker.com/get-docker/).
-- **Node.js** (Optional): Required to run from source, publish packages, or use the **Chrome On-Device** bridge. This fork requires **Node.js ≥ 22.13.0** (needed by `@cursor/sdk`). See [Node.js Download](https://nodejs.org/).
+- **Node.js** (Optional): Required to run from source, publish packages, or use the **Chrome On-Device** bridge. This fork requires **Node.js ≥ 22.19.0** (needed by `undici`). See [Node.js Download](https://nodejs.org/).
 - **Claude Code**: See the [official quickstart guide](https://code.claude.com/docs/en/quickstart) for installation instructions.
 
 #### Quick Start with Docker
@@ -414,7 +417,7 @@ Why those Gemini options:
 The Codex provider supports two authentication modes:
 
 - **OAuth** via `ccr codex-auth`
-- **PAT** via `api_key: "at-..."`
+- **PAT** via a literal `api_key: "at-..."` or an environment variable containing an `at-` token
 
 ##### OAuth mode
 
@@ -451,18 +454,22 @@ The CLI prints a URL to open in your host browser. After signing in, the browser
 
 ##### PAT mode
 
-If your provider `api_key` starts with `at-`, CCR treats it as a Codex Personal Access Token and uses it directly. In PAT mode, you do **not** run `ccr codex-auth`.
+CCR treats a literal `api_key` starting with `at-` as a Codex Personal Access Token. It also resolves `$VAR`, `${VAR}`, and bare variable names such as `CODEX_PAT` when that environment variable contains an `at-` token. In PAT mode, you do **not** run `ccr codex-auth`.
 
 ```json
 {
   "name": "codex",
   "api_base_url": "https://chatgpt.com/backend-api/codex",
-  "api_key": "at-your-personal-access-token",
+  "api_key": "$CODEX_PAT",
   "models": ["gpt-5.4"],
   "transformer": {
     "use": ["codex"]
   }
 }
+```
+
+```shell
+export CODEX_PAT="at-your-personal-access-token"
 ```
 
 CCR resolves the PAT's account, user, plan, and FedRAMP metadata through

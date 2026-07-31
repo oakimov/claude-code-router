@@ -11,6 +11,8 @@ GLM从4.5开始就对claude code进行了支持，我之前也一直在关注，
 
 首先根据[官方文档](https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E5%AF%B9%E8%AF%9D%E8%A1%A5%E5%85%A8)，我们发现`/chat/completions`端点是默认启用思考的，但是是由模型判断是否需要进行思考
 
+{/* truncate */}
+
 ```
 thinking object
 仅 GLM-4.5 及以上模型支持此参数配置. 控制大模型是否开启思维链。

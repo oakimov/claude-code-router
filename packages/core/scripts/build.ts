@@ -19,7 +19,9 @@ const baseConfig: esbuild.BuildOptions = {
   minify: true,
   sourcemap: true,
   platform: "node",
-  target: "node18",
+  // Match the package engines floor (>=22.19.0) so esbuild does not downlevel
+  // syntax for runtimes this package does not support.
+  target: "node22",
   plugins: [
     // Add path alias plugin to resolve @/ imports
     pathAliasPlugin({

@@ -162,7 +162,7 @@ sidebar_position: 2
 - **`cachedContent: false`** — 必需。Antigravity 没有 `cachedContents` 资源；Gemini 默认（`true`）会导致 404。
 - **`thoughtSignatureFallback: "skip"`** — 保持默认。当缺少工具调用的 thought signature 时，盖印 Google 的 `skip_thought_signature_validator` 哨兵，避免网关 400。仅在端点拒绝该哨兵时设为 `"none"`。
 
-完整选项说明：[转换器 → gemini](/zh/docs/server/config/transformers#选项-cachedcontent-与-thoughtsignaturefallback)。另见 [CLI 认证命令](/zh/docs/cli/commands/auth)。
+完整选项说明：[转换器 → gemini](/docs/server/config/transformers#options-cachedcontent-and-thoughtsignaturefallback)。另见 [CLI 认证命令](/docs/cli/commands/auth)。
 
 ### Qwen Chat
 
@@ -339,5 +339,5 @@ deepseek,deepseek-chat
 
 ## 下一步
 
-- [路由配置](/zh/docs/config/routing) - 配置请求如何路由
-- [转换器](/zh/docs/config/transformers) - 对请求应用转换
+- [路由配置](/docs/server/config/routing) - 配置请求如何路由
+- [转换器](/docs/server/config/transformers) - 对请求应用转换

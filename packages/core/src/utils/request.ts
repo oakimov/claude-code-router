@@ -129,8 +129,8 @@ export async function sendUnifiedRequest(
   url: URL | string,
   request: UnifiedChatRequest,
   config: any,
-  context: any,
-  logger?: any
+  _context: any,
+  _logger?: any
 ): Promise<Response> {
   const headers = new Headers({
     "Content-Type": "application/json",

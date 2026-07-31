@@ -76,7 +76,7 @@ function HomepageHeader() {
           >
             <Link
               className="px-6 sm:px-8 py-3 sm:py-4 bg-primary text-white hover:text-white rounded-lg text-base sm:text-lg font-semibold transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-105"
-              to={currentLocale === 'zh-CN' ? '/zh-CN/docs/cli/quick-start' : '/docs/cli/quick-start'}
+              to="/docs/cli/quick-start"
             >
               {t.getStarted}
             </Link>
@@ -613,7 +613,7 @@ function CTASection() {
           <div className="flex flex-col sm:flex-row gap-4 justify-center mb-8 sm:mb-12">
             <Link
               className="group px-8 sm:px-10 py-4 sm:py-5 bg-white text-primary hover:bg-gray-50 rounded-xl text-base sm:text-lg font-bold transition-all duration-300 shadow-2xl hover:shadow-white/20 hover:scale-105 flex items-center justify-center gap-2"
-              to={currentLocale === 'zh-CN' ? '/zh-CN/docs/cli/quick-start' : '/docs/cli/quick-start'}
+              to="/docs/cli/quick-start"
             >
               {t.getStarted}
               <svg className="w-5 h-5 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -622,7 +622,7 @@ function CTASection() {
             </Link>
             <Link
               className="px-8 sm:px-10 py-4 sm:py-5 bg-white/10 backdrop-blur-sm text-white border-2 border-white/30 hover:bg-primary hover:border-primary hover:text-white rounded-xl text-base sm:text-lg font-bold transition-all duration-300 hover:scale-105 flex items-center justify-center gap-2"
-              to={currentLocale === 'zh-CN' ? '/zh-CN/docs/category/cli' : '/docs/category/cli'}
+              to="/docs/category/cli"
             >
               {t.docs}
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

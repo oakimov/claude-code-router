@@ -123,5 +123,5 @@ CLI 工具会验证所有输入并提供有用的提示来引导您完成配置�
 
 ## 相关命令
 
-- [ccr start](/zh/docs/cli/start) - 启动服务器
-- [ccr config](/zh/docs/cli/other-commands#ccr-config) - 编辑配置
+- [ccr start](/docs/cli/commands/start) - 启动服务器
+- [ccr config](/docs/cli/config/basic) - 编辑配置

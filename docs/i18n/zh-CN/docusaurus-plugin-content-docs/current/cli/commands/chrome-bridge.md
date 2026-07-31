@@ -35,4 +35,4 @@ ccr chrome-bridge
 - Google Chrome（Canary 或 Dev）并启用 Gemini Nano
 - 宿主机上安装 Node.js
 
-详细设置说明请参见 [Chrome 内置模型集成指南](/zh/docs/server/guides/chrome-on-device)。
+详细设置说明请参见 [Chrome 内置模型集成指南](/docs/server/guides/chrome-on-device)。

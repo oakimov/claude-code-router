@@ -29,7 +29,7 @@ import {
   getTemplateOptionLabel,
 } from "@/lib/providerMeta";
 
-interface ProviderType extends Provider {}
+type ProviderType = Provider;
 
 function ProviderTemplatePreview({ provider }: { provider: Provider | null }) {
   const { t } = useTranslation();
@@ -125,20 +125,7 @@ export function Providers() {
     fetchTransformers();
   }, []);
 
-  if (!config) {
-    return (
-      <Card className="flex h-full flex-col rounded-lg border shadow-sm">
-        <CardHeader className="flex flex-row items-center justify-between border-b p-4">
-          <CardTitle className="text-lg">{t("providers.title")}</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-grow items-center justify-center p-4">
-          <div className="text-gray-500">Loading providers configuration...</div>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  const validProviders = Array.isArray(config.Providers) ? config.Providers : [];
+  const validProviders = Array.isArray(config?.Providers) ? config.Providers : [];
 
   const templateOptions = useMemo(
     () =>
@@ -159,6 +146,19 @@ export function Providers() {
       tags: getProviderTags(editingProviderData, authHint),
     };
   }, [editingProviderData, t]);
+
+  if (!config) {
+    return (
+      <Card className="flex h-full flex-col rounded-lg border shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between border-b p-4">
+          <CardTitle className="text-lg">{t("providers.title")}</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-grow items-center justify-center p-4">
+          <div className="text-gray-500">Loading providers configuration...</div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   const handleAddProvider = () => {
     const newProvider: ProviderType = { name: "", api_base_url: "", api_key: "", models: [] };

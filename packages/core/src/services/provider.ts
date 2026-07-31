@@ -202,7 +202,7 @@ export class ProviderService {
     return true;
   }
 
-  toggleProvider(name: string, enabled: boolean): boolean {
+  toggleProvider(name: string, _enabled: boolean): boolean {
     const provider = this.providers.get(name);
     if (!provider) {
       return false;

@@ -666,7 +666,7 @@ export async function transformResponseOut(
 
     // Extract thinking content from parts with thought: true
     let thinkingContent = "";
-    let thinkingSignature = "";
+    let thinkingSignature: string | undefined;
 
     const parts = jsonResponse.candidates[0]?.content?.parts || [];
     const nonThinkingParts: Part[] = [];

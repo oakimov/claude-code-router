@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Upload, Link, Trash2, Info, Download, Check, CheckCircle2, AlertCircle, Loader2, ArrowLeft, Store, Search, Package } from "lucide-react";
+import { Link, Trash2, Info, Download, Check, Loader2, ArrowLeft, Store, Search, Package } from "lucide-react";
 import { Toast } from "@/components/ui/toast";
 import { DynamicConfigForm } from "./preset/DynamicConfigForm";
 
@@ -128,7 +128,7 @@ export function Presets() {
   };
 
   // Load market presets
-  const loadMarketPresets = async () => {
+  const loadMarketPresets = useCallback(async () => {
     setMarketLoading(true);
     try {
       const response = await api.getMarketPresets();
@@ -139,7 +139,7 @@ export function Presets() {
     } finally {
       setMarketLoading(false);
     }
-  };
+  }, [t]);
 
   // Install preset from market
   const handleInstallFromMarket = async (preset: MarketPreset) => {
@@ -210,7 +210,7 @@ export function Presets() {
     if (marketDialogOpen && marketPresets.length === 0) {
       loadMarketPresets();
     }
-  }, [marketDialogOpen]);
+  }, [loadMarketPresets, marketDialogOpen, marketPresets.length]);
 
   // Filter market presets
   const filteredMarketPresets = marketPresets.filter(preset =>
@@ -220,7 +220,7 @@ export function Presets() {
   );
 
   // Load presets list
-  const loadPresets = async () => {
+  const loadPresets = useCallback(async () => {
     try {
       setLoading(true);
       const response = await api.getPresets();
@@ -231,11 +231,11 @@ export function Presets() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
 
   useEffect(() => {
     loadPresets();
-  }, []);
+  }, [loadPresets]);
 
   // View preset details
   const handleViewDetail = async (preset: PresetMetadata) => {

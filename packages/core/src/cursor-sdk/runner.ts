@@ -117,7 +117,7 @@ async function resolveModelSelection(
   modelId: string,
   effort?: string
 ): Promise<ModelSelection> {
-  let models: ModelListItem[] = [];
+  let models: ModelListItem[];
   try {
     models = await getModelCatalog(apiKey);
   } catch {
@@ -1044,44 +1044,38 @@ async function runCursorOnce(
                 // this continuation for the already-finished prior run.
                 runToken = continuationRunToken;
                 session.activeRunToken = continuationRunToken;
-                try {
-                  await withSessionSendLock(session, async () => {
-                    if (session.poisoned || options.abortSignal?.aborted) {
-                      throw new Error(
-                        "cursor-sdk progress continuation aborted before send"
-                      );
-                    }
-
-                    const run = await sendCursorPrompt(
-                      session,
-                      progressOnlyContinuationPrompt(promptHostEnv),
-                      sdkSendOptionsForSession(session, continuationRunToken),
-                      {
-                        abortSignal: options.abortSignal,
-                        logger,
-                      }
+                await withSessionSendLock(session, async () => {
+                  if (session.poisoned || options.abortSignal?.aborted) {
+                    throw new Error(
+                      "cursor-sdk progress continuation aborted before send"
                     );
-                    // Publish the handles under the lock so a concurrent
-                    // retirement can always cancel a run whose send completed.
-                    session.run = run;
-                    session.activeRunToken = continuationRunToken;
-                    session.streamIterator =
-                      run.stream()[Symbol.asyncIterator]();
-                    session.streamNext = undefined;
-                    session.streamNextRunToken = undefined;
-                    session.hasSentPrompt = true;
+                  }
 
-                    if (session.poisoned || options.abortSignal?.aborted) {
-                      throw new Error(
-                        "cursor-sdk progress continuation retired during send"
-                      );
+                  const run = await sendCursorPrompt(
+                    session,
+                    progressOnlyContinuationPrompt(promptHostEnv),
+                    sdkSendOptionsForSession(session, continuationRunToken),
+                    {
+                      abortSignal: options.abortSignal,
+                      logger,
                     }
-                  });
-                } catch (err) {
-                  // The outer stream failure path owns retirement. Preserve the
-                  // token and any returned run handles for that cleanup.
-                  throw err;
-                }
+                  );
+                  // Publish the handles under the lock so a concurrent
+                  // retirement can always cancel a run whose send completed.
+                  session.run = run;
+                  session.activeRunToken = continuationRunToken;
+                  session.streamIterator =
+                    run.stream()[Symbol.asyncIterator]();
+                  session.streamNext = undefined;
+                  session.streamNextRunToken = undefined;
+                  session.hasSentPrompt = true;
+
+                  if (session.poisoned || options.abortSignal?.aborted) {
+                    throw new Error(
+                      "cursor-sdk progress continuation retired during send"
+                    );
+                  }
+                });
                 currentRunAssistantText = "";
                 continuedProgressTurn = true;
                 break;

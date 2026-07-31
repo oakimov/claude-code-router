@@ -57,6 +57,6 @@ Uptime: 2h 34m
 
 ## Related Commands
 
-- [ccr start](/docs/cli/start) - Start the server
-- [ccr stop](/docs/cli/other-commands#ccr-stop) - Stop the server
-- [ccr restart](/docs/cli/other-commands#ccr-restart) - Restart the server
+- [ccr start](/docs/cli/commands/start) - Start the server
+- [ccr stop](/docs/cli/commands/other#ccr-stop) - Stop the server
+- [ccr restart](/docs/cli/commands/other#ccr-restart) - Restart the server

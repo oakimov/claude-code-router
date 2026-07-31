@@ -4,14 +4,28 @@ This directory contains parity and unit tests for the core transformation logic.
 
 ## Running Tests
 
-Since these tests operate directly on TypeScript source files without requiring a full build, we use `tsx` for execution.
-
-### Execute Parity Tests
-To run the Gemini parity suite:
+From the repo root, the workspace runner executes every test in every package:
 
 ```bash
-npx tsx packages/core/src/tests/gemini.parity.ts
+pnpm test              # all packages
+pnpm test core         # only packages/core
 ```
+
+### Execute a Single Test
+
+These tests operate directly on TypeScript source files without requiring a
+full build, so we use `tsx` for execution. Run from `packages/core`, not the
+repo root — the `@/*` path alias resolves against this package's
+`tsconfig.json`:
+
+```bash
+cd packages/core
+npx tsx src/tests/gemini.parity.ts
+```
+
+Each test is a standalone entry point that exits non-zero on failure; there is
+no test framework. A new file dropped in this directory is picked up by
+`pnpm test` automatically.
 
 ### How Parity Testing Works
 1. **Baseline Generation**: The script compares current output against "Golden Files" in `__golden__/`. If no golden files exist, it can be configured to generate them.

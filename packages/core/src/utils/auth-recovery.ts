@@ -7,7 +7,7 @@ export async function sendWithUnauthorizedAuthRecovery(
   requestHeaders: Record<string, string>,
   recover?: UnauthorizedAuthRecovery
 ): Promise<Response> {
-  let response = await send(requestHeaders);
+  const response = await send(requestHeaders);
   if (response.status !== 401 || typeof recover !== "function") {
     return response;
   }

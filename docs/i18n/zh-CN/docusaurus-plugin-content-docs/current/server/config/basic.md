@@ -167,6 +167,6 @@ ccr restart
 
 ## 下一步
 
-- [提供商配置](/zh/docs/config/providers) - 详细的提供商配置
-- [路由配置](/zh/docs/config/routing) - 配置路由规则
-- [转换器](/zh/docs/config/transformers) - 应用转换
+- [提供商配置](/docs/server/config/providers) - 详细的提供商配置
+- [路由配置](/docs/server/config/routing) - 配置路由规则
+- [转换器](/docs/server/config/transformers) - 应用转换

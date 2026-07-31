@@ -292,7 +292,7 @@ export class ForceReasoningTransformer implements Transformer {
                   try {
                     const data = JSON.parse(line.slice(5));
                     processAndEnqueue(data, data.choices?.[0]?.delta?.content);
-                  } catch (e) {
+                  } catch {
                     controller.enqueue(encoder.encode(line + "\n"));
                   }
                 } else {

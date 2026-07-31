@@ -12,7 +12,7 @@ The default mode is **bridge**: Cursor chooses what to do next, but **Claude Cod
 
 - A Cursor account with an API key starting with `crsr_` (from the Cursor dashboard)
 - Claude Code Router running (Docker Compose or local)
-- **Node.js ≥ 22.13.0** when running from source or publishing packages (`@cursor/sdk` requires this engine)
+- **Node.js ≥ 22.19.0** when running from source or publishing packages (`undici` requires this engine; `@cursor/sdk` needs ≥ 22.13)
 
 ## Authentication
 
@@ -214,7 +214,7 @@ The `cursor-sdk` transformer:
 
 **Wrong key prefix**: Cursor dashboard keys start with `crsr_`, not `sk-`.
 
-**Node engine errors**: Local install / publish requires Node **≥ 22.13.0**.
+**Node engine errors**: Local install / publish requires Node **≥ 22.19.0**.
 
 **No models from `ccr model get cursor`**: Confirm auth and that the provider uses `cursor-sdk`. Restart after writing models.
 

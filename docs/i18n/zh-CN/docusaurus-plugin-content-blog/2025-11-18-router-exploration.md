@@ -17,6 +17,8 @@ tags: [router, transformer, deepseek]
 
 除了这些问题之外，还有一些其他的小的供应商，他们或多或少参数都有点问题。于是，我打算开发一个新的项目[musistudio/llms](https://github.com/musistudio/llms)来处理这种不同服务商的兼容问题。该项目使用 OpenAI 格式为基础的通用格式，提供了一个`Transformer`接口，该接口用于处理转换请求和响应。当我们给不同的服务商都实现了`Transformer`后，我们可以实现不同服务商的混合调用。比如我在`AnthropicTransformer`中实现了`Anthropic` &lt;-&gt; `OpenAI`格式的互相转换，并监听了`/v1/messages`端点，在`GeminiTransformer`中实现了`Gemini` &lt;-&gt; `OpenAI`格式的互相转换，并监听了`/v1beta/models/:modelAndAction`端点，当他们的请求和响应都被转换成一个通用格式的时候，就可以实现他们的互相调用。
 
+{/* truncate */}
+
 ```
 AnthropicRequest -> AnthropicTransformer -> OpenAIRequest -> GeminiTransformer -> GeminiRequest -> GeminiServer
 ```

@@ -24,7 +24,8 @@ try {
 
   // Build the shared package
   console.log('Building shared package...');
-  execSync('esbuild src/index.ts --bundle --platform=node --minify --tree-shaking=true --outfile=dist/index.js', {
+  // --target matches the package engines floor (>=22.19.0).
+  execSync('esbuild src/index.ts --bundle --platform=node --target=node22 --minify --tree-shaking=true --outfile=dist/index.js', {
     stdio: 'inherit',
     cwd: sharedDir
   });

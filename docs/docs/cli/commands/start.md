@@ -76,6 +76,6 @@ API endpoint: http://localhost:8080/v1
 
 ## Related Commands
 
-- [ccr stop](/docs/cli/other-commands#ccr-stop) - Stop the server
-- [ccr restart](/docs/cli/other-commands#ccr-restart) - Restart the server
-- [ccr status](/docs/cli/other-commands#ccr-status) - Check server status
+- [ccr stop](/docs/cli/commands/other#ccr-stop) - Stop the server
+- [ccr restart](/docs/cli/commands/other#ccr-restart) - Restart the server
+- [ccr status](/docs/cli/commands/status) - Check server status

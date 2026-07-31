@@ -171,7 +171,7 @@ export async function handlePresetCommand(args: string[]): Promise<void> {
   const subCommand = args[0];
 
   switch (subCommand) {
-    case 'export':
+    case 'export': {
       const presetName = args[1];
       if (!presetName) {
         console.error('\nError: Preset name is required\n');
@@ -197,8 +197,9 @@ export async function handlePresetCommand(args: string[]): Promise<void> {
 
       await exportPresetCli(presetName, options);
       break;
+    }
 
-    case 'install':
+    case 'install': {
       const source = args[1];
       if (!source) {
         console.error('\nError: Preset source is required\n');
@@ -208,6 +209,7 @@ export async function handlePresetCommand(args: string[]): Promise<void> {
 
       await installPresetCli(source, {});
       break;
+    }
 
     case 'list':
       await listPresets();
@@ -215,7 +217,7 @@ export async function handlePresetCommand(args: string[]): Promise<void> {
 
     case 'delete':
     case 'rm':
-    case 'remove':
+    case 'remove': {
       const deleteName = args[1];
       if (!deleteName) {
         console.error('\nError: Preset name is required\n');
@@ -224,8 +226,9 @@ export async function handlePresetCommand(args: string[]): Promise<void> {
       }
       await deletePreset(deleteName);
       break;
+    }
 
-    case 'info':
+    case 'info': {
       const infoName = args[1];
       if (!infoName) {
         console.error('\nError: Preset name is required\n');
@@ -234,6 +237,7 @@ export async function handlePresetCommand(args: string[]): Promise<void> {
       }
       await showPresetInfo(infoName);
       break;
+    }
 
     default:
       console.error(`\nError: Unknown preset command "${subCommand}"\n`);

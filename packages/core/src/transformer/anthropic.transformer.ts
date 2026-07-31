@@ -528,10 +528,9 @@ export class AnthropicTransformer implements Transformer {
         let model = "unknown";
         let hasStarted = false;
         let hasTextContentStarted = false;
-        let hasFinished = false;
+        const hasFinished = false;
         const toolCalls = new Map<number, any>();
         const toolCallIndexToContentBlockIndex = new Map<number, number>();
-        let totalChunks = 0;
         let contentChunks = 0;
         let toolCallChunks = 0;
         let isClosed = false;
@@ -751,7 +750,6 @@ export class AnthropicTransformer implements Transformer {
 
               try {
                 const chunk = JSON.parse(data);
-                totalChunks++;
                 this.logger.debug({
                   reqId: context.req.id,
                   response: chunk,
@@ -1175,7 +1173,7 @@ export class AnthropicTransformer implements Transformer {
                       } catch {
                         try {
                           const fixedArgument = toolCall.function.arguments
-                            .replace(/[\x00-\x1F\x7F-\x9F]/g, "")
+                            .replace(/\p{Cc}/gu, "")
                             .replace(/\\/g, "\\\\")
                             .replace(/"/g, '\\"');
 

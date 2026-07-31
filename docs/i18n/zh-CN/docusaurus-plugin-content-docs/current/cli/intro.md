@@ -1,7 +1,5 @@
 ---
 title: 开始使用
-sidebar_position: 1
-slug: /
 ---
 
 # 欢迎使用 Claude Code Router
@@ -66,10 +64,10 @@ Claude Code Router 由四个主要组件组成：
 
 ## 下一步
 
-- [安装指南](/zh/docs/cli/installation) — 详细安装说明
-- [快速开始](/zh/docs/quick-start) — 5 分钟入门
-- [配置](/zh/docs/cli/config/basic) — 了解如何配置路由器
-- [集成指南](/zh/docs/category/integration-guides) — 提供商特定功能设置
+- [安装指南](/docs/cli/installation) — 详细安装说明
+- [快速开始](/docs/cli/quick-start) — 5 分钟入门
+- [配置](/docs/cli/config/basic) — 了解如何配置路由器
+- [集成指南](/docs/category/integration-guides) — 提供商特定功能设置
 
 ## 许可证
 

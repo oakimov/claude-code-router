@@ -395,7 +395,7 @@ export function validateInput(
 
   // Type check
   switch (field.type) {
-    case InputType.NUMBER:
+    case InputType.NUMBER: {
       if (isNaN(Number(value))) {
         return {
           valid: false,
@@ -416,6 +416,7 @@ export function validateInput(
         };
       }
       break;
+    }
 
     case InputType.SELECT:
     case InputType.MULTISELECT:

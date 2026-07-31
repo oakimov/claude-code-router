@@ -42,7 +42,7 @@ export function stripMessagesCacheControl(
     if (Array.isArray(cloned.content)) {
       cloned.content = (cloned.content as MessageContent[]).map((item) => {
         if ((item as TextContent).cache_control) {
-          const { cache_control, ...rest } = item as TextContent;
+          const { cache_control: _cache_control, ...rest } = item as TextContent;
           return rest as MessageContent;
         }
         return item;
@@ -54,7 +54,7 @@ export function stripMessagesCacheControl(
     }
     if (Array.isArray(cloned.tool_calls)) {
       cloned.tool_calls = cloned.tool_calls.map((toolCall: any) => {
-        const { cache_control, ...rest } = toolCall;
+        const { cache_control: _cache_control, ...rest } = toolCall;
         return rest;
       });
     }
@@ -74,7 +74,7 @@ export function stripToolsCacheControl(
   if (!Array.isArray(tools)) return tools;
   return tools.map((tool) => {
     if (!(tool as any).cache_control) return tool;
-    const { cache_control, ...rest } = tool as any;
+    const { cache_control: _cache_control, ...rest } = tool as any;
     return rest as UnifiedTool;
   });
 }

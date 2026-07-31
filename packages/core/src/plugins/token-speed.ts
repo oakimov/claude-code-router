@@ -2,7 +2,7 @@ import fp from 'fastify-plugin';
 import { CCRPlugin, CCRPluginOptions } from './types';
 import { SSEParserTransform } from '../utils/sse';
 import { OutputHandlerConfig, OutputOptions, outputManager } from './output';
-import { ITokenizer, TokenizerConfig } from '../types/tokenizer';
+import { ITokenizer } from '../types/tokenizer';
 
 /**
  * Token statistics interface
@@ -191,7 +191,7 @@ export const tokenSpeedPlugin: CCRPlugin = {
           const match = userId.match(/_session_([a-f0-9-]+)/i);
           sessionId = match ? match[1] : undefined;
         }
-      } catch (error) {
+      } catch {
       }
       if (!sessionId) return;
 
@@ -379,7 +379,7 @@ export const tokenSpeedPlugin: CCRPlugin = {
               tokenCount = estimateTokens(text);
             }
           }
-        } catch (error) {
+        } catch {
           // Could not parse or extract tokens
         }
       }

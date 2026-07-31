@@ -10,6 +10,8 @@ tags: [glm, reasoning, chain-of-thought]
 
 Starting from version 4.5, GLM has supported Claude Code. I've been following its progress closely, and many users have reported that reasoning could not be enabled within Claude Code. Recently, thanks to sponsorship from Zhipu, I decided to investigate this issue in depth. According to the [official documentation](https://docs.z.ai/api-reference/llm/chat-completion), the`/chat/completions` endpoint has reasoning enabled by default, but the model itself decides whether to think:
 
+{/* truncate */}
+
 ```
 thinking.type enum<string> default:enabled
 

@@ -8,6 +8,8 @@ tags: [changelog, fork, features]
 
 This fork of claude-code-router adds several provider integrations, UI improvements, and infrastructure changes. Here's the timeline of what was added and when.
 
+{/* truncate */}
+
 ## January 2026 — Mistral Integration
 
 Added the **Mistral AI transformer** with direct API support, including reasoning parameter handling and dedicated Docker Compose configuration. Decoupled Mistral transformation logic into shared utilities.

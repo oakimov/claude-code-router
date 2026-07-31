@@ -20,7 +20,7 @@ export async function checkForUpdates(currentVersion: string) {
     const hasUpdate = compareVersions(latestVersion, currentVersion) > 0;
     
     // If there is an update, get changelog
-    let changelog = "";
+    const changelog = "";
     
     return { hasUpdate, latestVersion, changelog };
   } catch (error) {

@@ -153,5 +153,5 @@ export CLAUDE_CODE_SUBAGENT_MODEL="openrouter,anthropic/claude-3.5-sonnet"
 
 ## 下一步
 
-- [Agent](/zh/docs/advanced/agents) - 使用 Agent 扩展功能
-- [预设](/zh/docs/advanced/presets) - 使用预定义配置
+- [Agent](/docs/server/config/transformers) - 使用 Agent 扩展功能
+- [预设](/docs/presets/intro) - 使用预定义配置

@@ -1,5 +1,5 @@
-import { UnifiedMessage, UnifiedTool, ImageContent, MessageContent } from "../types/llm";
-// @ts-ignore - latex-to-unicode is a plain JS library without type definitions
+import { ImageContent, MessageContent } from "../types/llm";
+// @ts-expect-error - latex-to-unicode is a plain JS library without type definitions
 import latexToUnicode from "latex-to-unicode";
 
 // ---------------------------------------------------------------------------
@@ -413,9 +413,9 @@ export function replaceLatexSymbols(text: string): string {
 
       // Some models wrap symbols in $, e.g. $\rightarrow$. 
       // The library converts it to $→$, so we clean up the $ signs if they surround converted chars
-      return converted.replace(/\$([^\$]+)\$/g, "$1");
+      return converted.replace(/\$([^$]+)\$/g, "$1");
     });
-  } catch (e) {
+  } catch {
     return text;
   }
 }
@@ -426,7 +426,7 @@ export function replaceLatexSymbols(text: string): string {
  */
 export function sanitizeGeminiFunctionName(name: string): string {
   if (!name) return "unnamed_function";
-  let sanitized = name.replace(/[^a-zA-Z0-9_.:\-]/g, "_");
+  let sanitized = name.replace(/[^a-zA-Z0-9_.:-]/g, "_");
   if (/^[^a-zA-Z_]/.test(sanitized)) {
     sanitized = "_" + sanitized;
   }

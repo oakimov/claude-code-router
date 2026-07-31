@@ -1,3 +1,5 @@
+import { createHash } from "crypto";
+
 /**
  * Anthropic validates `tool_use.id` / `tool_result.tool_use_id` against
  * `^[a-zA-Z0-9_-]+$` and rejects the whole request with a 400
@@ -51,4 +53,44 @@ export function sanitizeToolCallId(id: unknown): string | undefined {
     .replace(/_+$/, "");
 
   return cleaned.length ? cleaned : undefined;
+}
+
+/** OpenAI's Responses API rejects `call_id` values above this length. */
+const MAX_RESPONSES_CALL_ID_LENGTH = 64;
+const RESPONSES_CALL_ID_HASH_LENGTH = 20;
+const RESPONSES_CALL_ID_PREFIX_LENGTH =
+  MAX_RESPONSES_CALL_ID_LENGTH - RESPONSES_CALL_ID_HASH_LENGTH - 1;
+
+function isConformingResponsesCallId(id: string): boolean {
+  return (
+    id.length > 0 &&
+    id.length <= MAX_RESPONSES_CALL_ID_LENGTH &&
+    ANTHROPIC_TOOL_ID_ALLOWED.test(id)
+  );
+}
+
+/**
+ * Bound a Responses API call id without losing tool-call/result pairing.
+ *
+ * Invalid or overlong ids use a readable prefix plus a deterministic hash of
+ * the original value. Hashing avoids collisions from either normalization or
+ * plain truncation, while the conforming fast path makes this idempotent.
+ */
+export function sanitizeResponsesCallId(id: unknown): string | undefined {
+  if (typeof id !== "string" || id.length === 0) return undefined;
+  if (isConformingResponsesCallId(id)) return id;
+
+  const normalized = id
+    .replace(ANTHROPIC_TOOL_ID_DISALLOWED, "_")
+    .replace(/_+$/, "");
+  const prefix =
+    normalized
+      .slice(0, RESPONSES_CALL_ID_PREFIX_LENGTH)
+      .replace(/_+$/, "") || "call";
+  const hash = createHash("sha256")
+    .update(id, "utf8")
+    .digest("base64url")
+    .slice(0, RESPONSES_CALL_ID_HASH_LENGTH);
+
+  return `${prefix}_${hash}`;
 }

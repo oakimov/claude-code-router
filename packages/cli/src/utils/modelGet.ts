@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { backupConfigFile, readConfigFile, readConfigFileRaw, writeConfigFile } from "./index";
-import { CONFIG_FILE } from "@caeliq/ccr-shared";
+import { CONFIG_FILE, resolveCodexPat } from "@caeliq/ccr-shared";
 import type { ProviderConfig } from "@caeliq/ccr-shared";
 import {
   buildCliCodexHeaders,
@@ -135,11 +135,6 @@ function getValueByPath(obj: any, path: string): any {
 
 function getProviderApiKey(provider: ProviderConfig): string | undefined {
   if (!isNonEmptyString(provider.api_key)) {
-    return undefined;
-  }
-
-  const unresolvedEnvPattern = /^\$\{?[A-Z_][A-Z0-9_]*\}?$/;
-  if (unresolvedEnvPattern.test(provider.api_key.trim())) {
     return undefined;
   }
 
@@ -727,8 +722,10 @@ function printEndpointHelp(provider: ProviderConfig, endpoint: ResolvedEndpoint)
 
 function printAuthSource(provider: ProviderConfig): void {
   if (normalizeProviderName(provider.name) === "codex") {
-    const apiKey = getProviderApiKey(provider);
-    if (apiKey && apiKey.startsWith("at-")) {
+    const pat = resolveCodexPat(getProviderApiKey(provider), {
+      allowBareEnvName: true,
+    });
+    if (pat) {
       console.log(`${BOLDCYAN}Auth source:${RESET} api_key (PAT)`);
     } else {
       console.log(`${BOLDCYAN}Auth source:${RESET} ${CODEX_AUTH_FILE}`);

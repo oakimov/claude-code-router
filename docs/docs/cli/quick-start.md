@@ -70,5 +70,5 @@ docker compose restart ccr
 ## What's Next?
 
 - [Basic Configuration](/docs/cli/config/basic) — Learn about configuration options
-- [Routing](/docs/cli/config/routing) — Configure smart routing rules
+- [Routing](/docs/server/config/routing) — Configure smart routing rules
 - [Integration Guides](/docs/category/integration-guides) — Set up provider-specific features

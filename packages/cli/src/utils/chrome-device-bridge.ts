@@ -1860,7 +1860,8 @@ export class ChromeDeviceBridge {
     sessionId: string,
     state: any,
     setupStreaming = true,
-    schema = RESPONSE_SCHEMA,
+    // `null` disables responseConstraint on the truncation-retry path.
+    schema: typeof RESPONSE_SCHEMA | null = RESPONSE_SCHEMA,
     temp = DEFAULT_TEMP
   ): Promise<{ response: string; truncated: boolean }> {
     process.stderr.write(`[bridge] runModel entered (isStreaming=${isStreaming}, setupStreaming=${setupStreaming})\n`);

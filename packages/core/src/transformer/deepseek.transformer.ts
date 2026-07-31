@@ -2,7 +2,6 @@ import { UnifiedChatRequest } from "../types/llm";
 import { Transformer } from "../types/transformer";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
 import {
-  ReasoningAccumulator,
   createReasoningAccumulator,
   accumulateReasoning,
   finalizeReasoning,

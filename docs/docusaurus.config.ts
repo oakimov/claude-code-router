@@ -14,8 +14,17 @@ const config: Config = {
   projectName: 'claude-code-router',
 
   onBrokenLinks: 'warn',
-  onBrokenMarkdownLinks: 'warn',
   onBrokenAnchors: 'warn',
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'warn',
+    },
+  },
+
+  future: {
+    v4: true,
+    faster: true,
+  },
 
   i18n: {
     defaultLocale: 'en',

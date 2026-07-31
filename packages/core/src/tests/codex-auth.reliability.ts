@@ -149,6 +149,31 @@ async function main() {
     assert.equal(patB.config.headers["ChatGPT-Account-ID"], "pat-workspace");
     assert.equal(await patA.config.__authRecovery(), null);
 
+    process.env.CODEX_PAT_TEST = "at-reliability-test";
+    const envPat = await patTransformer.transformRequestIn(
+      {
+        model: "gpt-test",
+        messages: [{ role: "user", content: "env" }],
+      },
+      { apiKey: "$CODEX_PAT_TEST" },
+      { req: { id: "pat-env" } }
+    );
+    assert.equal(envPat.config.headers["ChatGPT-Account-ID"], "pat-workspace");
+
+    const bareEnvPat = await patTransformer.transformRequestIn(
+      {
+        model: "gpt-test",
+        messages: [{ role: "user", content: "bare-env" }],
+      },
+      { apiKey: "CODEX_PAT_TEST" },
+      { req: { id: "pat-bare-env" } }
+    );
+    assert.equal(
+      bareEnvPat.config.headers["ChatGPT-Account-ID"],
+      "pat-workspace"
+    );
+    delete process.env.CODEX_PAT_TEST;
+
     const attempts: string[] = [];
     let recoveryCalls = 0;
     const retried = await sendWithUnauthorizedAuthRecovery(
@@ -187,6 +212,7 @@ async function main() {
     globalThis.fetch = originalFetch;
     if (originalAuthFile === undefined) delete process.env.CCR_CODEX_AUTH_FILE;
     else process.env.CCR_CODEX_AUTH_FILE = originalAuthFile;
+    delete process.env.CODEX_PAT_TEST;
     rmSync(tempDir, { recursive: true, force: true });
   }
 }

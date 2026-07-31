@@ -15,7 +15,7 @@ export class TiktokenTokenizer implements ITokenizer {
     try {
       this.encoding = get_encoding(encodingName);
     } catch (error) {
-      throw new Error(`Failed to initialize tiktoken encoding: ${encodingName}`);
+      throw new Error(`Failed to initialize tiktoken encoding: ${encodingName}`, { cause: error });
     }
   }
 

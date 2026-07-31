@@ -76,7 +76,7 @@ export class WebhookOutputHandler implements OutputHandler {
    * Build request body
    */
   private buildBody(data: any, options: OutputOptions): any {
-    const { format = 'json', timestamp = true, prefix, metadata } = options || {};
+    const { timestamp = true, prefix, metadata } = options || {};
 
     const body: any = {
       data
@@ -188,7 +188,7 @@ export class WebhookOutputHandler implements OutputHandler {
       const headers = this.buildHeaders();
       const body = this.buildBody(data, options);
 
-      const response = await this.sendWithRetry(
+      await this.sendWithRetry(
         this.config.url,
         this.config.method!,
         headers,
@@ -206,7 +206,7 @@ export class WebhookOutputHandler implements OutputHandler {
         return false;
       }
 
-      throw new Error(`Webhook output failed: ${errorMessage}`);
+      throw new Error(`Webhook output failed: ${errorMessage}`, { cause: error });
     }
   }
 }

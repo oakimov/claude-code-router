@@ -2,7 +2,6 @@ import {
   ITokenizer,
   TokenizeRequest,
   TokenizerConfig,
-  ApiRequestFormat,
 } from "../types/tokenizer";
 
 /**
@@ -59,7 +58,7 @@ export class ApiTokenizer implements ITokenizer {
     try {
       new URL(this.config.url);
     } catch (error) {
-      throw new Error(`Invalid API URL: ${this.config.url}`);
+      throw new Error(`Invalid API URL: ${this.config.url}`, { cause: error });
     }
   }
 
@@ -105,7 +104,7 @@ export class ApiTokenizer implements ITokenizer {
       return tokenCount;
     } catch (error: any) {
       if (error.name === "AbortError") {
-        throw new Error("API tokenizer request timed out");
+        throw new Error("API tokenizer request timed out", { cause: error });
       }
       throw error;
     }
@@ -264,7 +263,8 @@ export class ApiTokenizer implements ITokenizer {
         `Failed to extract token count from API response: ${error.message}. Response: ${JSON.stringify(data)}`
       );
       throw new Error(
-        `Invalid response from API tokenizer: ${error.message}`
+        `Invalid response from API tokenizer: ${error.message}`,
+        { cause: error }
       );
     }
   }

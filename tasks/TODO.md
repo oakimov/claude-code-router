@@ -46,17 +46,33 @@ Gemini Nano can enter deterministic loops when emitting highly structured conten
 
 ## 🔒 Temporary security overrides (`pnpm-workspace.yaml`)
 
-These pins clear product high-severity advisories that cannot be fixed by upgrading our direct deps alone. Remove each override once upstream ships a clean tree.
+These pins either clear product high-severity advisories or consolidate compatible transitive versions that cannot be fixed by upgrading our direct deps alone. Remove each override once upstream ships a clean, deduplicated tree.
 
-### 1. `undici@<6.27.0` → `^6.28.0`
+Every override is scoped to an exact `parent@version>child` dependency edge, so a
+bare package name is never force-resolved across the whole graph. When an entry
+stops matching after an upstream bump, pnpm reports it as unused — that is the
+signal to delete it, not to widen the selector.
+
+### 1. `@connectrpc/connect-node@1.7.0>undici` → `^8.9.0`
 - [ ] Drop when `@cursor/sdk` no longer pulls vulnerable `undici@5.x`.
-- **Why**: `@cursor/sdk` → `@connectrpc/connect-node@1.x` declares `undici: ^5.28.4`. Patched undici for the WebSocket GHSAs is `>=6.27`. Connect-node only uses undici for a Node `<18` `Headers` polyfill (dead on our Node `>=22.13`); the package must still resolve at load time.
-- **Scope**: version selector `<6.27.0` so `@caeliq/llms`'s direct `undici@^7` stays untouched.
+- **Why**: `@cursor/sdk` → `@connectrpc/connect-node@1.x` declares `undici: ^5.28.4`. Connect-node's only undici API is `Headers`, and it only uses that polyfill on Node `<18` (dead on our Node `>=22.19`). The package must still resolve at module load time, so point this edge at the same maintained undici 8 range that core already uses rather than installing a second major.
+- **Compatibility**: undici 8 still exports `Headers` from its package root; the complete Cursor SDK test suite passes with connect-node resolving to undici 8.
+- **Scope**: the connect-node edge only; pnpm deduplicates it with `@caeliq/llms`'s direct `undici@^8.9.0`.
 - **Exit**: Cursor ships SDK on `@connectrpc/connect-node@2.x` (no undici dep) or connect-node 1.x raises its undici range; then delete the override and re-audit.
 
-### 2. `react-router-dom>react-router` → `8.3.0`
-- [ ] Drop when `react-router-dom` ships a line that depends on `react-router>=8.3.0` (or migrate UI to RR v8 properly).
-- **Why**: GHSA-qwww-vcr4-c8h2 (RSC CSRF) needs `react-router>=8.3.0`. Latest `react-router-dom` is still `7.18.2` (pins `react-router@7.18.2`). UI is a SPA (`createMemoryRouter`) and does not use RSC; the override is audit hygiene, not an RSC feature enablement.
-- **Scope**: nested under `react-router-dom` so Docusaurus (RR 5) is not force-upgraded.
-- **Peers**: UI `react` / `react-dom` bumped to `^19.2.7` for RR 8 peers. `pnpm peers check` may still warn about docs' React 18 vs RR 8 in the workspace graph — ignore unless docs paths resolve RR 8.
-- **Exit**: bump `packages/ui` to `react-router-dom@8` when published; remove the nested override and re-audit.
+### 2. Compatible transitive consolidation
+- [ ] Drop each edge when its parent reaches the selected child naturally.
+- `@pnpm/network.ca-file@1.0.2>graceful-fs` → `4.2.11`: one-patch update adds `EBUSY` retry handling without changing the API.
+- `sitemap@7.1.3>@types/node` → `26.1.2` and `p-retry@4.6.2>@types/retry` → `0.12.2`: type-only dependencies; workspace typecheck passes against the unified definitions.
+- `serve-handler@6.1.7>bytes` → `3.1.2` and `accepts@1.3.8>negotiator` → `0.6.4`: same-major bugfix/minor releases with their existing APIs preserved.
+- `readable-stream@2.3.8>safe-buffer` and `string_decoder@1.1.1>safe-buffer` → `5.2.1`: same-major Buffer compatibility release; both consumers pass the runtime/API smoke suite.
+- `google-auth-library@10.9.1>google-logging-utils` and `google-auth-library@11.0.0>google-logging-utils` → `1.2.0`: both auth versions only call the preserved `log()` export; direct Google Auth and `@google/genai` loading are verified.
+
+### 3. Docs / UI toolchain bridges
+- [ ] Drop each when its parent ships a range that reaches the maintained child.
+- `copy-webpack-plugin@11>serialize-javascript` and `css-minimizer-webpack-plugin@5>serialize-javascript` → `^7.0.7`: Docusaurus 3.10.2 is current but its Webpack plugins still pin `serialize-javascript@6`.
+- `monaco-editor@0.56.0>dompurify` → `^3.4.12`: Monaco pins DOMPurify 3.4.8.
+- `sockjs@0.3.24>uuid` → `^11.1.0` and `minimatch@3.1.5>brace-expansion` → `^5.0.8`: deprecated / unpatched transitive children of current parents.
+- `gaxios@7.3.0>node-fetch` → `npm:node-fetch-native@^1.6.7`: gaxios still requests `node-fetch@3`, whose deprecated chain is unnecessary on Node 22+ (native fetch).
+- **Note**: `react-router` was migrated to `8.x` directly in `packages/ui`, so it no longer needs an override.
+- **Exit**: re-run `pnpm audit` after each upstream bump and delete entries pnpm reports as unused.

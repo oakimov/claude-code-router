@@ -14,6 +14,8 @@ As early as the day after Claude Code was released (2025-02-25), I began and com
 My goal was to use Claude Code without an Anthropic account. I didn't need the full source code—just a way to intercept and reroute requests made by Claude Code to Anthropic's models to my own custom endpoint. So I started the reverse engineering process:
 
 1. First, install Claude Code:
+
+{/* truncate */}
 ```bash
 npm install -g @anthropic-ai/claude-code
 ```

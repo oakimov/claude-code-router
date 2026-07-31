@@ -296,7 +296,7 @@ export const calculateTokenCount = (
 
 const getProjectSpecificRouter = async (
   req: any,
-  configService: ConfigService
+  _configService: ConfigService
 ) => {
   // Check if there is project-specific configuration
   if (req.sessionId) {

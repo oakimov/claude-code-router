@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'docs/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -24,15 +26,31 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: "22"
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      # Install from the workspace root so the docs build resolves through
+      # pnpm-lock.yaml and pnpm-workspace.yaml overrides. A bare `npm install`
+      # inside ./docs bypasses both and produces an unpinned dependency tree.
       - name: Install dependencies
-        working-directory: ./docs
-        run: npm install
+        run: pnpm install --frozen-lockfile --filter claude-code-router-docs...
 
       - name: Build Docusaurus
-        working-directory: ./docs
-        run: npm run build
+        run: pnpm build:docs
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5

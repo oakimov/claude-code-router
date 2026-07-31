@@ -912,5 +912,5 @@ async transformRequestIn(request, provider, context) {
 ## Next Steps
 
 - [Advanced Topics](/docs/server/advanced/custom-router) - Advanced routing customization
-- [Agents](/docs/server/advanced/agents) - Extending with agents
+- [Agents](/docs/server/config/transformers) - Extending with agents
 - [Core Package](/docs/server/intro) - Learn about @caeliq/llms

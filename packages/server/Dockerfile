@@ -54,7 +54,8 @@ RUN pnpm build
 # ===========================
 # Production Stage
 # ===========================
-# Pin >=22.13 to match @cursor/sdk engines (and builder).
+# Pin to the current Node 22 LTS patch. The workspace floor is >=22.19.0
+# (undici); @cursor/sdk needs >=22.13. Keep in sync with the builder stage.
 FROM node:22.23.2-alpine AS production
 
 # Install PM2, curl, and pm2-logrotate

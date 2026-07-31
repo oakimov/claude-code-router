@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router';
 import Editor from '@monaco-editor/react';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
 import { useTranslation } from 'react-i18next';
-import { X, RefreshCw, Download, Trash2, ArrowLeft, File, Layers, Bug } from 'lucide-react';
+import { X, RefreshCw, Download, Trash2, ArrowLeft, File, Layers } from 'lucide-react';
 
 interface LogViewerProps {
   open: boolean;
@@ -26,10 +26,6 @@ interface LogFile {
   path: string;
   size: number;
   lastModified: string;
-}
-
-interface GroupedLogs {
-  [reqId: string]: LogEntry[];
 }
 
 interface LogGroupSummary {
@@ -64,15 +60,9 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
   const [groupedLogs, setGroupedLogs] = useState<GroupedLogsResponse | null>(null);
   const [selectedReqId, setSelectedReqId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const refreshInterval = useRef<NodeJS.Timeout | null>(null);
+  const refreshInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const editorRef = useRef<any>(null);
-
-  useEffect(() => {
-    if (open) {
-      loadLogFiles();
-    }
-  }, [open]);
 
   // Create inline Web Worker
   const createInlineWorker = (): Worker => {
@@ -204,30 +194,6 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     };
   }, [showToast, t]);
 
-  useEffect(() => {
-    if (autoRefresh && open && selectedFile) {
-      refreshInterval.current = setInterval(() => {
-        loadLogs();
-      }, 5000); // Refresh every 5 seconds
-    } else if (refreshInterval.current) {
-      clearInterval(refreshInterval.current);
-    }
-
-    return () => {
-      if (refreshInterval.current) {
-        clearInterval(refreshInterval.current);
-      }
-    };
-  }, [autoRefresh, open, selectedFile]);
-
-  // Load logs when selected file changes
-  useEffect(() => {
-    if (selectedFile && open) {
-      setLogs([]); // Clear existing logs
-      loadLogs();
-    }
-  }, [selectedFile, open]);
-
   // Handle open/close animations
   useEffect(() => {
     if (open) {
@@ -246,7 +212,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     }
   }, [open]);
 
-  const loadLogFiles = async () => {
+  const loadLogFiles = useCallback(async () => {
     try {
       setIsLoading(true);
       const response = await api.getLogFiles();
@@ -269,9 +235,9 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [showToast, t]);
 
-  const loadLogs = async () => {
+  const loadLogs = useCallback(async () => {
     if (!selectedFile) return;
 
     try {
@@ -318,7 +284,35 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [groupByReqId, selectedFile, showToast, t]);
+
+  useEffect(() => {
+    if (open) {
+      loadLogFiles();
+    }
+  }, [loadLogFiles, open]);
+
+  useEffect(() => {
+    if (autoRefresh && open && selectedFile) {
+      refreshInterval.current = setInterval(loadLogs, 5000);
+    } else if (refreshInterval.current) {
+      clearInterval(refreshInterval.current);
+    }
+
+    return () => {
+      if (refreshInterval.current) {
+        clearInterval(refreshInterval.current);
+      }
+    };
+  }, [autoRefresh, loadLogs, open, selectedFile]);
+
+  // Load logs when selected file changes
+  useEffect(() => {
+    if (selectedFile && open) {
+      setLogs([]);
+      loadLogs();
+    }
+  }, [loadLogs, selectedFile, open]);
 
   const clearLogs = async () => {
     if (!selectedFile) return;
@@ -364,31 +358,6 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
 
   const selectReqId = (reqId: string) => {
     setSelectedReqId(reqId);
-  };
-
-
-  const getDisplayLogs = () => {
-    if (groupByReqId && groupedLogs) {
-      if (selectedReqId && groupedLogs.groups[selectedReqId]) {
-        return groupedLogs.groups[selectedReqId];
-      }
-      // When in grouping mode but no specific request selected, show raw log string array
-      return logs.map(logLine => ({
-        timestamp: new Date().toISOString(),
-        level: 'info',
-        message: logLine,
-        source: undefined,
-        reqId: undefined
-      }));
-    }
-    // When not in grouping mode, show raw log string array
-    return logs.map(logLine => ({
-      timestamp: new Date().toISOString(),
-      level: 'info',
-      message: logLine,
-      source: undefined,
-      reqId: undefined
-    }));
   };
 
   const downloadLogs = () => {
@@ -519,13 +488,13 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
       const requestLogs = groupedLogs.groups[selectedReqId];
       requestLogs.forEach((log, index) => {
         try {
-          // @ts-ignore
-          log = JSON.parse(log)
+          const parsedLog =
+            typeof log === "string" ? JSON.parse(log) : log;
           // Check if the log's msg field equals "final request"
-          if (log.msg === "final request") {
+          if (parsedLog.msg === "final request") {
             lines.push(index + 1); // Line numbers start from 1
           }
-        } catch (e) {
+        } catch {
           // Parsing failed, skip
         }
       });
@@ -538,7 +507,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
           if (log.msg === "final request") {
             lines.push(index + 1); // Line numbers start from 1
           }
-        } catch (e) {
+        } catch {
           // Parsing failed, skip
         }
       });

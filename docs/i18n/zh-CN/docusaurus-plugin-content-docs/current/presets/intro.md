@@ -644,5 +644,5 @@ ccr preset export my-exported-preset \
 
 ## 下一步
 
-- [CLI 参考](/zh/docs/cli/start) - 完整的 CLI 命令参考
-- [配置](/zh/docs/config/basic) - 详细配置指南
+- [CLI 参考](/docs/cli/commands/start) - 完整的 CLI 命令参考
+- [配置](/docs/server/config/basic) - 详细配置指南

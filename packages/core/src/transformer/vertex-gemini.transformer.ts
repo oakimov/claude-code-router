@@ -27,7 +27,7 @@ async function getAccessToken(logger?: any): Promise<string> {
     throw new Error('Failed to get access token for Vertex AI. Please ensure you have set up authentication using one of these methods:\n' +
       '1. Set GOOGLE_APPLICATION_CREDENTIALS to point to service account key file\n' +
       '2. Run "gcloud auth application-default login"\n' +
-      '3. Use Google Cloud environment with default service account');
+      '3. Use Google Cloud environment with default service account', { cause: error });
   }
 }
 
@@ -50,7 +50,7 @@ export class VertexGeminiTransformer implements Transformer {
   async transformRequestIn(
     request: UnifiedChatRequest,
     provider: LLMProvider,
-    context?: any
+    _context?: any
   ): Promise<Record<string, any>> {
     let projectId = process.env.GOOGLE_CLOUD_PROJECT;
     const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';

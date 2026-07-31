@@ -45,7 +45,6 @@ export class EnhanceToolTransformer implements Transformer {
       let hasTextContent = false;
       let reasoningContent = "";
       let isReasoningComplete = false;
-      let hasToolCall = false;
       let buffer = ""; // used to buffer incomplete data
 
       const stream = new ReadableStream({
@@ -70,7 +69,7 @@ export class EnhanceToolTransformer implements Transformer {
             controller: ReadableStreamDefaultController,
             encoder: TextEncoder
           ) => {
-            let finalArgs = "";
+            let finalArgs: string;
             try {
               finalArgs = parseToolArguments(currentToolCall.arguments || "", this.logger);
             } catch (e: any) {
@@ -205,7 +204,7 @@ export class EnhanceToolTransformer implements Transformer {
 
                 const modifiedLine = `data: ${JSON.stringify(data)}\n\n`;
                 controller.enqueue(encoder.encode(modifiedLine));
-              } catch (e) {
+              } catch {
                 // If JSON parsing fails, it might be because the data is incomplete; pass the original line through
                 controller.enqueue(encoder.encode(line + "\n"));
               }

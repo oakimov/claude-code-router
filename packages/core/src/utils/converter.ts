@@ -1,5 +1,4 @@
 import type { ChatCompletionMessageParam as OpenAIMessage } from "openai/resources/chat/completions";
-import type { MessageParam as AnthropicMessage } from "@anthropic-ai/sdk/resources/messages";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import type { Tool as AnthropicTool } from "@anthropic-ai/sdk/resources/messages";
 import {
@@ -137,7 +136,7 @@ export function convertToOpenAI(
   }
 
   if (toolResponsesQueue.size > 0) {
-    for (const [id, responses] of toolResponsesQueue.entries()) {
+    for (const responses of toolResponsesQueue.values()) {
       responses.forEach((response: any) => {
         messages.push(response);
       });
@@ -208,7 +207,7 @@ export function convertFromOpenAI(
           content: null,
           tool_calls: convertedToolCalls,
         };
-      } catch (error) {
+      } catch {
         return {
           role: msg.role as "user" | "assistant" | "system",
           content: msg.content,

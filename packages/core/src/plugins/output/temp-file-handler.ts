@@ -62,7 +62,7 @@ export class TempFileOutputHandler implements OutputHandler {
       if (!existsSync(this.baseDir)) {
         mkdirSync(this.baseDir, { recursive: true });
       }
-    } catch (error) {
+    } catch {
       // Silently fail
     }
   }
@@ -125,7 +125,7 @@ export class TempFileOutputHandler implements OutputHandler {
       writeFileSync(filePath, JSON.stringify(outputData, null, 2), 'utf-8');
 
       return true;
-    } catch (error) {
+    } catch {
       // Silently fail to avoid disrupting main flow
       return false;
     }

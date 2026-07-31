@@ -1,7 +1,6 @@
 import { Transformer, TransformerConstructor } from "@/types/transformer";
 import { ConfigService } from "./config";
 import Transformers from "@/transformer";
-import Module from "node:module";
 
 interface TransformerConfig {
   transformers: Array<{

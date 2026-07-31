@@ -153,6 +153,6 @@ ccr restart
 
 ## Next Steps
 
-- [Providers Configuration](/docs/config/providers) - Detailed provider configuration
-- [Routing Configuration](/docs/config/routing) - Configure routing rules
-- [Transformers](/docs/config/transformers) - Apply transformations
+- [Providers Configuration](/docs/server/config/providers) - Detailed provider configuration
+- [Routing Configuration](/docs/server/config/routing) - Configure routing rules
+- [Transformers](/docs/server/config/transformers) - Apply transformations

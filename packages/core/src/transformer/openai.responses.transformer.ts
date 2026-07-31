@@ -1,12 +1,12 @@
 import { UnifiedChatRequest, MessageContent } from "@/types/llm";
 import { Transformer } from "@/types/transformer";
+import { sanitizeResponsesCallId } from "@/utils/toolCallId";
 import {
   applyOpenAIChatCaching,
   validateOpenAIToolCalls,
   openAIContentCacheBreakpoint,
 } from "../utils/openai.util";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
-import { stripCacheControl } from "../utils/cacheControl";
 
 interface ResponsesAPIOutputItem {
   type: string;
@@ -112,14 +112,14 @@ export class OpenAIResponsesTransformer implements Transformer {
     if (request.reasoning) {
       request.reasoning = {
         effort: request.reasoning.effort,
-        // @ts-ignore - summary is specific to this API
+        // @ts-expect-error - summary is specific to this API
         summary: "detailed",
       };
     }
 
     const model = request.model || "";
     request = applyOpenAIChatCaching(request, provider, context);
-    let messages = validateOpenAIToolCalls(request.messages);
+    const messages = validateOpenAIToolCalls(request.messages);
     request.messages = messages;
 
     const input: any[] = [];
@@ -177,7 +177,8 @@ export class OpenAIResponsesTransformer implements Transformer {
       if (message.role === "tool") {
         const toolMessage: any = { ...message };
         toolMessage.type = "function_call_output";
-        toolMessage.call_id = message.tool_call_id;
+        toolMessage.call_id =
+          sanitizeResponsesCallId(message.tool_call_id) ?? message.tool_call_id;
         toolMessage.output = message.content;
         delete toolMessage.cache_control;
         delete toolMessage.role;
@@ -198,7 +199,7 @@ export class OpenAIResponsesTransformer implements Transformer {
             type: "function_call",
             arguments: tool.function.arguments,
             name: tool.function.name,
-            call_id: tool.id,
+            call_id: sanitizeResponsesCallId(tool.id) ?? tool.id,
           });
         });
 
@@ -295,7 +296,6 @@ export class OpenAIResponsesTransformer implements Transformer {
         return response;
       }
 
-      let isStreamEnded = false;
       let currentIndex = -1;
       let lastEventType = "";
 
@@ -307,8 +307,6 @@ export class OpenAIResponsesTransformer implements Transformer {
         return currentIndex;
       };
 
-      const transformer = this;
-
       return createSSEStreamReader(
         response,
         (line: string, ctx: StreamContext) => {
@@ -319,14 +317,13 @@ export class OpenAIResponsesTransformer implements Transformer {
           if (line.startsWith("data: ")) {
             const dataStr = line.slice(5).trim();
             if (dataStr === "[DONE]") {
-              isStreamEnded = true;
               ctx.controller.enqueue(encodeSSEData("[DONE]", ctx.encoder));
               return;
             }
 
             try {
               const data: ResponsesStreamEvent = JSON.parse(dataStr);
-              const chunk = transformer.convertStreamEvent(data, getCurrentIndex);
+              const chunk = this.convertStreamEvent(data, getCurrentIndex);
               if (chunk) {
                 ctx.controller.enqueue(encodeSSEData(JSON.stringify(chunk), ctx.encoder));
               }
@@ -376,7 +373,10 @@ export class OpenAIResponsesTransformer implements Transformer {
               tool_calls: [
                 {
                   index: 0,
-                  id: data.item.call_id || data.item.id,
+                  id:
+                    sanitizeResponsesCallId(
+                      data.item.call_id || data.item.id
+                    ) || data.item.call_id || data.item.id,
                   function: {
                     name: data.item.name || "",
                     arguments: "",
@@ -676,7 +676,10 @@ export class OpenAIResponsesTransformer implements Transformer {
     if (functionCallOutput) {
       toolCalls = [
         {
-          id: functionCallOutput.call_id || functionCallOutput.id,
+          id:
+            sanitizeResponsesCallId(
+              functionCallOutput.call_id || functionCallOutput.id
+            ) || functionCallOutput.call_id || functionCallOutput.id,
           function: {
             name: functionCallOutput.name,
             arguments: functionCallOutput.arguments,

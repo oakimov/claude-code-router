@@ -206,10 +206,10 @@ interface UnifiedMessage {
 - 通过 `ccr model get` 使用 `Cursor.models.list` 发现模型
 
 另见：
-- [Codex 集成指南](/zh/docs/server/guides/codex)
-- [Claude 订阅集成指南](/zh/docs/server/guides/claude-auth)
-- [Cursor SDK 集成指南](/zh/docs/server/guides/cursor)
-- [CLI 认证命令](/zh/docs/cli/commands/auth)
+- [Codex 集成指南](/docs/server/guides/codex)
+- [Claude 订阅集成指南](/docs/server/guides/claude-auth)
+- [Cursor SDK 集成指南](/docs/server/guides/cursor)
+- [CLI 认证命令](/docs/cli/commands/auth)
 
 ### antigravity-auth
 
@@ -239,10 +239,10 @@ interface UnifiedMessage {
 - 在 daily → autopush → prod 主机间对传输 / 权限失败做端点回退
 
 **示例中必需的 Gemini 选项：**
-- `cachedContent: false` — Antigravity 没有 Google `cachedContents` 资源；保留 Gemini 默认值（`true`）会导致 404。详见 [gemini 选项](#选项-cachedcontent-与-thoughtsignaturefallback)。
+- `cachedContent: false` — Antigravity 没有 Google `cachedContents` 资源；保留 Gemini 默认值（`true`）会导致 404。详见 [gemini 选项](#options-cachedcontent-and-thoughtsignaturefallback)。
 - `thoughtSignatureFallback: "skip"` — 默认值的显式写法；当缺少工具调用的 thought signature 时，盖印 Google 的 `skip_thought_signature_validator` 哨兵，避免 Gemini/Antigravity 返回 400。仅在端点拒绝该哨兵时改为 `"none"`。
 
-另见：[CLI 认证命令](/zh/docs/cli/commands/auth)
+另见：[CLI 认证命令](/docs/cli/commands/auth)
 
 ### deepseek
 
@@ -287,7 +287,7 @@ interface UnifiedMessage {
 - 从不重写已配置的模型 id（带 tier 后缀的 id 继续访问同一上游 id）
 - 以下选项同样适用于 `vertex-gemini`
 
-#### 选项：`cachedContent` 与 `thoughtSignatureFallback`
+#### 选项：`cachedContent` 与 `thoughtSignatureFallback` \{#options-cachedcontent-and-thoughtsignaturefallback\}
 
 作为 `gemini` / `vertex-gemini` 在 `transformer.use` 中的第二项传入：
 
@@ -890,5 +890,5 @@ async transformRequestIn(request, provider, context) {
 ## 下一步
 
 - [高级主题](/docs/server/advanced/custom-router) - 高级路由自定义
-- [Agents](/docs/server/advanced/agents) - 使用 agents 扩展
+- [Agents](/docs/server/config/transformers) - 使用 agents 扩展
 - [核心包](/docs/server/intro) - 了解 @caeliq/llms

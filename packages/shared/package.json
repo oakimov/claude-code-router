@@ -5,7 +5,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "node ../../scripts/build-shared.js"
+    "build": "node ../../scripts/build-shared.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src"
   },
   "keywords": [
     "claude",
@@ -25,9 +27,13 @@
     "json5": "^2.2.3"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.7",
-    "@types/node": "^24.7.0",
-    "esbuild": "^0.25.10",
-    "typescript": "^5.8.3"
+    "@types/adm-zip": "^0.5.8",
+    "@types/node": "^26.1.2",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
   }
 }

@@ -643,5 +643,5 @@ Each preset is a directory containing a `manifest.json` file.
 
 ## Next Steps
 
-- [CLI Reference](/docs/cli/start) - Complete CLI command reference
-- [Configuration](/docs/config/basic) - Detailed configuration guide
+- [CLI Reference](/docs/cli/commands/start) - Complete CLI command reference
+- [Configuration](/docs/server/config/basic) - Detailed configuration guide

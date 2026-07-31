@@ -6,7 +6,6 @@ import {
   resolveClaudeAuthAnthropicBeta,
 } from "../transformer/claude-auth.transformer";
 import { AnthropicTransformer } from "../transformer/anthropic.transformer";
-import type { UnifiedChatRequest } from "../types/llm";
 
 function testMergeAnthropicBetaValues() {
   assert.equal(

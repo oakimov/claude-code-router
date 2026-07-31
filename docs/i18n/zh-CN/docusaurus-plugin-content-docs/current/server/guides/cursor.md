@@ -12,7 +12,7 @@ Claude Code Router 可以通过官方 `@cursor/sdk` 将 Claude Code 请求路由
 
 - Cursor 账户，以及以 `crsr_` 开头的 API 密钥（来自 Cursor 控制台）
 - 正在运行的 Claude Code Router（Docker Compose 或本地）
-- 从源码运行或发布包时需要 **Node.js ≥ 22.13.0**（`@cursor/sdk` 的 engines 要求）
+- 从源码运行或发布包时需要 **Node.js ≥ 22.19.0**（`undici` 的 engines 要求；`@cursor/sdk` 需要 ≥ 22.13）
 
 ## 认证
 
@@ -214,7 +214,7 @@ environment:
 
 **密钥前缀错误**：Cursor 控制台密钥以 `crsr_` 开头，不是 `sk-`。
 
-**Node engines 错误**：本地安装 / 发布需要 Node **≥ 22.13.0**。
+**Node engines 错误**：本地安装 / 发布需要 Node **≥ 22.19.0**。
 
 **`ccr model get cursor` 没有返回模型**：确认认证以及提供商使用了 `cursor-sdk`。写入模型后请重启。
 

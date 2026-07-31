@@ -43,7 +43,7 @@
 
 开始前，请确保系统已安装以下组件：
 - **Docker 和 Docker Compose**（推荐）：运行路由器的主要方式。参见 [Docker 安装指南](https://docs.docker.com/get-docker/)。
-- **Node.js**（可选）：从源码运行、发布包或使用 **Chrome 端侧桥接** 时需要。本 fork 需要 **Node.js ≥ 22.13.0**（`@cursor/sdk` 所需）。参见 [Node.js 下载](https://nodejs.org/)。
+- **Node.js**（可选）：从源码运行、发布包或使用 **Chrome 端侧桥接** 时需要。本 fork 需要 **Node.js ≥ 22.19.0**（`undici` 所需）。参见 [Node.js 下载](https://nodejs.org/)。
 - **Claude Code**：参见[官方快速开始指南](https://code.claude.com/docs/en/quickstart)获取安装说明。
 
 #### 使用 Docker 快速启动

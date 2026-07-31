@@ -20,11 +20,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const CCR_SERVER_URL = "http://localhost:3456";
-const API_KEY = process.env.CCR_API_KEY || "sk-ant-test-key"; // Use env var if available
+const API_KEY = process.env.CCR_API_KEY || "dummy"; // Use env var if available
 const SESSION_ID = "test-" + Date.now(); // Unique per test run to force fresh session
 
-async function requestCCR(payload: any) {
-  return new Promise((resolve, reject) => {
+async function requestCCR(payload: any): Promise<any> {
+  return new Promise<any>((resolve, reject) => {
     const req = http.request({
       hostname: "localhost",
       port: 3456,

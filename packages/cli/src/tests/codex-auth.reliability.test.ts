@@ -116,6 +116,13 @@ async function main() {
     assert.equal(patCalls, 1);
     assert.equal(pat.accountId, "pat-cli-workspace");
 
+    process.env.CODEX_CLI_PAT_TEST = "at-cli-test";
+    const envPat = await resolveCliCodexAuth("${CODEX_CLI_PAT_TEST}");
+    const bareEnvPat = await resolveCliCodexAuth("CODEX_CLI_PAT_TEST");
+    assert.equal(envPat.accountId, "pat-cli-workspace");
+    assert.equal(bareEnvPat.accountId, "pat-cli-workspace");
+    delete process.env.CODEX_CLI_PAT_TEST;
+
     writeFileSync(
       authFile,
       JSON.stringify({
@@ -177,6 +184,7 @@ async function main() {
     globalThis.fetch = originalFetch;
     if (originalAuthFile === undefined) delete process.env.CCR_CODEX_AUTH_FILE;
     else process.env.CCR_CODEX_AUTH_FILE = originalAuthFile;
+    delete process.env.CODEX_CLI_PAT_TEST;
     rmSync(tempDir, { recursive: true, force: true });
   }
 }

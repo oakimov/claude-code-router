@@ -15,6 +15,8 @@ tags: [claude-code, 逆向工程, 教程]
 
 1. 首先安装`Claude Code`
 
+{/* truncate */}
+
 ```bash
 npm install -g @anthropic-ai/claude-code
 ```

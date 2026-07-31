@@ -22,6 +22,8 @@ Once a `Transformer` is implemented for each provider, it becomes possible to mi
 
 When both requests and responses are transformed into a common format, they can interoperate seamlessly:
 
+{/* truncate */}
+
 ```
 AnthropicRequest -> AnthropicTransformer -> OpenAIRequest -> GeminiTransformer -> GeminiRequest -> GeminiServer
 ```

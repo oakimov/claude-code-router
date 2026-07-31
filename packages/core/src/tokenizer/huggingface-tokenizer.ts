@@ -133,7 +133,6 @@ export class HuggingFaceTokenizer implements ITokenizer {
     try {
       this.logger?.info(`Initializing HuggingFace tokenizer: ${this.modelId}`);
 
-      const paths = this.getCachePaths();
       this.ensureDir(this.cacheDir);
 
       const tokenizerData = await this.loadFromCache() || await this.downloadAndCache();
@@ -142,7 +141,7 @@ export class HuggingFaceTokenizer implements ITokenizer {
       this.logger?.info(`Tokenizer initialized: ${this.name}`);
     } catch (error: any) {
       this.logger?.error(`Failed to initialize tokenizer: ${error.message}`);
-      throw new Error(`Failed to initialize HuggingFace tokenizer for ${this.modelId}: ${error.message}`);
+      throw new Error(`Failed to initialize HuggingFace tokenizer for ${this.modelId}: ${error.message}`, { cause: error });
     }
   }
 

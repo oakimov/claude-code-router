@@ -1,5 +1,5 @@
 import { UnifiedChatRequest } from "../types/llm";
-import { Transformer, TransformerOptions } from "../types/transformer";
+import { Transformer } from "../types/transformer";
 
 export class StreamOptionsTransformer implements Transformer {
   name = "streamoptions";

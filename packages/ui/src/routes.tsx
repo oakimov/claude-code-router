@@ -1,4 +1,4 @@
-import { createMemoryRouter, Navigate } from 'react-router-dom';
+import { createMemoryRouter, Navigate } from 'react-router';
 import App from './App';
 import { Login } from '@/components/Login';
 import { DebugPage } from '@/components/DebugPage';

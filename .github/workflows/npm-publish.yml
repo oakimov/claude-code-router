@@ -61,6 +61,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Gate the publish on the same checks that must pass locally. Chrome
+      # bridge tests stay opt-in (see OPT_IN_ONLY in scripts/run-tests.js).
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
       - name: Build packages
         run: pnpm build
 

@@ -70,6 +70,6 @@ docker compose restart ccr
 
 ## 下一步
 
-- [基础配置](/zh/docs/cli/config/basic) — 了解配置选项
-- [路由配置](/zh/docs/cli/config/routing) — 配置智能路由规则
-- [集成指南](/zh/docs/category/integration-guides) — 提供商特定功能设置
+- [基础配置](/docs/cli/config/basic) — 了解配置选项
+- [路由配置](/docs/server/config/routing) — 配置智能路由规则
+- [集成指南](/docs/category/integration-guides) — 提供商特定功能设置

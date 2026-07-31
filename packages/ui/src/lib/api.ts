@@ -1,21 +1,5 @@
 import type { Config, Provider, Transformer } from '@/types';
 
-// Log aggregation response type
-interface GroupedLogsResponse {
-  grouped: boolean;
-  groups: { [reqId: string]: Array<{ timestamp: string; level: string; message: string; source?: string; reqId?: string }> };
-  summary: {
-    totalRequests: number;
-    totalLogs: number;
-    requests: Array<{
-      reqId: string;
-      logCount: number;
-      firstLog: string;
-      lastLog: string;
-    }>;
-  };
-}
-
 // API Client Class for handling requests with baseUrl and apikey authentication
 class ApiClient {
   private baseUrl: string;

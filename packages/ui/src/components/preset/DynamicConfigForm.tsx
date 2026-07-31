@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -81,24 +81,6 @@ export function DynamicConfigForm({
   const { t } = useTranslation();
   const [values, setValues] = useState<Record<string, any>>(initialValues);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [visibleFields, setVisibleFields] = useState<Set<string>>(new Set());
-
-  // Calculate visible fields
-  useEffect(() => {
-    const updateVisibility = () => {
-      const visible = new Set<string>();
-
-      for (const field of schema) {
-        if (shouldShowField(field)) {
-          visible.add(field.id);
-        }
-      }
-
-      setVisibleFields(visible);
-    };
-
-    updateVisibility();
-  }, [values, schema]);
 
   // Evaluate condition
   const evaluateCondition = (condition: Condition): boolean => {
@@ -143,6 +125,11 @@ export function DynamicConfigForm({
     const conditions = Array.isArray(field.when) ? field.when : [field.when];
     return conditions.every(condition => evaluateCondition(condition));
   };
+
+  // Calculate visible fields directly from the current schema and values.
+  const visibleFields = new Set(
+    schema.filter(shouldShowField).map((field) => field.id)
+  );
 
   // Get options list
   const getOptions = (field: RequiredInput): InputOption[] => {

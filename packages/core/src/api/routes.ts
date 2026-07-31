@@ -1,6 +1,5 @@
 import {
   FastifyInstance,
-  FastifyPluginAsync,
   FastifyRequest,
   FastifyReply,
 } from "fastify";
@@ -334,10 +333,9 @@ async function processRequestTransformers(
 ) {
   let requestBody = body;
   let config: any = {};
-  let bypass = false;
 
   // Check if transformers should be bypassed (passthrough mode)
-  bypass = shouldBypassTransformers(provider, transformer, body);
+  const bypass = shouldBypassTransformers(provider, transformer, body);
   const skipBodyConversion = bypass || provider.transformer?.passthrough;
 
   if (bypass) {
@@ -591,7 +589,7 @@ async function sendRequestToProvider(
             }
           }
         }
-      } catch (e) {
+      } catch {
         // Ignore JSON parse errors
       }
     }
@@ -889,7 +887,7 @@ export const registerApiRoutes = async (
     },
     async (
       request: FastifyRequest<{ Body: RegisterProviderRequest }>,
-      reply: FastifyReply
+      _reply: FastifyReply
     ) => {
       // Validation
       const { name, baseUrl, apiKey, models } = request.body;
@@ -988,7 +986,7 @@ export const registerApiRoutes = async (
         Params: { id: string };
         Body: Partial<LLMProvider>;
       }>,
-      reply
+      _reply
     ) => {
       const provider = fastify.providerService.updateProvider(
         request.params.id,
@@ -1044,7 +1042,7 @@ export const registerApiRoutes = async (
         Params: { id: string };
         Body: { enabled: boolean };
       }>,
-      reply
+      _reply
     ) => {
       const success = fastify.providerService.toggleProvider(
         request.params.id,

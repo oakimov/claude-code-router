@@ -29,7 +29,7 @@ ccr claude-auth
 - [Claude Pro 或 Max](https://claude.ai) 订阅
 - CCR 服务器必须正在运行（它在端口 1455 上托管 OAuth 回调）
 
-另见：[Claude 订阅集成指南](/zh/docs/server/guides/claude-auth)。`claude-auth` 转换器会自动发送 Anthropic 的 `oauth-2025-04-20` beta，以便订阅 OAuth Bearer 令牌被接受。
+另见：[Claude 订阅集成指南](/docs/server/guides/claude-auth)。`claude-auth` 转换器会自动发送 Anthropic 的 `oauth-2025-04-20` beta，以便订阅 OAuth Bearer 令牌被接受。
 
 ---
 
@@ -110,7 +110,7 @@ ccr antigravity-auth --project <gcp-project-id>
 }
 ```
 
-该链中的 Gemini 选项（完整说明见 [转换器 → gemini](/zh/docs/server/config/transformers#选项-cachedcontent-与-thoughtsignaturefallback)）：
+该链中的 Gemini 选项（完整说明见 [转换器 → gemini](/docs/server/config/transformers#options-cachedcontent-and-thoughtsignaturefallback)）：
 
 - **`cachedContent: false`** — Antigravity 没有 Google `cachedContents` 资源。Gemini 转换器默认是 `true`（公共 Gemini 可能创建/复用该服务端前缀缓存）。在此保留 `true` 会导致 404。
 - **`thoughtSignatureFallback: "skip"`** — 默认值的显式写法。Gemini 3 / Antigravity 要求工具调用带有 `thoughtSignature`；Claude Code 无法在 Anthropic `tool_use` 上携带它，因此 CCR 缓存并还原签名。未命中时，`"skip"` 会在第一个 `functionCall` 上盖印 Google 的 `skip_thought_signature_validator` 哨兵，避免 400。取值名称指的是该哨兵 — **不是**“关闭回退”。仅在端点拒绝该哨兵时设为 `"none"`。

@@ -5,9 +5,9 @@
  */
 
 /* Tailwind CSS directives */
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@config "../../tailwind.config.js";
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 /* You can override the default Infima variables here. */
 :root {

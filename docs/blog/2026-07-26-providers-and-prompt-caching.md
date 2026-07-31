@@ -8,6 +8,8 @@ tags: [changelog, fork, providers, caching]
 
 Since the [June fork changelog](/blog/2026/06/01/fork-changelog), this fork added several subscription-backed providers and fixed prompt-caching reliability across the transformer stack. Exact introduction dates from the git history:
 
+{/* truncate */}
+
 ## June 18, 2026 — Claude Auth (Pro/Max Subscription)
 
 Added the **claude-auth OAuth PKCE flow** (`ccr claude-auth`) so Claude Pro/Max subscription tokens can be routed through the gateway like other subscription-backed providers.

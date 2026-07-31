@@ -77,6 +77,6 @@ API endpoint: http://localhost:3456/v1
 
 ## 相关命令
 
-- [ccr stop](/zh/docs/cli/other-commands#ccr-stop) - 停止服务器
-- [ccr restart](/zh/docs/cli/other-commands#ccr-restart) - 重启服务器
-- [ccr status](/zh/docs/cli/other-commands#ccr-status) - 检查服务器状态
+- [ccr stop](/docs/cli/commands/other#ccr-stop) - 停止服务器
+- [ccr restart](/docs/cli/commands/other#ccr-restart) - 重启服务器
+- [ccr status](/docs/cli/commands/status) - 检查服务器状态

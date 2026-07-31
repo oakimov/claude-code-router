@@ -249,6 +249,6 @@ ccr preset export my-preset --include-sensitive
 
 ## 相关文档
 
-- [配置指南](/zh/docs/cli/config/basic) - 基础配置
-- [项目级配置](/zh/docs/cli/config/project-level) - 项目特定设置
-- [预设](/zh/docs/presets/intro) - 高级预设主题
+- [配置指南](/docs/cli/config/basic) - 基础配置
+- [项目级配置](/docs/cli/config/project-level) - 项目特定设置
+- [预设](/docs/presets/intro) - 高级预设主题

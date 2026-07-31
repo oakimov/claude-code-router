@@ -142,7 +142,7 @@ export async function installPresetFromMarket(presetName: string): Promise<{ nam
     const manifest = await readManifestFromDir(targetDir);
 
     // Add repo information to manifest
-    manifest.repository = marketPreset.repository;
+    manifest.repository = marketPreset.repo;
     if (marketPreset.url) {
       manifest.source = marketPreset.url;
     }

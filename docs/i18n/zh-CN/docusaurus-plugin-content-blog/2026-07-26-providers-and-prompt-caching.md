@@ -6,7 +6,9 @@ tags: [changelog, fork, providers, caching]
 
 # 新提供商与提示缓存修复
 
-自 [6 月分支更新日志](/zh/blog/2026/06/01/fork-changelog) 以来，本分支新增了多个订阅类提供商，并修复了转换器栈中的提示缓存可靠性。以下日期来自 git 历史：
+自 [6 月分支更新日志](/blog/2026/06/01/fork-changelog) 以来，本分支新增了多个订阅类提供商，并修复了转换器栈中的提示缓存可靠性。以下日期来自 git 历史：
+
+{/* truncate */}
 
 ## 2026 年 6 月 18 日 — Claude Auth（Pro/Max 订阅）
 
@@ -43,7 +45,7 @@ tags: [changelog, fork, providers, caching]
 
 ## 文档
 
-- [Claude Auth](/zh/docs/server/guides/claude-auth)
-- [Cursor SDK](/zh/docs/server/guides/cursor)
-- [Codex 集成](/zh/docs/server/guides/codex)
-- [更早的分支时间线](/zh/blog/2026/06/01/fork-changelog)
+- [Claude Auth](/docs/server/guides/claude-auth)
+- [Cursor SDK](/docs/server/guides/cursor)
+- [Codex 集成](/docs/server/guides/codex)
+- [更早的分支时间线](/blog/2026/06/01/fork-changelog)

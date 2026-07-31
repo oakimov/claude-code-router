@@ -50,10 +50,22 @@ function testRedact() {
   const logged = sanitizeErrorForLog(loggedError);
   assert.equal(logged.code, "ECONNRESET");
   assert.ok(!logged.message.includes("abc123xyz999"));
-  assert.ok(logged.stack?.includes("Error: token=[redacted]"), logged.stack);
-  assert.ok(!logged.stack?.includes("abc123xyz999"), logged.stack);
-  assert.ok(logged.cause?.includes("connect to [redacted-address]"), logged.cause);
-  assert.ok(!logged.cause?.includes("othersecret"), logged.cause);
+  assert.ok(
+    logged.stack?.includes("Error: token=[redacted]"),
+    logged.stack ?? "missing sanitized stack"
+  );
+  assert.ok(
+    !logged.stack?.includes("abc123xyz999"),
+    logged.stack ?? "missing sanitized stack"
+  );
+  assert.ok(
+    logged.cause?.includes("connect to [redacted-address]"),
+    logged.cause ?? "missing sanitized cause"
+  );
+  assert.ok(
+    !logged.cause?.includes("othersecret"),
+    logged.cause ?? "missing sanitized cause"
+  );
 
   const headers = sanitizeHeadersForLog({
     Authorization: "Bearer secret",

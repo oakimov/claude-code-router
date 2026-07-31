@@ -75,6 +75,34 @@ pnpm dev:server     # Develop Server (tsx)
 pnpm dev:ui         # Develop UI (Vite)
 ```
 
+### Verification
+
+Run these locally before tagging a release. `npm-publish.yml` runs the same
+checks on the tag, but a failure there means the version is already burned —
+catch it here instead.
+
+```bash
+pnpm typecheck            # tsc --noEmit across all packages
+pnpm lint                 # eslint across all packages
+pnpm test                 # all hermetic tests
+pnpm test:chrome-bridge   # additionally runs the Chrome bridge test
+```
+
+`pnpm test` executes every `packages/*/src/tests/*.ts` file via
+`scripts/run-tests.js`. Each test is a standalone tsx entry point that exits
+non-zero on failure — there is no test framework. Add a new test by dropping a
+file in that directory; it is picked up automatically.
+
+Tests run from their owning package directory so core's `@/*` path alias
+resolves; invoking `npx tsx packages/core/src/tests/foo.ts` from the repo root
+fails for that reason.
+
+`ccr-anthropic-flow.test.ts` is an end-to-end check of the
+Claude Code → CCR → Gemini Nano bridge → CCR round trip. It needs a running CCR
+server plus `ccr chrome-bridge` against a Chrome with Gemini Nano available, so
+it is opt-in via `--chrome-bridge` and never runs in CI. Register any other test
+with operator-provided dependencies in `OPT_IN_ONLY` in the runner.
+
 ### Publish
 ```bash
 pnpm release        # Build and publish all packages
@@ -109,15 +137,28 @@ There are **two version lines**:
 **Do not change for a routine bump:**
 - `docs/package.json` (`0.0.0`)
 - Preset / example `"version"` fields (`examples/*`, preset docs)
-- Historical blog posts or backup docs under `docs/i18n/...backup...`
+- Historical blog posts under `docs/blog/` and `docs/i18n/**/docusaurus-plugin-content-blog/`
 - Inter-package deps that use `workspace:*` (rewritten to `^<shared version>` at publish time)
 - Stale pinned install examples like `@caeliq/claude-code-router@1.0.8` in README GitHub Actions samples, unless the user explicitly asks to refresh those examples
+
+**Package review (`/package-review`):**
+
+Before finishing a version bump, treat dependency hygiene by semver size of the **product** line (`X.Y.Z`):
+
+| Bump | Action |
+|---|---|
+| **Patch** (`Z`) | Optional — run only if the release touched deps, lockfile, or overrides |
+| **Minor** (`Y`) | **Suggest** running `.claude/skills/package-review` (audit, dedupe, consolidate versions) before tagging; proceed if the user declines |
+| **Major** (`X`) | **Always execute** `/package-review` (or follow that skill end-to-end) before tagging; do not skip |
+
+The same rule applies when bumping core's independent `1.0.x` line by its own minor/major. Skill path: `.claude/skills/package-review/SKILL.md`.
 
 **Procedure:**
 1. Read current versions from the `package.json` files above.
 2. Apply the requested bump (default: product patch +1; core patch +1 if core changed or if prior releases always shipped both).
 3. Update `docs/PUBLISHING.md` to match.
-4. Verify product versions match across root/cli/shared/server/ui, and confirm core is the intended `1.0.x`:
+4. For minor bumps, suggest `/package-review`; for major bumps, run it before continuing.
+5. Verify product versions match across root/cli/shared/server/ui, and confirm core is the intended `1.0.x`:
    ```bash
    node -p "require('./package.json').version"
    node -p "require('./packages/cli/package.json').version"
@@ -126,8 +167,8 @@ There are **two version lines**:
    node -p "require('./packages/ui/package.json').version"
    node -p "require('./packages/core/package.json').version"
    ```
-5. Commit message style from history: `chore: bump packages to X.Y.Z / A.B.C for …` or include the bump in the feature commit (`… (vX.Y.Z)` / `Bump packages to X.Y.Z / @caeliq/llms@A.B.C`).
-6. Tagging / publish (only when the user asks): push `main`, then `git tag vX.Y.Z` matching the **CLI** version and `git push github vX.Y.Z`. CI reads versions from `package.json`, not from the tag alone.
+6. Commit message style from history: `chore: bump packages to X.Y.Z / A.B.C for …` or include the bump in the feature commit (`… (vX.Y.Z)` / `Bump packages to X.Y.Z / @caeliq/llms@A.B.C`).
+7. Tagging / publish (only when the user asks): push `main`, then `git tag vX.Y.Z` matching the **CLI** version and `git push github vX.Y.Z`. CI reads versions from `package.json`, not from the tag alone.
 
 ## Core Architecture
 
@@ -352,7 +393,16 @@ ui (standalone frontend application)
 
 ## Development Notes
 
-1. **Node.js version**: Requires >= 22.13.0 (needed by `@cursor/sdk`)
+1. **Node.js version**: Floor is **>= 22.19.0**, declared in `engines.node` of every
+   workspace package (root, core, cli, shared, server, ui, docs) — keep them identical.
+   The floor is set by `undici` (`>=22.19.0`); `@cursor/sdk` needs `>=22.13`. Build-only
+   deps ask for more (`react-router@8` wants `>=22.22.0`, `puppeteer-core` `>=22.12.0`)
+   but never reach an installed user: the UI ships as a prebuilt `index.html` and
+   `puppeteer-core` is a lazily-required devDependency.
+   Runtime pins are separate and track the newest Node 22 LTS patch (`22.23.2` in the
+   Dockerfile, `node-version: "22"` in CI). Bump the pin freely; only raise the floor
+   when a runtime dependency actually demands it. esbuild `--target=node22` in all four
+   build scripts must stay in sync with the floor.
 2. **Package manager**: Uses pnpm (monorepo depends on workspace protocol)
 3. **TypeScript**: All packages use TypeScript, but UI package is ESM module
 4. **Build tools**:

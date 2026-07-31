@@ -371,7 +371,7 @@ module.exports = async function(variables, options) {
 
 Statusline 主题可以包含在 presets 中。当您安装带有 statusline 配置的 preset 时，激活该 preset 时会自动应用。
 
-查看 [Presets](/zh/docs/presets/intro) 了解更多信息。
+查看 [Presets](/docs/presets/intro) 了解更多信息。
 
 ## 故障排除
 

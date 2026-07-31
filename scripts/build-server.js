@@ -29,8 +29,9 @@ try {
 
   // Build the server application
   console.log('Building server application...');
-  // Use minify and tree-shaking to optimize size
-  execSync('esbuild src/index.ts --bundle --platform=node --minify --tree-shaking=true --external:@cursor/sdk --external:@cursor/sdk/* --outfile=dist/index.js', {
+  // Use minify and tree-shaking to optimize size.
+  // --target matches the package engines floor (>=22.19.0).
+  execSync('esbuild src/index.ts --bundle --platform=node --target=node22 --minify --tree-shaking=true --external:@cursor/sdk --external:@cursor/sdk/* --outfile=dist/index.js', {
     stdio: 'inherit',
     cwd: serverDir,
     env: { ...process.env, PATH: pathEnv },

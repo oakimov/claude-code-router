@@ -80,5 +80,5 @@ ccr ui
 
 ## 相关文档
 
-- [入门](/zh/docs/intro) - Claude Code Router 简介
-- [配置](/zh/docs/config/basic) - 配置指南
+- [入门](/docs/cli/intro) - Claude Code Router 简介
+- [配置](/docs/server/config/basic) - 配置指南

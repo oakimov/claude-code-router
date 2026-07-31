@@ -8,6 +8,8 @@ tags: [changelog, fork, features]
 
 本分支在 claude-code-router 基础上新增了多项提供商集成、UI 改进和基础设施变更。以下是各功能的时间线。
 
+{/* truncate */}
+
 ## 2026 年 1 月 — Mistral 集成
 
 添加了 **Mistral AI 转换器**，支持直接 API 调用、推理参数处理和专用的 Docker Compose 配置。将 Mistral 转换逻辑解耦为共享工具函数。
@@ -78,8 +80,8 @@ tags: [changelog, fork, features]
 
 所有功能都有专门的集成指南文档：
 
-- [Codex 集成](/zh/docs/server/guides/codex)
-- [Qwen Chat 集成](/zh/docs/server/guides/qwen)
-- [Chrome 内置模型](/zh/docs/server/guides/chrome-on-device)
-- [DeepSeek 推理重放](/zh/docs/server/guides/deepseek-reasoning)
-- [模型发现](/zh/docs/server/guides/model-discovery)
+- [Codex 集成](/docs/server/guides/codex)
+- [Qwen Chat 集成](/docs/server/guides/qwen)
+- [Chrome 内置模型](/docs/server/guides/chrome-on-device)
+- [DeepSeek 推理重放](/docs/server/guides/deepseek-reasoning)
+- [模型发现](/docs/server/guides/model-discovery)

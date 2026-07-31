@@ -20,8 +20,6 @@ import Fastify, {
   onReadyHookHandler,
   onListenHookHandler,
   onCloseHookHandler,
-  FastifyBaseLogger,
-  FastifyLoggerOptions,
   FastifyServerOptions,
 } from "fastify";
 import cors from "@fastify/cors";
@@ -74,7 +72,8 @@ class Server {
   tokenizerService: TokenizerService;
 
   constructor(options: ServerOptions = {}) {
-    const { initialConfig, ...fastifyOptions } = options;
+    // `initialConfig` is forwarded to ConfigService below via `...options`; keep it out of Fastify options.
+    const { initialConfig: _initialConfig, ...fastifyOptions } = options;
     this.app = createApp({
       ...fastifyOptions,
       logger: fastifyOptions.logger ?? true,
