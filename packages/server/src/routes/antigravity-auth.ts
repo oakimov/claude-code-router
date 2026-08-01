@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { join } from "path";
 import { homedir } from "os";
 import { existsSync, readFileSync, unlinkSync } from "fs";
+import { RATE_LIMIT_CONFIG } from "@caeliq/ccr-shared";
 import {
   exchangeAuthorizationCode,
   fetchUserEmail,
@@ -32,7 +33,10 @@ export async function registerAntigravityAuthRoutes(
   app: FastifyInstance
 ): Promise<void> {
   // Public OAuth callback. Host port 51121 is published to this server (3456).
-  app.get("/oauth-callback", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.get(
+    "/oauth-callback",
+    { config: { rateLimit: { ...RATE_LIMIT_CONFIG } } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
     const query = req.query as any;
     const { code, state, error, error_description } = query;
 

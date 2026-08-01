@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { join } from "path";
 import { homedir } from "os";
 import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from "fs";
+import { RATE_LIMIT_CONFIG } from "@caeliq/ccr-shared";
 
 const CLAUDE_AUTH_FILE = join(homedir(), ".claude-code-router", "claude_auth.json");
 const CLAUDE_VERIFIER_FILE = join(homedir(), ".claude-code-router", "claude_verifier.tmp");
@@ -34,7 +35,10 @@ function saveTokens(data: any): void {
 }
 
 export async function registerClaudeAuthRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/callback", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.get(
+    "/callback",
+    { config: { rateLimit: { ...RATE_LIMIT_CONFIG } } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
     const query = req.query as any;
     const { code, state, error, error_description } = query;
 

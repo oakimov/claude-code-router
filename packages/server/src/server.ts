@@ -7,6 +7,7 @@ import Server, {
 import { readConfigFile, writeConfigFile, backupConfigFile } from "./utils";
 import { join, resolve, relative, sep, basename } from "path";
 import fastifyStatic from "@fastify/static";
+import type {} from "@fastify/rate-limit";
 import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync } from "fs";
 import { homedir } from "os";
 import {
@@ -23,6 +24,7 @@ import {
   getTempDir,
   findMarketPresetByName,
   getMarketPresets,
+  RATE_LIMIT_CONFIG,
   type PresetFile,
   type ManifestFile,
   type PresetMetadata,
@@ -55,6 +57,9 @@ export function resolveLogFilePath(filePath?: string): string {
 export const createServer = async (config: any): Promise<any> => {
   const server = new Server(config);
   const app = server.app;
+  const rateLimitOptions = {
+    config: { rateLimit: { ...RATE_LIMIT_CONFIG } },
+  };
 
   // Intercept all fetch calls to log provider interactions
   const originalFetch = global.fetch;
@@ -157,7 +162,7 @@ export const createServer = async (config: any): Promise<any> => {
   // Antigravity OAuth: host 51121 → this server (compose 51121:3456)
   await registerAntigravityAuthRoutes(app);
 
-  app.post("/v1/messages/count_tokens", async (req: any, reply: any) => {
+  app.post("/v1/messages/count_tokens", rateLimitOptions, async (req: any, reply: any) => {
     const { messages, tools, system, model } = req.body;
     const tokenizerService = (app as any)._server!.tokenizerService as TokenizerService;
 
@@ -205,11 +210,11 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Add endpoint to read config.json with access control
-  app.get("/api/config", async (req: any, reply: any) => {
+  app.get("/api/config", rateLimitOptions, async (req: any, reply: any) => {
     return await readConfigFile(false);
   });
 
-  app.get("/api/transformers", async (req: any, reply: any) => {
+  app.get("/api/transformers", rateLimitOptions, async (req: any, reply: any) => {
     const transformerService = (app as any)._server!.transformerService;
     const transformers = transformerService.getAllTransformers();
     // Transformers registered by class (so they can take options) expose
@@ -231,7 +236,7 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Add endpoint to save config.json with access control
-  app.post("/api/config", async (req: any, reply: any) => {
+  app.post("/api/config", rateLimitOptions, async (req: any, reply: any) => {
     const newConfig = req.body;
 
     // Backup existing config file if it exists
@@ -252,12 +257,12 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Redirect /ui to /ui/ for proper static file serving
-  app.get("/ui", async (_: any, reply: any) => {
+  app.get("/ui", rateLimitOptions, async (_: any, reply: any) => {
     return reply.redirect("/ui/");
   });
 
   // Get log file list endpoint
-  app.get("/api/logs/files", async (req: any, reply: any) => {
+  app.get("/api/logs/files", rateLimitOptions, async (req: any, reply: any) => {
     try {
       const logFiles: Array<{ name: string; path: string; size: number; lastModified: string }> = [];
 
@@ -290,7 +295,7 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Get log content endpoint
-  app.get("/api/logs", async (req: any, reply: any) => {
+  app.get("/api/logs", rateLimitOptions, async (req: any, reply: any) => {
     try {
       const logFilePath = resolveLogFilePath((req.query as any).file as string | undefined);
 
@@ -313,7 +318,7 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Clear log content endpoint
-  app.delete("/api/logs", async (req: any, reply: any) => {
+  app.delete("/api/logs", rateLimitOptions, async (req: any, reply: any) => {
     try {
       const logFilePath = resolveLogFilePath((req.query as any).file as string | undefined);
 
@@ -333,7 +338,7 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Get presets list
-  app.get("/api/presets", async (req: any, reply: any) => {
+  app.get("/api/presets", rateLimitOptions, async (req: any, reply: any) => {
     try {
       const presetsDir = join(HOME_DIR, "presets");
 
@@ -385,7 +390,7 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Get preset details
-  app.get("/api/presets/:name", async (req: any, reply: any) => {
+  app.get("/api/presets/:name", rateLimitOptions, async (req: any, reply: any) => {
     try {
       const { name } = req.params;
       const presetDir = getPresetDir(name);
@@ -411,7 +416,7 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Apply preset (configure sensitive information)
-  app.post("/api/presets/:name/apply", async (req: any, reply: any) => {
+  app.post("/api/presets/:name/apply", rateLimitOptions, async (req: any, reply: any) => {
     try {
       const { name } = req.params;
       const { secrets } = req.body;
@@ -448,7 +453,7 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Delete preset
-  app.delete("/api/presets/:name", async (req: any, reply: any) => {
+  app.delete("/api/presets/:name", rateLimitOptions, async (req: any, reply: any) => {
     try {
       const { name } = req.params;
       const presetDir = getPresetDir(name);
@@ -469,7 +474,7 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Get preset market list
-  app.get("/api/presets/market", async (req: any, reply: any) => {
+  app.get("/api/presets/market", rateLimitOptions, async (req: any, reply: any) => {
     try {
       // Use market presets function
       const marketPresets = await getMarketPresets();
@@ -481,7 +486,7 @@ export const createServer = async (config: any): Promise<any> => {
   });
 
   // Install preset from GitHub repository by preset name
-  app.post("/api/presets/install/github", async (req: any, reply: any) => {
+  app.post("/api/presets/install/github", rateLimitOptions, async (req: any, reply: any) => {
     try {
       const { presetName } = req.body;
 

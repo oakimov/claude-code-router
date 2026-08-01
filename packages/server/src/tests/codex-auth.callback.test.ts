@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify from "fastify";
+import rateLimit from "@fastify/rate-limit";
+import { RATE_LIMIT_CONFIG } from "@caeliq/ccr-shared";
 import { registerCodexAuthRoutes } from "../routes/codex-auth";
 
 function jwt(payload: Record<string, unknown>): string {
@@ -22,6 +24,10 @@ async function main() {
   process.env.CCR_CODEX_VERIFIER_FILE = verifierFile;
 
   const app = Fastify({ logger: false });
+  await app.register(rateLimit, {
+    global: true,
+    ...RATE_LIMIT_CONFIG,
+  });
   await registerCodexAuthRoutes(app);
 
   try {

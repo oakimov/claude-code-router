@@ -6,7 +6,12 @@ import { join } from "path";
 import { initConfig, initDir } from "./utils";
 import { createServer } from "./server";
 import { apiKeyAuth } from "./middleware/auth";
-import { CONFIG_FILE, HOME_DIR, listPresets } from "@caeliq/ccr-shared";
+import {
+  CONFIG_FILE,
+  HOME_DIR,
+  RATE_LIMIT_CONFIG,
+  listPresets,
+} from "@caeliq/ccr-shared";
 import { createStream } from 'rotating-file-stream';
 import { sessionUsageCache, SSEParserTransform, SSESerializerTransform, rewriteStream } from "@caeliq/llms";
 import JSON5 from "json5";
@@ -426,13 +431,17 @@ async function getServer(options: RunOptions = {}) {
 
 async function run() {
   const server = await getServer();
-  server.app.post("/api/restart", async () => {
-    setTimeout(async () => {
-      process.exit(0);
-    }, 100);
+  server.app.post(
+    "/api/restart",
+    { config: { rateLimit: { ...RATE_LIMIT_CONFIG } } },
+    async () => {
+      setTimeout(async () => {
+        process.exit(0);
+      }, 100);
 
-    return { success: true, message: "Service restart initiated" }
-  });
+      return { success: true, message: "Service restart initiated" };
+    }
+  );
   await server.start();
 }
 

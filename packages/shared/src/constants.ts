@@ -16,6 +16,10 @@ export const REFERENCE_COUNT_FILE = path.join(os.tmpdir(), "claude-code-referenc
 // Claude projects directory
 export const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
 
+export const RATE_LIMIT_CONFIG = {
+  max: 1000,
+  timeWindow: "1 minute",
+} as const;
 
 export interface DefaultConfig {
   LOG: boolean;

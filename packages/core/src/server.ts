@@ -24,6 +24,7 @@ import Fastify, {
 } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import { RATE_LIMIT_CONFIG } from "@caeliq/ccr-shared";
 import { ConfigService, AppConfig } from "./services/config";
 import { errorHandler } from "./api/middleware";
 import { registerApiRoutes } from "./api/routes";
@@ -62,11 +63,9 @@ function createApp(options: FastifyServerOptions = {}): FastifyInstance {
   // Register CORS
   fastify.register(cors);
 
-  // Global rate limit (CodeQL recognizes @fastify/rate-limit on this Fastify instance)
   fastify.register(rateLimit, {
     global: true,
-    max: 1000,
-    timeWindow: "1 minute",
+    ...RATE_LIMIT_CONFIG,
   });
 
   return fastify;
@@ -151,16 +150,6 @@ class Server {
         fastify.decorate('transformerService', this.transformerService);
         fastify.decorate('providerService', this.providerService);
         fastify.decorate('tokenizerService', this.tokenizerService);
-        // Add router hook for main namespace
-        fastify.addHook('preHandler', async (req: any, reply: any) => {
-          const url = new URL(`http://127.0.0.1${req.url}`);
-          if (url.pathname.endsWith("/v1/messages")) {
-            await router(req, reply, {
-              configService: this.configService,
-              tokenizerService: this.tokenizerService,
-            });
-          }
-        });
         await registerApiRoutes(fastify);
       });
       return
@@ -192,16 +181,6 @@ class Server {
       fastify.decorate('transformerService', transformerService);
       fastify.decorate('providerService', providerService);
       fastify.decorate('tokenizerService', tokenizerService);
-      // Add router hook for namespace
-      fastify.addHook('preHandler', async (req: any, reply: any) => {
-        const url = new URL(`http://127.0.0.1${req.url}`);
-        if (url.pathname.endsWith("/v1/messages")) {
-          await router(req, reply, {
-            configService,
-            tokenizerService,
-          });
-        }
-      });
       await registerApiRoutes(fastify);
     }, { prefix: name });
   }

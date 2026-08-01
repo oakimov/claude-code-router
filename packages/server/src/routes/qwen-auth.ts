@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from "
 import { join } from "path";
 import { homedir } from "os";
 import { Buffer } from "buffer";
+import { RATE_LIMIT_CONFIG } from "@caeliq/ccr-shared";
 
 const QWEN_AUTH_FILE = join(homedir(), ".claude-code-router", "qwen_auth.json");
 const QWEN_TARGET = "https://qwen.aikit.club";
@@ -193,7 +194,10 @@ function formatExp(expiresAt: number | null): string {
 export async function registerQwenAuthRoutes(
   app: FastifyInstance
 ): Promise<void> {
-  app.get("/qwen/auth", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.get(
+    "/qwen/auth",
+    { config: { rateLimit: { ...RATE_LIMIT_CONFIG } } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
     const tokens = loadTokens();
     const status = tokens?.token ? "ok" : "warn";
     const message = tokens?.token
@@ -202,7 +206,10 @@ export async function registerQwenAuthRoutes(
     reply.type("text/html; charset=utf-8").send(HTML_PAGE(status, message));
   });
 
-  app.post("/qwen/auth", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.post(
+    "/qwen/auth",
+    { config: { rateLimit: { ...RATE_LIMIT_CONFIG } } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
     const body = (req.body || {}) as { token?: string };
     const raw = (body.token || "").trim();
 
@@ -255,7 +262,10 @@ export async function registerQwenAuthRoutes(
       );
   });
 
-  app.get("/qwen/forget", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.get(
+    "/qwen/forget",
+    { config: { rateLimit: { ...RATE_LIMIT_CONFIG } } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
     try {
       unlinkSync(QWEN_AUTH_FILE);
     } catch {
@@ -267,7 +277,10 @@ export async function registerQwenAuthRoutes(
       .send(HTML_PAGE("warn", "Token cleared. Paste a new token below."));
   });
 
-  app.get("/qwen/status", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.get(
+    "/qwen/status",
+    { config: { rateLimit: { ...RATE_LIMIT_CONFIG } } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
     const tokens = loadTokens();
     reply.type("application/json").send({
       ok: !!tokens?.token,

@@ -9,6 +9,7 @@ import {
   renameSync,
   unlinkSync,
 } from "fs";
+import { RATE_LIMIT_CONFIG } from "@caeliq/ccr-shared";
 
 const DEFAULT_CODEX_AUTH_FILE = join(
   homedir(),
@@ -116,7 +117,10 @@ function saveTokens(data: any): { expires_at: number } {
 }
 
 export async function registerCodexAuthRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/auth/callback", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.get(
+    "/auth/callback",
+    { config: { rateLimit: { ...RATE_LIMIT_CONFIG } } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
     const query = req.query as any;
     const { code, state, error, error_description } = query;
 

@@ -31,6 +31,9 @@ import {
 } from "@/utils/retry";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
 import { sendWithUnauthorizedAuthRecovery } from "@/utils/auth-recovery";
+import { RATE_LIMIT_CONFIG } from "@caeliq/ccr-shared";
+import { router } from "@/utils/router";
+import { TokenizerService } from "@/services/tokenizer";
 
 // Extend FastifyInstance to include custom services
 declare module "fastify" {
@@ -38,6 +41,7 @@ declare module "fastify" {
     configService: ConfigService;
     providerService: ProviderService;
     transformerService: TransformerService;
+    tokenizerService: TokenizerService;
   }
 
   interface FastifyRequest {
@@ -844,12 +848,16 @@ async function formatResponse(
 export const registerApiRoutes = async (
   fastify: FastifyInstance
 ) => {
+  const rateLimitOptions = {
+    config: { rateLimit: { ...RATE_LIMIT_CONFIG } },
+  };
+
   // Health and info endpoints
-  fastify.get("/", async () => {
+  fastify.get("/", rateLimitOptions, async () => {
     return { message: "LLMs API", version };
   });
 
-  fastify.get("/health", async () => {
+  fastify.get("/health", rateLimitOptions, async () => {
     return { status: "ok", timestamp: new Date().toISOString() };
   });
 
@@ -860,7 +868,14 @@ export const registerApiRoutes = async (
     if (transformer.endPoint) {
       fastify.post(
         transformer.endPoint,
+        rateLimitOptions,
         async (req: FastifyRequest, reply: FastifyReply) => {
+          if (transformer.endPoint === "/v1/messages") {
+            await router(req, reply, {
+              configService: fastify.configService,
+              tokenizerService: fastify.tokenizerService,
+            });
+          }
           return handleTransformerEndpoint(req, reply, fastify, transformer);
         }
       );
@@ -870,6 +885,7 @@ export const registerApiRoutes = async (
   fastify.post(
     "/providers",
     {
+      config: { rateLimit: { ...RATE_LIMIT_CONFIG } },
       schema: {
         body: {
           type: "object",
@@ -933,13 +949,14 @@ export const registerApiRoutes = async (
     }
   );
 
-  fastify.get("/providers", async () => {
+  fastify.get("/providers", rateLimitOptions, async () => {
     return fastify.providerService.getProviders();
   });
 
   fastify.get(
     "/providers/:id",
     {
+      config: { rateLimit: { ...RATE_LIMIT_CONFIG } },
       schema: {
         params: {
           type: "object",
@@ -962,6 +979,7 @@ export const registerApiRoutes = async (
   fastify.put(
     "/providers/:id",
     {
+      config: { rateLimit: { ...RATE_LIMIT_CONFIG } },
       schema: {
         params: {
           type: "object",
@@ -1002,6 +1020,7 @@ export const registerApiRoutes = async (
   fastify.delete(
     "/providers/:id",
     {
+      config: { rateLimit: { ...RATE_LIMIT_CONFIG } },
       schema: {
         params: {
           type: "object",
@@ -1024,6 +1043,7 @@ export const registerApiRoutes = async (
   fastify.patch(
     "/providers/:id/toggle",
     {
+      config: { rateLimit: { ...RATE_LIMIT_CONFIG } },
       schema: {
         params: {
           type: "object",
