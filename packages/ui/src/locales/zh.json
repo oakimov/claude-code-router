@@ -30,7 +30,9 @@
     "log_viewer": "日志查看器",
     "presets": "预设",
     "language": "语言",
-    "check_updates": "检查更新"
+    "check_updates": "检查更新",
+    "title_short": "CCR",
+    "config_missing": "配置缺失"
   },
   "login": {
     "title": "登录到您的账户",
@@ -122,7 +124,6 @@
       "missing_api_key": "缺少 API 密钥",
       "env_auth": "环境变量认证"
     }
-
   },
   "router": {
     "title": "路由",
@@ -312,6 +313,27 @@
       "applying": "应用中...",
       "apply": "应用",
       "cancel": "取消"
-    }
+    },
+    "market": "市场"
+  },
+  "nav": {
+    "dashboard": "仪表盘",
+    "dashboard_description": "配置提供商、路由与转换器",
+    "presets": "预设",
+    "logs": "日志",
+    "debug": "调试",
+    "json": "JSON 编辑器",
+    "settings": "设置",
+    "console": "管理控制台",
+    "theme": "主题",
+    "theme_light": "浅色",
+    "theme_dark": "深色",
+    "theme_system": "跟随系统",
+    "expand_sidebar": "展开侧边栏",
+    "collapse_sidebar": "收起侧边栏",
+    "loading_app": "正在加载应用...",
+    "loading_config": "正在加载配置...",
+    "error_prefix": "错误",
+    "presets_installed": "已安装 {{count}} 个"
   }
 }

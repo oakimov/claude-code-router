@@ -21,7 +21,7 @@ function EmptyProviderState() {
   const { t } = useTranslation();
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-center rounded-md border bg-white p-8 text-gray-500">
+      <div className="flex items-center justify-center rounded-md border bg-card p-8 text-muted-foreground">
         {t("providers.no_providers_configured")}
       </div>
     </div>
@@ -37,13 +37,13 @@ function ProviderIcon({ provider }: { provider: Provider }) {
       <img
         src={provider.icon}
         alt={`${title} icon`}
-        className="h-10 w-10 rounded-md border bg-white object-contain p-1"
+        className="h-10 w-10 rounded-md border bg-card object-contain p-1"
       />
     );
   }
 
   return (
-    <div className="flex h-10 w-10 items-center justify-center rounded-md border bg-gray-50 text-gray-500">
+    <div className="flex h-10 w-10 items-center justify-center rounded-md border bg-muted/50 text-muted-foreground">
       <Globe className="h-5 w-5" />
     </div>
   );
@@ -139,14 +139,14 @@ function ProviderCard({
   const title = getProviderTitle(provider) || t("providers.unnamed_provider");
 
   return (
-    <div className="flex items-start justify-between rounded-md border bg-white p-4 transition-all hover:scale-[1.01] hover:shadow-md animate-slide-in">
+    <div className="flex items-start justify-between rounded-md border bg-card p-4 transition-all hover:scale-[1.01] hover:shadow-md animate-slide-in">
       <div className="flex-1 space-y-1.5">
         <div className="flex items-start gap-3">
           <ProviderIcon provider={provider} />
           <div className="min-w-0 flex-1">
-            <p className="text-md font-semibold text-gray-800">{title}</p>
-            <p className="text-sm text-gray-500">{host}</p>
-            {description && <p className="text-sm text-gray-600">{description}</p>}
+            <p className="text-md font-semibold text-foreground">{title}</p>
+            <p className="text-sm text-muted-foreground">{host}</p>
+            {description && <p className="text-sm text-muted-foreground">{description}</p>}
           </div>
         </div>
         <ProviderTags provider={provider} />
@@ -186,10 +186,10 @@ function InvalidProviderCard({
   const { t } = useTranslation();
 
   return (
-    <div className="flex items-start justify-between rounded-md border bg-white p-4 transition-all hover:scale-[1.01] hover:shadow-md animate-slide-in">
+    <div className="flex items-start justify-between rounded-md border bg-card p-4 transition-all hover:scale-[1.01] hover:shadow-md animate-slide-in">
       <div className="flex-1 space-y-1.5">
-        <p className="text-md font-semibold text-gray-800">{t("providers.invalid_provider")}</p>
-        <p className="text-sm text-gray-500">{t("providers.provider_data_missing")}</p>
+        <p className="text-md font-semibold text-foreground">{t("providers.invalid_provider")}</p>
+        <p className="text-sm text-muted-foreground">{t("providers.provider_data_missing")}</p>
       </div>
       <div className="ml-4 flex flex-shrink-0 items-center gap-2">
         <Button

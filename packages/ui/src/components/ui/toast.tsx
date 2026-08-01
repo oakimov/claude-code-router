@@ -21,7 +21,7 @@ export function Toast({ message, type, onClose }: ToastProps) {
       case 'success':
         return <CheckCircle className="h-5 w-5 text-green-500" />;
       case 'error':
-        return <XCircle className="h-5 w-5 text-red-500" />;
+        return <XCircle className="h-5 w-5 text-destructive" />;
       case 'warning':
         return <AlertCircle className="h-5 w-5 text-yellow-500" />;
       default:
@@ -34,11 +34,11 @@ export function Toast({ message, type, onClose }: ToastProps) {
       case 'success':
         return 'bg-green-100 border-green-200';
       case 'error':
-        return 'bg-red-100 border-red-200';
+        return 'bg-destructive/10 border-destructive/30';
       case 'warning':
         return 'bg-yellow-100 border-yellow-200';
       default:
-        return 'bg-gray-100 border-gray-200';
+        return 'bg-muted border-border';
     }
   };
 
@@ -50,7 +50,7 @@ export function Toast({ message, type, onClose }: ToastProps) {
       </div>
       <button
         onClick={onClose}
-        className="ml-4 text-gray-500 hover:text-gray-700 focus:outline-none"
+        className="ml-4 text-muted-foreground hover:text-foreground focus:outline-none"
       >
         <X className="h-4 w-4" />
       </button>

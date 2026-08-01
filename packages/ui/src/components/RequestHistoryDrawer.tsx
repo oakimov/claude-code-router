@@ -75,7 +75,7 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
       />
       
       {/* Drawer */}
-      <div className="absolute right-0 top-0 h-full w-96 bg-white shadow-xl flex flex-col">
+      <div className="absolute right-0 top-0 h-full w-96 bg-card shadow-xl flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b">
           <div className="flex items-center gap-2">
@@ -101,7 +101,7 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
           {loading ? (
-            <div className="flex items-center justify-center h-32 text-gray-500">
+            <div className="flex items-center justify-center h-32 text-muted-foreground">
               Loading...
             </div>
           ) : requests.length > 0 ? (
@@ -109,7 +109,7 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
               {requests.map((item) => (
                 <div
                   key={item.id}
-                  className="p-3 bg-gray-50 rounded-lg border cursor-pointer hover:bg-gray-100 transition-colors"
+                  className="p-3 bg-muted/50 rounded-lg border cursor-pointer hover:bg-muted transition-colors"
                   onClick={() => {
                     onSelectRequest(item);
                     onClose();
@@ -117,7 +117,7 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
                 >
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs bg-gray-200 px-2 py-1 rounded">
+                      <span className="font-mono text-xs bg-muted px-2 py-1 rounded">
                         {item.method}
                       </span>
                       <span className="text-sm font-medium truncate flex-1">
@@ -134,13 +134,13 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
                     </Button>
                   </div>
                   
-                  <div className="flex items-center justify-between text-xs text-gray-500">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
                     <div className="flex items-center gap-2">
                       <span className={`font-mono px-1 rounded ${
                         item.status >= 200 && item.status < 300 
                           ? 'bg-green-100 text-green-800' 
                           : item.status >= 400 
-                          ? 'bg-red-100 text-red-800' 
+                          ? 'bg-destructive/10 text-destructive' 
                           : 'bg-yellow-100 text-yellow-800'
                       }`}>
                         {item.status}
@@ -156,8 +156,8 @@ export function RequestHistoryDrawer({ isOpen, onClose, onSelectRequest }: Reque
               ))}
             </div>
           ) : (
-            <div className="text-center text-gray-500 py-8">
-              <History className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+            <div className="text-center text-muted-foreground py-8">
+              <History className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
               <p>No request history</p>
               <p className="text-sm mt-2">History will be shown here after sending requests</p>
             </div>

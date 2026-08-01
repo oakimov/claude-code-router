@@ -1,23 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
-import { SettingsDialog } from "@/components/SettingsDialog";
 import { Transformers } from "@/components/Transformers";
 import { Providers } from "@/components/Providers";
 import { Router } from "@/components/Router";
-import { JsonEditor } from "@/components/JsonEditor";
-import { LogViewer } from "@/components/LogViewer";
 import { Button } from "@/components/ui/button";
 import { useConfig } from "@/components/ConfigProvider";
 import { api } from "@/lib/api";
-import { Settings, Languages, Save, RefreshCw, FileJson, CircleArrowUp, FileText, FileCog } from "lucide-react";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Toast } from "@/components/ui/toast";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Save, RefreshCw, CircleArrowUp } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -26,18 +17,16 @@ import {
   DialogFooter,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { useShellChrome } from "@/components/layout/ShellChrome";
 import "@/styles/animations.css";
 
 function App() {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { config, error } = useConfig();
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isJsonEditorOpen, setIsJsonEditorOpen] = useState(false);
-  const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
+  const { showToast } = useShellChrome();
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' } | null>(null);
-  // Version check state
   const [isNewVersionAvailable, setIsNewVersionAvailable] = useState(false);
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [newVersionInfo, setNewVersionInfo] = useState<{ version: string; changelog: string } | null>(null);
@@ -47,161 +36,126 @@ function App() {
   const hasAutoCheckedUpdate = useRef(false);
 
   const saveConfig = async () => {
-    // Handle case where config might be null or undefined
     if (!config) {
-      setToast({ message: t('app.config_missing'), type: 'error' });
+      showToast(t("app.config_missing"), "error");
       return;
     }
-    
+
     try {
-      // Save to API
       const response = await api.updateConfig(config);
-      // Show success message or handle as needed
-      console.log('Config saved successfully');
-      
-      // Provide a prompt based on the response information
-      if (response && typeof response === 'object' && 'success' in response) {
-        const apiResponse = response as { success: boolean; message?: string };
+      if (response && typeof response === "object" && "success" in response) {
+        const apiResponse = response as unknown as { success: boolean; message?: string };
         if (apiResponse.success) {
-          setToast({ message: apiResponse.message || t('app.config_saved_success'), type: 'success' });
+          showToast(apiResponse.message || t("app.config_saved_success"), "success");
         } else {
-          setToast({ message: apiResponse.message || t('app.config_saved_failed'), type: 'error' });
+          showToast(apiResponse.message || t("app.config_saved_failed"), "error");
         }
       } else {
-        // Default success prompt
-        setToast({ message: t('app.config_saved_success'), type: 'success' });
+        showToast(t("app.config_saved_success"), "success");
       }
-    } catch (error) {
-      console.error('Failed to save config:', error);
-      // Handle error appropriately
-      setToast({ message: t('app.config_saved_failed') + ': ' + (error as Error).message, type: 'error' });
+    } catch (err) {
+      console.error("Failed to save config:", err);
+      showToast(t("app.config_saved_failed") + ": " + (err as Error).message, "error");
     }
   };
 
   const saveConfigAndRestart = async () => {
-    // Handle case where config might be null or undefined
     if (!config) {
-      setToast({ message: t('app.config_missing'), type: 'error' });
+      showToast(t("app.config_missing"), "error");
       return;
     }
-    
+
     try {
-      // Save to API
       const response = await api.updateConfig(config);
-      
-      // Check if save was successful before restarting
+
       let saveSuccessful = true;
-      if (response && typeof response === 'object' && 'success' in response) {
-        const apiResponse = response as { success: boolean; message?: string };
+      if (response && typeof response === "object" && "success" in response) {
+        const apiResponse = response as unknown as { success: boolean; message?: string };
         if (!apiResponse.success) {
           saveSuccessful = false;
-          setToast({ message: apiResponse.message || t('app.config_saved_failed'), type: 'error' });
+          showToast(apiResponse.message || t("app.config_saved_failed"), "error");
         }
       }
-      
-      // Only restart if save was successful
+
       if (saveSuccessful) {
-        // Restart service
-        const response = await api.restartService();
-        
-        // Show success message or handle as needed
-        console.log('Config saved and service restarted successfully');
-        
-        // Provide a prompt based on the response information
-        if (response && typeof response === 'object' && 'success' in response) {
-          const apiResponse = response as { success: boolean; message?: string };
+        const restartResponse = await api.restartService();
+        if (restartResponse && typeof restartResponse === "object" && "success" in restartResponse) {
+          const apiResponse = restartResponse as unknown as { success: boolean; message?: string };
           if (apiResponse.success) {
-            setToast({ message: apiResponse.message || t('app.config_saved_restart_success'), type: 'success' });
+            showToast(apiResponse.message || t("app.config_saved_restart_success"), "success");
           }
         } else {
-          // Default success prompt
-          setToast({ message: t('app.config_saved_restart_success'), type: 'success' });
+          showToast(t("app.config_saved_restart_success"), "success");
         }
       }
-    } catch (error) {
-      console.error('Failed to save config and restart:', error);
-      // Handle error appropriately
-      setToast({ message: t('app.config_saved_restart_failed') + ': ' + (error as Error).message, type: 'error' });
+    } catch (err) {
+      console.error("Failed to save config and restart:", err);
+      showToast(t("app.config_saved_restart_failed") + ": " + (err as Error).message, "error");
     }
   };
-  
-  // Check for updates function
-  const checkForUpdates = useCallback(async (showDialog: boolean = true) => {
-    // If already checked and a new version is available, decide whether to show dialog based on parameter
-    if (hasCheckedUpdate && isNewVersionAvailable) {
-      if (showDialog) {
-        setIsUpdateDialogOpen(true);
+
+  const checkForUpdates = useCallback(
+    async (showDialog: boolean = true) => {
+      if (hasCheckedUpdate && isNewVersionAvailable) {
+        if (showDialog) setIsUpdateDialogOpen(true);
+        return;
       }
-      return;
-    }
-    
-    setIsCheckingUpdate(true);
-    try {
-      const updateInfo = await api.checkForUpdates();
-      
-      if (updateInfo.hasUpdate && updateInfo.latestVersion && updateInfo.changelog) {
-        setIsNewVersionAvailable(true);
-        setNewVersionInfo({
-          version: updateInfo.latestVersion,
-          changelog: updateInfo.changelog
-        });
-        // Only show dialog when showDialog is true
-        if (showDialog) {
-          setIsUpdateDialogOpen(true);
+
+      setIsCheckingUpdate(true);
+      try {
+        const updateInfo = await api.checkForUpdates();
+
+        if (updateInfo.hasUpdate && updateInfo.latestVersion && updateInfo.changelog) {
+          setIsNewVersionAvailable(true);
+          setNewVersionInfo({
+            version: updateInfo.latestVersion,
+            changelog: updateInfo.changelog,
+          });
+          if (showDialog) setIsUpdateDialogOpen(true);
+        } else if (showDialog) {
+          showToast(t("app.no_updates_available"), "success");
         }
-      } else if (showDialog) {
-        // Only show "no updates available" prompt when showDialog is true
-        setToast({ message: t('app.no_updates_available'), type: 'success' });
+
+        setHasCheckedUpdate(true);
+      } catch (err) {
+        console.error("Failed to check for updates:", err);
+        setIsUpdateFeatureAvailable(false);
+        if (showDialog) {
+          showToast(t("app.update_check_failed") + ": " + (err as Error).message, "error");
+        }
+      } finally {
+        setIsCheckingUpdate(false);
       }
-      
-      setHasCheckedUpdate(true);
-    } catch (error) {
-      console.error('Failed to check for updates:', error);
-      setIsUpdateFeatureAvailable(false);
-      if (showDialog) {
-        setToast({ message: t('app.update_check_failed') + ': ' + (error as Error).message, type: 'error' });
-      }
-    } finally {
-      setIsCheckingUpdate(false);
-    }
-  }, [hasCheckedUpdate, isNewVersionAvailable, t]);
+    },
+    [hasCheckedUpdate, isNewVersionAvailable, showToast, t],
+  );
 
   useEffect(() => {
     const checkAuth = async () => {
-      // If we already have a config, we're authenticated
       if (config) {
         setIsCheckingAuth(false);
-        // Automatically check for updates, but do not show dialog
         if (!hasCheckedUpdate && !hasAutoCheckedUpdate.current) {
           hasAutoCheckedUpdate.current = true;
           checkForUpdates(false);
         }
         return;
       }
-      
-      // For empty API key, allow access without checking config
-      const apiKey = localStorage.getItem('apiKey');
+
+      const apiKey = localStorage.getItem("apiKey");
       if (!apiKey) {
         setIsCheckingAuth(false);
         return;
       }
-      
-      // If we don't have a config, try to fetch it
+
       try {
         await api.getConfig();
-        // If successful, we don't need to do anything special
-        // The ConfigProvider will handle setting the config
       } catch (err) {
-        // If it's a 401, the API client will redirect to login
-        // For other errors, we still show the app to display the error
-        console.error('Error checking auth:', err);
-        // Redirect to login on authentication error
-        if ((err as Error).message === 'Unauthorized') {
-          navigate('/login');
+        console.error("Error checking auth:", err);
+        if ((err as Error).message === "Unauthorized") {
+          navigate("/login");
         }
       } finally {
         setIsCheckingAuth(false);
-        // Check for updates after fetching configuration, but do not show dialog
         if (!hasCheckedUpdate && !hasAutoCheckedUpdate.current) {
           hasAutoCheckedUpdate.current = true;
           checkForUpdates(false);
@@ -210,249 +164,160 @@ function App() {
     };
 
     checkAuth();
-    
-    // Listen for unauthorized events
+
     const handleUnauthorized = () => {
-      navigate('/login');
+      navigate("/login");
     };
-    
-    window.addEventListener('unauthorized', handleUnauthorized);
-    
-    return () => {
-      window.removeEventListener('unauthorized', handleUnauthorized);
-    };
+
+    window.addEventListener("unauthorized", handleUnauthorized);
+    return () => window.removeEventListener("unauthorized", handleUnauthorized);
   }, [config, navigate, hasCheckedUpdate, checkForUpdates]);
-  
-  // Execute update function
+
   const performUpdate = async () => {
     if (!newVersionInfo) return;
-    
+
     try {
       const result = await api.performUpdate();
-      
+
       if (result.success) {
-        setToast({ message: t('app.update_successful'), type: 'success' });
+        showToast(t("app.update_successful"), "success");
         setIsNewVersionAvailable(false);
         setIsUpdateDialogOpen(false);
-        setHasCheckedUpdate(false); // Reset check state to allow re-checking next time
+        setHasCheckedUpdate(false);
       } else {
-        setToast({ message: t('app.update_failed') + ': ' + result.message, type: 'error' });
+        showToast(t("app.update_failed") + ": " + result.message, "error");
       }
-    } catch (error) {
-      console.error('Failed to perform update:', error);
-      setToast({ message: t('app.update_failed') + ': ' + (error as Error).message, type: 'error' });
+    } catch (err) {
+      console.error("Failed to perform update:", err);
+      showToast(t("app.update_failed") + ": " + (err as Error).message, "error");
     }
   };
 
-  
   if (isCheckingAuth) {
     return (
-      <div className="h-screen bg-gray-50 font-sans flex items-center justify-center">
-        <div className="text-gray-500">Loading application...</div>
+      <div className="flex h-full items-center justify-center">
+        <div className="text-muted-foreground">{t("nav.loading_app")}</div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="h-screen bg-gray-50 font-sans flex items-center justify-center">
-        <div className="text-red-500">Error: {error.message}</div>
+      <div className="flex h-full items-center justify-center">
+        <div className="text-destructive">
+          {t("nav.error_prefix")}: {error.message}
+        </div>
       </div>
     );
   }
 
-  // Handle case where config is null or undefined
   if (!config) {
     return (
-      <div className="h-screen bg-gray-50 font-sans flex items-center justify-center">
-        <div className="text-gray-500">Loading configuration...</div>
+      <div className="flex h-full items-center justify-center">
+        <div className="text-muted-foreground">{t("nav.loading_config")}</div>
       </div>
     );
   }
 
   return (
-    <TooltipProvider>
-      <div className="h-screen bg-gray-50 font-sans">
-      <header className="flex h-16 items-center justify-between border-b bg-white px-6">
-        <h1 className="text-xl font-semibold text-gray-800">{t('app.title')}</h1>
-        <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" onClick={() => setIsSettingsOpen(true)} className="transition-all-ease hover:scale-110">
-                <Settings className="h-5 w-5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>{t('app.settings')}</p>
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" onClick={() => setIsJsonEditorOpen(true)} className="transition-all-ease hover:scale-110">
-                <FileJson className="h-5 w-5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>{t('app.json_editor')}</p>
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" onClick={() => setIsLogViewerOpen(true)} className="transition-all-ease hover:scale-110">
-                <FileText className="h-5 w-5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>{t('app.log_viewer')}</p>
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" onClick={() => navigate('/presets')} className="transition-all-ease hover:scale-110">
-                <FileCog className="h-5 w-5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>{t('app.presets')}</p>
-            </TooltipContent>
-          </Tooltip>
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="ghost" size="icon" className="transition-all-ease hover:scale-110">
-                <Languages className="h-5 w-5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-32 p-2">
-              <div className="space-y-1">
-                <Button
-                  variant={i18n.language.startsWith('en') ? 'default' : 'ghost'}
-                  className="w-full justify-start transition-all-ease hover:scale-[1.02]"
-                  onClick={() => i18n.changeLanguage('en')}
-                >
-                  English
-                </Button>
-                <Button
-                  variant={i18n.language.startsWith('zh') ? 'default' : 'ghost'}
-                  className="w-full justify-start transition-all-ease hover:scale-[1.02]"
-                  onClick={() => i18n.changeLanguage('zh')}
-                >
-                  Chinese
-                </Button>
-              </div>
-            </PopoverContent>
-          </Popover>
-          {/* Version update button - only show when update feature is available */}
-          {isUpdateFeatureAvailable && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => checkForUpdates(true)}
-                  disabled={isCheckingUpdate}
-                  className="transition-all-ease hover:scale-110 relative"
-                >
-                  <div className="relative">
-                    <CircleArrowUp className="h-5 w-5" />
-                    {isNewVersionAvailable && !isCheckingUpdate && (
-                      <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white"></div>
-                    )}
-                  </div>
-                  {isCheckingUpdate && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"></div>
+    <>
+      <PageHeader
+        title={t("nav.dashboard")}
+        description={t("nav.dashboard_description")}
+        actions={
+          <>
+            {isUpdateFeatureAvailable && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => checkForUpdates(true)}
+                    disabled={isCheckingUpdate}
+                    className="relative h-8 w-8 rounded-sm"
+                  >
+                    <div className="relative">
+                      <CircleArrowUp className="h-4 w-4" />
+                      {isNewVersionAvailable && !isCheckingUpdate && (
+                        <div className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-card bg-destructive" />
+                      )}
                     </div>
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>{t('app.check_updates')}</p>
-              </TooltipContent>
-            </Tooltip>
-          )}
-          <Button onClick={saveConfig} variant="outline" className="transition-all-ease hover:scale-[1.02] active:scale-[0.98]">
-            <Save className="mr-2 h-4 w-4" />
-            {t('app.save')}
-          </Button>
-          <Button onClick={saveConfigAndRestart} className="transition-all-ease hover:scale-[1.02] active:scale-[0.98]">
-            <RefreshCw className="mr-2 h-4 w-4" />
-            {t('app.save_and_restart')}
-          </Button>
-        </div>
-      </header>
-      <main className="flex h-[calc(100vh-4rem)] gap-4 p-4 overflow-hidden">
-        <div className="w-3/5">
+                    {isCheckingUpdate && (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                      </div>
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{t("app.check_updates")}</p>
+                </TooltipContent>
+              </Tooltip>
+            )}
+            <Button
+              onClick={saveConfig}
+              variant="outline"
+              size="sm"
+              className="rounded-sm active:scale-[0.99]"
+            >
+              <Save className="mr-1.5 h-3.5 w-3.5" />
+              {t("app.save")}
+            </Button>
+            <Button
+              onClick={saveConfigAndRestart}
+              size="sm"
+              className="rounded-sm active:scale-[0.99]"
+            >
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+              {t("app.save_and_restart")}
+            </Button>
+          </>
+        }
+      />
+
+      <div className="flex h-[calc(100%-4.5rem)] min-h-[28rem] gap-3 overflow-hidden">
+        <div className="w-3/5 min-w-0">
           <Providers />
         </div>
-        <div className="flex w-2/5 flex-col gap-4">
-          <div className="h-3/5">
+        <div className="flex w-2/5 min-w-0 flex-col gap-3">
+          <div className="h-3/5 min-h-0">
             <Router />
           </div>
-          <div className="flex-1 overflow-hidden">
+          <div className="min-h-0 flex-1 overflow-hidden">
             <Transformers />
           </div>
         </div>
-      </main>
-      <SettingsDialog isOpen={isSettingsOpen} onOpenChange={setIsSettingsOpen} />
-      <JsonEditor 
-        open={isJsonEditorOpen} 
-        onOpenChange={setIsJsonEditorOpen} 
-        showToast={(message, type) => setToast({ message, type })} 
-      />
-      <LogViewer 
-        open={isLogViewerOpen} 
-        onOpenChange={setIsLogViewerOpen} 
-        showToast={(message, type) => setToast({ message, type })} 
-      />
-      {/* Version update dialog */}
+      </div>
+
       <Dialog open={isUpdateDialogOpen} onOpenChange={setIsUpdateDialogOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {t('app.new_version_available')}
+              {t("app.new_version_available")}
               {newVersionInfo && (
                 <span className="ml-2 text-sm font-normal text-muted-foreground">
                   v{newVersionInfo.version}
                 </span>
               )}
             </DialogTitle>
-            <DialogDescription>
-              {t('app.update_description')}
-            </DialogDescription>
+            <DialogDescription>{t("app.update_description")}</DialogDescription>
           </DialogHeader>
           <div className="max-h-96 overflow-y-auto py-4">
             {newVersionInfo?.changelog ? (
-              <div className="whitespace-pre-wrap text-sm">
-                {newVersionInfo.changelog}
-              </div>
+              <div className="whitespace-pre-wrap text-sm">{newVersionInfo.changelog}</div>
             ) : (
-              <div className="text-muted-foreground">
-                {t('app.no_changelog_available')}
-              </div>
+              <div className="text-muted-foreground">{t("app.no_changelog_available")}</div>
             )}
           </div>
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setIsUpdateDialogOpen(false)}
-            >
-              {t('app.later')}
+            <Button variant="outline" onClick={() => setIsUpdateDialogOpen(false)}>
+              {t("app.later")}
             </Button>
-            <Button onClick={performUpdate}>
-              {t('app.update_now')}
-            </Button>
+            <Button onClick={performUpdate}>{t("app.update_now")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {toast && (
-        <Toast 
-          message={toast.message} 
-          type={toast.type} 
-          onClose={() => setToast(null)} 
-        />
-      )}
-    </div>
-    </TooltipProvider>
+    </>
   );
 }
 

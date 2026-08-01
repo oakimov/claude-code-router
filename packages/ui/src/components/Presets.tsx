@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,7 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Link, Trash2, Info, Download, Check, Loader2, ArrowLeft, Store, Search, Package } from "lucide-react";
+import { Link, Trash2, Info, Download, Check, Loader2, Store, Search, Package } from "lucide-react";
 import { Toast } from "@/components/ui/toast";
 import { DynamicConfigForm } from "./preset/DynamicConfigForm";
 
@@ -100,7 +100,6 @@ interface MarketPreset {
 
 export function Presets() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const [presets, setPresets] = useState<PresetMetadata[]>([]);
   const [loading, setLoading] = useState(true);
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
@@ -123,9 +122,6 @@ export function Presets() {
   const [installingFromMarket, setInstallingFromMarket] = useState<string | null>(null);
 
   // Return to previous page
-  const handleGoBack = () => {
-    navigate('/dashboard');
-  };
 
   // Load market presets
   const loadMarketPresets = useCallback(async () => {
@@ -419,23 +415,25 @@ export function Presets() {
   };
 
   return (
-    <Card className="flex h-full flex-col rounded-lg border shadow-sm">
-      <CardHeader className="flex flex-row items-center justify-between border-b p-4">
-        <Button variant="ghost" size="icon" onClick={handleGoBack}>
-          <ArrowLeft className="h-5 w-5" />
-        </Button>
-        <CardTitle className="text-lg">{t('presets.title')} <span className="text-sm font-normal text-gray-500">({presets.length})</span></CardTitle>
-        <Button variant="ghost" size="icon" onClick={() => setMarketDialogOpen(true)}>
-          <Store className="h-5 w-5" />
-        </Button>
-      </CardHeader>
+    <div className="flex h-full min-h-0 flex-col">
+      <PageHeader
+        title={t('presets.title')}
+        description={t('nav.presets_installed', { count: presets.length })}
+        actions={
+          <Button variant="outline" size="sm" className="rounded-sm" onClick={() => setMarketDialogOpen(true)}>
+            <Store className="mr-1.5 h-3.5 w-3.5" />
+            {t('presets.market')}
+          </Button>
+        }
+      />
+      <Card className="flex min-h-0 flex-1 flex-col rounded-sm border shadow-sm">
       <CardContent className="flex-grow overflow-y-auto p-4">
         {loading ? (
           <div className="flex items-center justify-center h-full">
-            <Loader2 className="h-6 w-6 animate-spin text-gray-500" />
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         ) : presets.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-gray-500">
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
             <Download className="h-12 w-12 mb-4 opacity-50" />
             <p>{t('presets.no_presets')}</p>
             <p className="text-sm">{t('presets.no_presets_hint')}</p>
@@ -445,18 +443,18 @@ export function Presets() {
             {presets.map((preset) => (
               <div
                 key={preset.name}
-                className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50 transition-colors"
+                className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
               >
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
                     <h3 className="font-medium">{preset.name}</h3>
-                    <span className="text-xs text-gray-500">v{preset.version}</span>
+                    <span className="text-xs text-muted-foreground">v{preset.version}</span>
                   </div>
                   {preset.description && (
-                    <p className="text-sm text-gray-600 mt-1">{preset.description}</p>
+                    <p className="text-sm text-muted-foreground mt-1">{preset.description}</p>
                   )}
                   {preset.author && (
-                    <p className="text-xs text-gray-500 mt-1">by {preset.author}</p>
+                    <p className="text-xs text-muted-foreground mt-1">by {preset.author}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -475,7 +473,7 @@ export function Presets() {
                       setDeleteDialogOpen(true);
                     }}
                   >
-                    <Trash2 className="h-4 w-4 text-red-500" />
+                    <Trash2 className="h-4 w-4 text-destructive" />
                   </Button>
                 </div>
               </div>
@@ -514,7 +512,7 @@ export function Presets() {
                 value={installUrl}
                 onChange={(e) => setInstallUrl(e.target.value)}
               />
-              <p className="text-xs text-gray-500">{t('presets.github_url_hint')}</p>
+              <p className="text-xs text-muted-foreground">{t('presets.github_url_hint')}</p>
             </div>
 
             <div className="space-y-2">
@@ -552,30 +550,30 @@ export function Presets() {
             <DialogTitle className="flex items-center gap-2">
               {selectedPreset?.name}
               {selectedPreset?.version && (
-                <span className="text-sm font-normal text-gray-500">v{selectedPreset.version}</span>
+                <span className="text-sm font-normal text-muted-foreground">v{selectedPreset.version}</span>
               )}
             </DialogTitle>
           </DialogHeader>
           <div className="flex-1 overflow-y-auto py-4 px-2">
             {selectedPreset?.description && (
-              <p className="text-gray-700 mb-4">{selectedPreset.description}</p>
+              <p className="text-foreground mb-4">{selectedPreset.description}</p>
             )}
 
             {selectedPreset?.author && (
-              <p className="text-sm text-gray-600 mb-1">
+              <p className="text-sm text-muted-foreground mb-1">
                 <strong>Author:</strong> {selectedPreset.author}
               </p>
             )}
 
             {selectedPreset?.homepage && (
-              <p className="text-sm text-gray-600 mb-1">
-                <strong>Homepage:</strong> <a href={selectedPreset.homepage} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{selectedPreset.homepage}</a>
+              <p className="text-sm text-muted-foreground mb-1">
+                <strong>Homepage:</strong> <a href={selectedPreset.homepage} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{selectedPreset.homepage}</a>
               </p>
             )}
 
             {selectedPreset?.repository && (
-              <p className="text-sm text-gray-600 mb-1">
-                <strong>Repository:</strong> <a href={selectedPreset.repository} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{selectedPreset.repository}</a>
+              <p className="text-sm text-muted-foreground mb-1">
+                <strong>Repository:</strong> <a href={selectedPreset.repository} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{selectedPreset.repository}</a>
               </p>
             )}
 
@@ -584,7 +582,7 @@ export function Presets() {
                 <strong>Keywords:</strong>
                 <div className="flex flex-wrap gap-2 mt-2">
                   {selectedPreset.keywords.map((keyword) => (
-                    <span key={keyword} className="px-2 py-1 bg-gray-100 rounded text-sm">
+                    <span key={keyword} className="px-2 py-1 bg-muted rounded text-sm">
                       {keyword}
                     </span>
                   ))}
@@ -625,7 +623,7 @@ export function Presets() {
 
           <div className="flex items-center gap-2 py-4">
             <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder={t('presets.search_placeholder')}
                 value={marketSearch}
@@ -638,10 +636,10 @@ export function Presets() {
           <div className="flex-1 overflow-y-auto">
             {marketLoading ? (
               <div className="flex items-center justify-center h-64">
-                <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
               </div>
             ) : filteredMarketPresets.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-64 text-gray-500">
+              <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
                 <Package className="h-12 w-12 mb-4 opacity-50" />
                 <p>{t('presets.no_presets_found')}</p>
                 <p className="text-sm">{t('presets.no_presets_found_hint')}</p>
@@ -664,7 +662,7 @@ export function Presets() {
                   return (
                     <div
                       key={preset.id}
-                      className="p-4 border rounded-lg hover:bg-gray-50 transition-colors"
+                      className="p-4 border rounded-lg hover:bg-muted/50 transition-colors"
                     >
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex-1">
@@ -672,9 +670,9 @@ export function Presets() {
                             <h3 className="font-semibold text-lg">{preset.name}</h3>
                           </div>
                           {preset.description && (
-                            <p className="text-sm text-gray-600 mb-2">{preset.description}</p>
+                            <p className="text-sm text-muted-foreground mb-2">{preset.description}</p>
                           )}
-                          <div className="flex items-center gap-4 text-sm text-gray-500">
+                          <div className="flex items-center gap-4 text-sm text-muted-foreground">
                             {preset.author && (
                               <div className="flex items-center gap-1.5">
                                 <span className="font-medium">{t('presets.by', { author: preset.author })}</span>
@@ -682,7 +680,7 @@ export function Presets() {
                                   href={`https://github.com/${preset.repo}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="text-gray-600 hover:text-gray-900 transition-colors"
+                                  className="text-muted-foreground hover:text-foreground transition-colors"
                                   title={t('presets.github_repository')}
                                 >
                                   <i className="ri-github-fill text-xl"></i>
@@ -752,5 +750,6 @@ export function Presets() {
         />
       )}
     </Card>
+    </div>
   );
 }

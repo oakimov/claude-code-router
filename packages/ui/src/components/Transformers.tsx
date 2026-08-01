@@ -31,7 +31,7 @@ export function Transformers() {
           <CardTitle className="text-lg">{t("transformers.title")}</CardTitle>
         </CardHeader>
         <CardContent className="flex-grow flex items-center justify-center p-4">
-          <div className="text-gray-500">Loading transformers configuration...</div>
+          <div className="text-muted-foreground">Loading transformers configuration...</div>
         </CardContent>
       </Card>
     );
@@ -103,7 +103,7 @@ export function Transformers() {
   return (
     <Card className="flex h-full flex-col rounded-lg border shadow-sm">
       <CardHeader className="flex flex-row items-center justify-between border-b p-4">
-        <CardTitle className="text-lg">{t("transformers.title")} <span className="text-sm font-normal text-gray-500">({validTransformers.length})</span></CardTitle>
+        <CardTitle className="text-lg">{t("transformers.title")} <span className="text-sm font-normal text-muted-foreground">({validTransformers.length})</span></CardTitle>
         <Button onClick={handleAddTransformer}>{t("transformers.add")}</Button>
       </CardHeader>
       <CardContent className="flex-grow overflow-y-auto p-4">

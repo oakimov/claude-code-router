@@ -66,8 +66,10 @@ export function ConfigProvider({ children }: ConfigProviderProps) {
         // Try to fetch config regardless of API key presence
         const data = await api.getConfig();
         
-        // Validate the received data to ensure it has the expected structure
-        const validConfig = {
+        // Validate known fields, but keep any other top-level keys from config.json
+        // (e.g. MISTRAL_API_KEY) so JSON editor load/save does not drop them.
+        const validConfig: Config = {
+          ...data,
           LOG: typeof data.LOG === 'boolean' ? data.LOG : false,
           LOG_LEVEL: typeof data.LOG_LEVEL === 'string' ? data.LOG_LEVEL : 'debug',
           CLAUDE_PATH: typeof data.CLAUDE_PATH === 'string' ? data.CLAUDE_PATH : '',
@@ -78,12 +80,13 @@ export function ConfigProvider({ children }: ConfigProviderProps) {
           PROXY_URL: typeof data.PROXY_URL === 'string' ? data.PROXY_URL : '',
           transformers: Array.isArray(data.transformers) ? data.transformers : [],
           Providers: Array.isArray(data.Providers) ? data.Providers : [],
+          forceUseImageAgent: typeof data.forceUseImageAgent === 'boolean' ? data.forceUseImageAgent : undefined,
           StatusLine: data.StatusLine && typeof data.StatusLine === 'object' ? {
             enabled: typeof data.StatusLine.enabled === 'boolean' ? data.StatusLine.enabled : false,
             currentStyle: typeof data.StatusLine.currentStyle === 'string' ? data.StatusLine.currentStyle : 'default',
             default: data.StatusLine.default && typeof data.StatusLine.default === 'object' && Array.isArray(data.StatusLine.default.modules) ? data.StatusLine.default : { modules: [] },
             powerline: data.StatusLine.powerline && typeof data.StatusLine.powerline === 'object' && Array.isArray(data.StatusLine.powerline.modules) ? data.StatusLine.powerline : { modules: [] }
-          } : { 
+          } : {
             enabled: false,
             currentStyle: 'default',
             default: { modules: [] },
@@ -108,7 +111,7 @@ export function ConfigProvider({ children }: ConfigProviderProps) {
           },
           CUSTOM_ROUTER_PATH: typeof data.CUSTOM_ROUTER_PATH === 'string' ? data.CUSTOM_ROUTER_PATH : ''
         };
-        
+
         setConfig(validConfig);
       } catch (err) {
         console.error('Failed to fetch config:', err);

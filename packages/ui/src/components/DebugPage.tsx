@@ -1,14 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate, useLocation } from 'react-router';
+import { useLocation } from 'react-router';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Send, Copy, Square, History, Maximize } from 'lucide-react';
+import { PageHeader } from '@/components/layout/PageHeader';
+import { useMonacoTheme } from '@/hooks/useMonacoTheme';
+import { Send, Copy, Square, History, Maximize } from 'lucide-react';
 import MonacoEditor from '@monaco-editor/react';
 import { RequestHistoryDrawer } from './RequestHistoryDrawer';
 import { requestHistoryDB } from '@/lib/db';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 export function DebugPage() {
-  const navigate = useNavigate();
+  const monacoTheme = useMonacoTheme();
   const location = useLocation();
   const [requestData, setRequestData] = useState({
     url: '',
@@ -250,33 +252,27 @@ export function DebugPage() {
 
 
   return (
-    <div className="h-screen bg-gray-50 font-sans">
-      {/* Header */}
-      <header className="flex h-16 items-center justify-between border-b bg-white px-6">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="sm" onClick={() => navigate('/dashboard')}>
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back
-          </Button>
-          <h1 className="text-xl font-semibold text-gray-800">HTTP Debugger</h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => setIsHistoryDrawerOpen(true)}>
-            <History className="h-4 w-4 mr-2" />
-            History
-          </Button>
-          <Button variant="outline" onClick={copyCurl}>
-            <Copy className="h-4 w-4 mr-2" />
-            Copy cURL
-          </Button>
-        </div>
-      </header>
+    <div className="flex h-full min-h-0 flex-col font-sans">
+      <PageHeader
+        title="HTTP Debugger"
+        actions={
+          <>
+            <Button variant="outline" size="sm" className="rounded-sm" onClick={() => setIsHistoryDrawerOpen(true)}>
+              <History className="h-3.5 w-3.5 mr-1.5" />
+              History
+            </Button>
+            <Button variant="outline" size="sm" className="rounded-sm" onClick={copyCurl}>
+              <Copy className="h-3.5 w-3.5 mr-1.5" />
+              Copy cURL
+            </Button>
+          </>
+        }
+      />
 
-      {/* Main content */}
-      <main className="flex h-[calc(100vh-4rem)] flex-col gap-4 p-4 overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
         {/* Top section: request parameter configuration - top/middle/bottom layout */}
         <div className="h-1/2 flex flex-col gap-4">
-          <div className="bg-white rounded-lg border p-4 flex-1 flex flex-col">
+          <div className="bg-card rounded-lg border p-4 flex-1 flex flex-col">
             <h3 className="font-medium mb-4">Request Parameter Configuration</h3>
             <div className="flex flex-col gap-4 flex-1">
               {/* Top: Method, URL and send request button configuration */}
@@ -335,7 +331,7 @@ export function DebugPage() {
                   <TabsContent value="headers" className="flex-1 mt-2">
                     <div
                       className={`${fullscreenEditor === 'headers' ? '' : 'h-full'} flex flex-col ${
-                        fullscreenEditor === 'headers' ? 'fixed bg-white w-[100vw] h-[100vh] z-[9999] top-0 left-0 p-4' : ''
+                        fullscreenEditor === 'headers' ? 'fixed bg-card w-[100vw] h-[100vh] z-[9999] top-0 left-0 p-4' : ''
                       }`}
                     >
                       <div className="flex items-center justify-between mb-2">
@@ -351,9 +347,10 @@ export function DebugPage() {
                       </div>
                       <div
                         id="fullscreen-headers"
-                        className={`${fullscreenEditor === 'headers' ? 'h-full' : 'flex-1'} border border-gray-300 rounded-md overflow-hidden relative`}
+                        className={`${fullscreenEditor === 'headers' ? 'h-full' : 'flex-1'} border border-input rounded-md overflow-hidden relative`}
                       >
                         <MonacoEditor
+                         theme={monacoTheme}
                           height="100%"
                           language="json"
                           value={requestData.headers}
@@ -379,7 +376,7 @@ export function DebugPage() {
                   <TabsContent value="body" className="flex-1 mt-2">
                     <div
                       className={`${fullscreenEditor === 'body' ? '' : 'h-full'} flex flex-col ${
-                        fullscreenEditor === 'body' ? 'fixed bg-white w-[100vw] h-[100vh] z-[9999] top-0 left-0 p-4' : ''
+                        fullscreenEditor === 'body' ? 'fixed bg-card w-[100vw] h-[100vh] z-[9999] top-0 left-0 p-4' : ''
                       }`}
                     >
                       <div className="flex items-center justify-between mb-2">
@@ -395,9 +392,10 @@ export function DebugPage() {
                       </div>
                       <div
                         id="fullscreen-body"
-                        className={`${fullscreenEditor === 'body' ? 'h-full' : 'flex-1'} border border-gray-300 rounded-md overflow-hidden relative`}
+                        className={`${fullscreenEditor === 'body' ? 'h-full' : 'flex-1'} border border-input rounded-md overflow-hidden relative`}
                       >
                         <MonacoEditor
+                         theme={monacoTheme}
                           height="100%"
                           language="json"
                           value={requestData.body}
@@ -427,7 +425,7 @@ export function DebugPage() {
 
         {/* Bottom section: response information view */}
         <div className="h-1/2 flex flex-col gap-4">
-          <div className="flex-1 bg-white rounded-lg border p-4 flex flex-col">
+          <div className="flex-1 bg-card rounded-lg border p-4 flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-medium">Response Information</h3>
               {responseData.status > 0 && (
@@ -437,7 +435,7 @@ export function DebugPage() {
                       responseData.status >= 200 && responseData.status < 300 
                         ? 'bg-green-100 text-green-800' 
                         : responseData.status >= 400 
-                        ? 'bg-red-100 text-red-800' 
+                        ? 'bg-destructive/10 text-destructive' 
                         : 'bg-yellow-100 text-yellow-800'
                     }`}>
                       {responseData.status}
@@ -459,7 +457,7 @@ export function DebugPage() {
                   </TabsList>
 
                   <TabsContent value="body" className="flex-1 mt-2">
-                    <div className="bg-gray-50 border rounded-md p-3 h-full overflow-auto">
+                    <div className="bg-muted/50 border rounded-md p-3 h-full overflow-auto">
                       <pre className="text-sm whitespace-pre-wrap">
                         {responseData.body}
                       </pre>
@@ -467,7 +465,7 @@ export function DebugPage() {
                   </TabsContent>
 
                   <TabsContent value="headers" className="flex-1 mt-2">
-                    <div className="bg-gray-50 border rounded-md p-3 h-full overflow-auto">
+                    <div className="bg-muted/50 border rounded-md p-3 h-full overflow-auto">
                       <pre className="text-sm">
                         {responseData.headers}
                       </pre>
@@ -476,13 +474,13 @@ export function DebugPage() {
                 </Tabs>
               </div>
             ) : (
-              <div className="flex-1 flex items-center justify-center text-gray-500">
+              <div className="flex-1 flex items-center justify-center text-muted-foreground">
                 {isLoading ? 'Sending request...' : 'Response will be displayed here after sending request'}
               </div>
             )}
           </div>
         </div>
-      </main>
+      </div>
 
       {/* Request history drawer */}
       <RequestHistoryDrawer

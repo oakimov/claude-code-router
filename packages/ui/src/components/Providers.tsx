@@ -43,23 +43,23 @@ function ProviderTemplatePreview({ provider }: { provider: Provider | null }) {
   const tags = getProviderTags(provider, authHint);
 
   return (
-    <div className="space-y-2 rounded-md border bg-gray-50 p-3">
+    <div className="space-y-2 rounded-md border bg-muted/50 p-3">
       <div className="flex items-start gap-3">
         {provider.icon ? (
           <img
             src={provider.icon}
             alt={`${title} icon`}
-            className="h-10 w-10 rounded-md border bg-white object-contain p-1"
+            className="h-10 w-10 rounded-md border bg-card object-contain p-1"
           />
         ) : (
-          <div className="flex h-10 w-10 items-center justify-center rounded-md border bg-white text-gray-400">
+          <div className="flex h-10 w-10 items-center justify-center rounded-md border bg-card text-muted-foreground">
             <Info className="h-4 w-4" />
           </div>
         )}
         <div className="min-w-0 flex-1">
-          <div className="font-medium text-gray-900">{title}</div>
-          <div className="text-sm text-gray-500">{host}</div>
-          {description && <div className="mt-1 text-sm text-gray-600">{description}</div>}
+          <div className="font-medium text-foreground">{title}</div>
+          <div className="text-sm text-muted-foreground">{host}</div>
+          {description && <div className="mt-1 text-sm text-muted-foreground">{description}</div>}
         </div>
       </div>
       {tags.length > 0 && (
@@ -154,7 +154,7 @@ export function Providers() {
           <CardTitle className="text-lg">{t("providers.title")}</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-grow items-center justify-center p-4">
-          <div className="text-gray-500">Loading providers configuration...</div>
+          <div className="text-muted-foreground">Loading providers configuration...</div>
         </CardContent>
       </Card>
     );
@@ -549,13 +549,13 @@ export function Providers() {
       <CardHeader className="flex flex-col gap-3 border-b p-4">
         <div className="flex flex-row items-center justify-between">
           <CardTitle className="text-lg">
-            {t("providers.title")} <span className="text-sm font-normal text-gray-500">({filteredProviders.length}/{validProviders.length})</span>
+            {t("providers.title")} <span className="text-sm font-normal text-muted-foreground">({filteredProviders.length}/{validProviders.length})</span>
           </CardTitle>
           <Button onClick={handleAddProvider}>{t("providers.add")}</Button>
         </div>
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
-            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder={t("providers.search")}
               value={searchTerm}
@@ -607,11 +607,11 @@ export function Providers() {
               )}
 
               {editingProviderSummary && (
-                <div className="space-y-2 rounded-md border bg-blue-50/40 p-3">
-                  <div className="text-sm font-medium text-gray-900">{t("providers.current_provider_summary")}</div>
-                  <div className="text-sm text-gray-600">{editingProviderSummary.host}</div>
+                <div className="space-y-2 rounded-md border bg-primary/5 p-3">
+                  <div className="text-sm font-medium text-foreground">{t("providers.current_provider_summary")}</div>
+                  <div className="text-sm text-muted-foreground">{editingProviderSummary.host}</div>
                   {editingProviderSummary.description && (
-                    <div className="text-sm text-gray-600">{editingProviderSummary.description}</div>
+                    <div className="text-sm text-muted-foreground">{editingProviderSummary.description}</div>
                   )}
                   {editingProviderSummary.tags.length > 0 && (
                     <div className="flex flex-wrap gap-2">
@@ -638,7 +638,7 @@ export function Providers() {
                   }}
                   className={nameError ? "border-red-500" : ""}
                 />
-                {nameError && <p className="text-sm text-red-500">{nameError}</p>}
+                {nameError && <p className="text-sm text-destructive">{nameError}</p>}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="api_base_url">{t("providers.api_base_url")}</Label>
@@ -678,7 +678,7 @@ export function Providers() {
                     )}
                   </Button>
                 </div>
-                {apiKeyError && <p className="text-sm text-red-500">{apiKeyError}</p>}
+                {apiKeyError && <p className="text-sm text-destructive">{apiKeyError}</p>}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="models">{t("providers.models")}</Label>
@@ -755,7 +755,7 @@ export function Providers() {
                         {model}
                         <button
                           type="button"
-                          className="ml-1 rounded-full hover:bg-gray-200"
+                          className="ml-1 rounded-full hover:bg-muted"
                           onClick={() =>
                             editingProviderIndex !== null &&
                             handleRemoveModel(editingProviderIndex, modelIndex)
@@ -790,7 +790,7 @@ export function Providers() {
 
                 {editingProvider.transformer?.use && editingProvider.transformer.use.length > 0 && (
                   <div className="mt-2 space-y-2">
-                    <div className="text-sm font-medium text-gray-700">
+                    <div className="text-sm font-medium text-foreground">
                       {t("providers.selected_transformers")}
                     </div>
                     {editingProvider.transformer.use.map(
@@ -800,7 +800,7 @@ export function Providers() {
                       ) => (
                         <div key={transformerIndex} className="rounded-md border p-3">
                           <div className="mb-2 flex items-center gap-2">
-                            <div className="flex-1 rounded bg-gray-50 p-2 text-sm">
+                            <div className="flex-1 rounded bg-muted/50 p-2 text-sm">
                               {typeof transformer === "string"
                                 ? transformer
                                 : Array.isArray(transformer)
@@ -823,7 +823,7 @@ export function Providers() {
                             </Button>
                           </div>
 
-                          <div className="mt-2 border-l-2 border-gray-200 pl-4">
+                          <div className="mt-2 border-l-2 border-border pl-4">
                             <Label className="text-sm">
                               {t("providers.transformer_parameters")}
                             </Label>
@@ -920,7 +920,7 @@ export function Providers() {
                                     {Object.entries(params).map(([key, value]) => (
                                       <div
                                         key={key}
-                                        className="flex items-center justify-between rounded bg-gray-50 p-2"
+                                        className="flex items-center justify-between rounded bg-muted/50 p-2"
                                       >
                                         <div className="text-sm">
                                           <span className="font-medium">{key}:</span> {String(value)}
@@ -988,7 +988,7 @@ export function Providers() {
                         {editingProvider.transformer?.[model]?.use &&
                           editingProvider.transformer[model].use.length > 0 && (
                             <div className="mt-2 space-y-2">
-                              <div className="text-sm font-medium text-gray-700">
+                              <div className="text-sm font-medium text-foreground">
                                 {t("providers.selected_transformers")}
                               </div>
                               {editingProvider.transformer[model].use.map(
@@ -998,7 +998,7 @@ export function Providers() {
                                 ) => (
                                   <div key={transformerIndex} className="rounded-md border p-3">
                                     <div className="mb-2 flex items-center gap-2">
-                                      <div className="flex-1 rounded bg-gray-50 p-2 text-sm">
+                                      <div className="flex-1 rounded bg-muted/50 p-2 text-sm">
                                         {typeof transformer === "string"
                                           ? transformer
                                           : Array.isArray(transformer)
@@ -1022,7 +1022,7 @@ export function Providers() {
                                       </Button>
                                     </div>
 
-                                    <div className="mt-2 border-l-2 border-gray-200 pl-4">
+                                    <div className="mt-2 border-l-2 border-border pl-4">
                                       <Label className="text-sm">
                                         {t("providers.transformer_parameters")}
                                       </Label>
@@ -1131,7 +1131,7 @@ export function Providers() {
                                               {Object.entries(params).map(([key, value]) => (
                                                 <div
                                                   key={key}
-                                                  className="flex items-center justify-between rounded bg-gray-50 p-2"
+                                                  className="flex items-center justify-between rounded bg-muted/50 p-2"
                                                 >
                                                   <div className="text-sm">
                                                     <span className="font-medium">{key}:</span>{" "}

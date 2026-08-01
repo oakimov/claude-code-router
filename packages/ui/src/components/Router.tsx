@@ -17,7 +17,7 @@ export function Router() {
           <CardTitle className="text-lg">{t("router.title")}</CardTitle>
         </CardHeader>
         <CardContent className="flex-grow flex items-center justify-center p-4">
-          <div className="text-gray-500">Loading router configuration...</div>
+          <div className="text-muted-foreground">Loading router configuration...</div>
         </CardContent>
       </Card>
     );

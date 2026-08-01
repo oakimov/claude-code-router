@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useMonacoTheme } from '@/hooks/useMonacoTheme';
 import Editor from '@monaco-editor/react';
 import { Button } from '@/components/ui/button';
 import { useConfig } from '@/components/ConfigProvider';
@@ -13,6 +14,7 @@ interface JsonEditorProps {
 }
 
 export function JsonEditor({ open, onOpenChange, showToast }: JsonEditorProps) {
+  const monacoTheme = useMonacoTheme();
   const { t } = useTranslation();
   const { config } = useConfig();
   const [jsonValue, setJsonValue] = useState<string>('');
@@ -151,7 +153,7 @@ export function JsonEditor({ open, onOpenChange, showToast }: JsonEditorProps) {
       
       <div 
         ref={containerRef}
-        className={`fixed bottom-0 left-0 right-0 z-50 flex flex-col bg-white shadow-2xl transition-all duration-300 ease-out transform ${
+        className={`fixed bottom-0 left-0 right-0 z-50 flex flex-col bg-card shadow-2xl transition-all duration-300 ease-out transform ${
           isAnimating && open ? 'translate-y-0' : 'translate-y-full'
         }`}
         style={{ 
@@ -192,13 +194,13 @@ export function JsonEditor({ open, onOpenChange, showToast }: JsonEditorProps) {
           </div>
         </div>
         
-        <div className="flex-1 min-h-0 bg-gray-50">
+        <div className="flex-1 min-h-0 bg-muted/50">
           <Editor
             height="100%"
             defaultLanguage="json"
             value={jsonValue}
             onChange={(value) => setJsonValue(value || '')}
-            theme="vs"
+            theme={monacoTheme}
             options={{
               minimap: { enabled: true },
               fontSize: 14,

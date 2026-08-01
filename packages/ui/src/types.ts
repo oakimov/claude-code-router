@@ -69,6 +69,11 @@ export interface Config {
   API_TIMEOUT_MS: string;
   PROXY_URL: string;
   CUSTOM_ROUTER_PATH?: string;
+  /**
+   * Preserve arbitrary top-level keys from config.json (e.g. MISTRAL_API_KEY).
+   * These are interpolated into process.env by the server and must survive UI load/save.
+   */
+  [key: string]: unknown;
 }
 
 export type AccessLevel = 'restricted' | 'full';

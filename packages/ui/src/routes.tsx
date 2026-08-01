@@ -5,6 +5,7 @@ import { DebugPage } from '@/components/DebugPage';
 import { Presets } from '@/components/Presets';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import PublicRoute from '@/components/PublicRoute';
+import { AppShell } from '@/components/layout/AppShell';
 
 export const router = createMemoryRouter([
   {
@@ -16,16 +17,21 @@ export const router = createMemoryRouter([
     element: <PublicRoute><Login /></PublicRoute>,
   },
   {
-    path: '/dashboard',
-    element: <ProtectedRoute><App /></ProtectedRoute>,
-  },
-  {
-    path: '/presets',
-    element: <ProtectedRoute><Presets /></ProtectedRoute>,
-  },
-  {
-    path: '/debug',
-    element: <ProtectedRoute><DebugPage /></ProtectedRoute>,
+    element: <ProtectedRoute><AppShell /></ProtectedRoute>,
+    children: [
+      {
+        path: '/dashboard',
+        element: <App />,
+      },
+      {
+        path: '/presets',
+        element: <Presets />,
+      },
+      {
+        path: '/debug',
+        element: <DebugPage />,
+      },
+    ],
   },
 ], {
   initialEntries: ['/dashboard']

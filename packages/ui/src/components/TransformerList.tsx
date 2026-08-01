@@ -13,7 +13,7 @@ export function TransformerList({ transformers, onEdit, onRemove }: TransformerL
   if (!transformers || !Array.isArray(transformers)) {
     return (
       <div className="space-y-3">
-        <div className="flex items-center justify-center rounded-md border bg-white p-8 text-gray-500">
+        <div className="flex items-center justify-center rounded-md border bg-card p-8 text-muted-foreground">
           No transformers configured
         </div>
       </div>
@@ -26,10 +26,10 @@ export function TransformerList({ transformers, onEdit, onRemove }: TransformerL
         // Handle case where individual transformer might be null or undefined
         if (!transformer) {
           return (
-            <div key={index} className="flex items-start justify-between rounded-md border bg-white p-4 transition-all hover:shadow-md animate-slide-in hover:scale-[1.01]">
+            <div key={index} className="flex items-start justify-between rounded-md border bg-card p-4 transition-all hover:shadow-md animate-slide-in hover:scale-[1.01]">
               <div className="flex-1 space-y-1.5">
-                <p className="text-md font-semibold text-gray-800">Invalid Transformer</p>
-                <p className="text-sm text-gray-500">Transformer data is missing</p>
+                <p className="text-md font-semibold text-foreground">Invalid Transformer</p>
+                <p className="text-sm text-muted-foreground">Transformer data is missing</p>
               </div>
               <div className="ml-4 flex flex-shrink-0 items-center gap-2">
                 <Button variant="ghost" size="icon" onClick={() => onEdit(index)} className="transition-all-ease hover:scale-110" disabled>
@@ -52,7 +52,7 @@ export function TransformerList({ transformers, onEdit, onRemove }: TransformerL
         // Render parameters as tags in a single line
         const renderParameters = () => {
           if (!options || Object.keys(options).length === 0) {
-            return <p className="text-sm text-gray-500">No parameters configured</p>;
+            return <p className="text-sm text-muted-foreground">No parameters configured</p>;
           }
           
           return (
@@ -60,10 +60,10 @@ export function TransformerList({ transformers, onEdit, onRemove }: TransformerL
               {Object.entries(options).map(([key, value]) => (
                 <span 
                   key={key} 
-                  className="inline-flex items-center px-2 py-1 rounded-md bg-gray-100 text-xs font-medium text-gray-700 border"
+                  className="inline-flex items-center px-2 py-1 rounded-md bg-muted text-xs font-medium text-foreground border"
                 >
-                  <span className="text-gray-600">{key}:</span>
-                  <span className="ml-1 text-gray-800">{String(value)}</span>
+                  <span className="text-muted-foreground">{key}:</span>
+                  <span className="ml-1 text-foreground">{String(value)}</span>
                 </span>
               ))}
             </div>
@@ -71,9 +71,9 @@ export function TransformerList({ transformers, onEdit, onRemove }: TransformerL
         };
 
         return (
-          <div key={index} className="flex items-start justify-between rounded-md border bg-white p-4 transition-all hover:shadow-md animate-slide-in hover:scale-[1.01]">
+          <div key={index} className="flex items-start justify-between rounded-md border bg-card p-4 transition-all hover:shadow-md animate-slide-in hover:scale-[1.01]">
             <div className="flex-1 space-y-1.5">
-              <p className="text-md font-semibold text-gray-800">{transformerPath}</p>
+              <p className="text-md font-semibold text-foreground">{transformerPath}</p>
               {renderParameters()}
             </div>
             <div className="ml-4 flex flex-shrink-0 items-center gap-2">

@@ -30,7 +30,9 @@
     "log_viewer": "Log Viewer",
     "presets": "Presets",
     "language": "Language",
-    "check_updates": "Check for Updates"
+    "check_updates": "Check for Updates",
+    "title_short": "CCR",
+    "config_missing": "Configuration is missing"
   },
   "login": {
     "title": "Sign in to your account",
@@ -122,7 +124,6 @@
       "missing_api_key": "Missing API key",
       "env_auth": "Environment variable auth"
     }
-
   },
   "router": {
     "title": "Router",
@@ -279,7 +280,6 @@
     "install_dialog_title": "Install Preset",
     "install_dialog_description": "Install a preset from a GitHub repository",
     "from_url": "From GitHub",
-    "github_repository": "GitHub Repository",
     "preset_url": "Repository URL",
     "preset_url_placeholder": "https://github.com/owner/repo",
     "preset_name": "Preset Name (Optional)",
@@ -313,6 +313,27 @@
       "applying": "Applying...",
       "apply": "Apply",
       "cancel": "Cancel"
-    }
+    },
+    "market": "Market"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "dashboard_description": "Configure providers, routing, and transformers",
+    "presets": "Presets",
+    "logs": "Logs",
+    "debug": "Debug",
+    "json": "JSON Editor",
+    "settings": "Settings",
+    "console": "Admin console",
+    "theme": "Theme",
+    "theme_light": "Light",
+    "theme_dark": "Dark",
+    "theme_system": "System",
+    "expand_sidebar": "Expand sidebar",
+    "collapse_sidebar": "Collapse sidebar",
+    "loading_app": "Loading application...",
+    "loading_config": "Loading configuration...",
+    "error_prefix": "Error",
+    "presets_installed": "{{count}} installed"
   }
 }

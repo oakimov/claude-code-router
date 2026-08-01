@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useMonacoTheme } from '@/hooks/useMonacoTheme';
 import { useNavigate } from 'react-router';
 import Editor from '@monaco-editor/react';
 import { Button } from '@/components/ui/button';
@@ -47,6 +48,7 @@ interface GroupedLogsResponse {
 }
 
 export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
+  const monacoTheme = useMonacoTheme();
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [logs, setLogs] = useState<string[]>([]);
@@ -673,7 +675,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
 
       <div
         ref={containerRef}
-        className={`fixed bottom-0 left-0 right-0 z-50 flex flex-col bg-white shadow-2xl transition-all duration-300 ease-out transform ${
+        className={`fixed bottom-0 left-0 right-0 z-50 flex flex-col bg-card shadow-2xl transition-all duration-300 ease-out transform ${
           isAnimating && open ? 'translate-y-0' : 'translate-y-full'
         }`}
         style={{
@@ -699,16 +701,16 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
               {getBreadcrumbs().map((breadcrumb, index) => (
                 <React.Fragment key={breadcrumb.id}>
                   {index > 0 && (
-                    <span className="text-gray-400 mx-1">/</span>
+                    <span className="text-muted-foreground mx-1">/</span>
                   )}
                   {index === getBreadcrumbs().length - 1 ? (
-                    <span className="text-gray-900 font-medium">
+                    <span className="text-foreground font-medium">
                       {breadcrumb.label}
                     </span>
                   ) : (
                     <button
                       onClick={breadcrumb.onClick}
-                      className="text-blue-600 hover:text-blue-800 transition-colors"
+                      className="text-primary hover:text-primary/80 transition-colors"
                     >
                       {breadcrumb.label}
                     </button>
@@ -724,7 +726,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
                   variant="ghost"
                   size="sm"
                   onClick={toggleGroupByReqId}
-                  className={groupByReqId ? 'bg-blue-100 text-blue-700' : ''}
+                  className={groupByReqId ? 'bg-primary/10 text-primary' : ''}
                 >
                   <Layers className="h-4 w-4 mr-2" />
                   {groupByReqId ? t('log_viewer.grouped_on') : t('log_viewer.group_by_req_id')}
@@ -733,7 +735,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
                   variant="ghost"
                   size="sm"
                   onClick={() => setAutoRefresh(!autoRefresh)}
-                  className={autoRefresh ? 'bg-blue-100 text-blue-700' : ''}
+                  className={autoRefresh ? 'bg-primary/10 text-primary' : ''}
                 >
                   <RefreshCw className={`h-4 w-4 mr-2 ${autoRefresh ? 'animate-spin' : ''}`} />
                   {autoRefresh ? t('log_viewer.auto_refresh_on') : t('log_viewer.auto_refresh_off')}
@@ -769,10 +771,10 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 bg-gray-50">
+        <div className="flex-1 min-h-0 bg-muted/50">
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
             </div>
           ) : selectedFile ? (
             <>
@@ -781,7 +783,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
                 <div className="flex flex-col h-full p-6">
                   <div className="mb-4 flex-shrink-0">
                     <h3 className="text-lg font-medium mb-2">{t('log_viewer.request_groups')}</h3>
-                    <p className="text-sm text-gray-600">
+                    <p className="text-sm text-muted-foreground">
                       {t('log_viewer.total_requests')}: {groupedLogs.summary.totalRequests} |
                       {t('log_viewer.total_logs')}: {groupedLogs.summary.totalLogs}
                     </p>
@@ -790,12 +792,12 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
                     {groupedLogs.summary.requests.map((request) => (
                       <div
                         key={request.reqId}
-                        className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                        className="border rounded-lg p-4 hover:bg-muted/50 cursor-pointer transition-colors"
                         onClick={() => selectReqId(request.reqId)}
                       >
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
-                            <File className="h-5 w-5 text-blue-600" />
+                            <File className="h-5 w-5 text-primary" />
                             <span className="font-medium text-sm">{request.reqId}</span>
                             {request.model && (
                               <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">
@@ -803,11 +805,11 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
                               </span>
                             )}
                           </div>
-                          <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
+                          <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">
                             {request.logCount} {t('log_viewer.logs')}
                           </span>
                         </div>
-                        <div className="text-xs text-gray-500 space-y-1">
+                        <div className="text-xs text-muted-foreground space-y-1">
                           <div>{t('log_viewer.first_log')}: {formatDate(request.firstLog)}</div>
                           <div>{t('log_viewer.last_log')}: {formatDate(request.lastLog)}</div>
                         </div>
@@ -822,7 +824,7 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
                     height="100%"
                     defaultLanguage="json"
                     value={formatLogsForEditor()}
-                    theme="vs"
+                    theme={monacoTheme}
                     options={{
                       minimap: { enabled: true },
                       fontSize: 14,
@@ -844,8 +846,8 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
             <div className="p-6">
               <h3 className="text-lg font-medium mb-4">{t('log_viewer.select_file')}</h3>
               {logFiles.length === 0 ? (
-                <div className="text-gray-500 text-center py-8">
-                  <File className="h-12 w-12 mx-auto mb-4 text-gray-400" />
+                <div className="text-muted-foreground text-center py-8">
+                  <File className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
                   <p>{t('log_viewer.no_log_files_available')}</p>
                 </div>
               ) : (
@@ -853,16 +855,16 @@ export function LogViewer({ open, onOpenChange, showToast }: LogViewerProps) {
                   {logFiles.map((file) => (
                     <div
                       key={file.path}
-                      className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                      className="border rounded-lg p-4 hover:bg-muted/50 cursor-pointer transition-colors"
                       onClick={() => selectFile(file)}
                     >
                       <div className="flex items-start justify-between mb-2">
                         <div className="flex items-center gap-2">
-                          <File className="h-5 w-5 text-blue-600" />
+                          <File className="h-5 w-5 text-primary" />
                           <span className="font-medium text-sm">{file.name}</span>
                         </div>
                       </div>
-                      <div className="text-xs text-gray-500 space-y-1">
+                      <div className="text-xs text-muted-foreground space-y-1">
                         <div>{formatFileSize(file.size)}</div>
                         <div>{formatDate(file.lastModified)}</div>
                       </div>

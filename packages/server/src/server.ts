@@ -5,8 +5,9 @@ import Server, {
   sanitizeHeadersForLog,
 } from "@caeliq/llms";
 import { readConfigFile, writeConfigFile, backupConfigFile } from "./utils";
-import { join } from "path";
+import { join, resolve } from "path";
 import fastifyStatic from "@fastify/static";
+import rateLimit from "@fastify/rate-limit";
 import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync } from "fs";
 import { homedir } from "os";
 import {
@@ -33,6 +34,20 @@ import { registerCodexAuthRoutes } from "./routes/codex-auth";
 import { registerQwenAuthRoutes } from "./routes/qwen-auth";
 import { registerClaudeAuthRoutes } from "./routes/claude-auth";
 import { registerAntigravityAuthRoutes } from "./routes/antigravity-auth";
+
+const LOG_DIR = join(homedir(), ".claude-code-router", "logs");
+
+/** Resolve a log file path, rejecting anything outside LOG_DIR. */
+function resolveLogFilePath(filePath?: string): string {
+  const candidate = filePath
+    ? resolve(filePath)
+    : join(LOG_DIR, "app.log");
+  const logDir = resolve(LOG_DIR);
+  if (candidate !== logDir && !candidate.startsWith(logDir + "/") && !candidate.startsWith(logDir + "\\")) {
+    throw new Error("Log file path must be under the logs directory");
+  }
+  return candidate;
+}
 
 export const createServer = async (config: any): Promise<any> => {
   const server = new Server(config);
@@ -120,6 +135,12 @@ export const createServer = async (config: any): Promise<any> => {
       throw error;
     }
   };
+
+  await app.register(rateLimit, {
+    global: true,
+    max: 1000,
+    timeWindow: "1 minute",
+  });
 
   app.register(fastifyMultipart, {
     limits: {
@@ -241,15 +262,14 @@ export const createServer = async (config: any): Promise<any> => {
   // Get log file list endpoint
   app.get("/api/logs/files", async (req: any, reply: any) => {
     try {
-      const logDir = join(homedir(), ".claude-code-router", "logs");
       const logFiles: Array<{ name: string; path: string; size: number; lastModified: string }> = [];
 
-      if (existsSync(logDir)) {
-        const files = readdirSync(logDir);
+      if (existsSync(LOG_DIR)) {
+        const files = readdirSync(LOG_DIR);
 
         for (const file of files) {
           if (file.endsWith('.log')) {
-            const filePath = join(logDir, file);
+            const filePath = join(LOG_DIR, file);
             const stats = statSync(filePath);
 
             logFiles.push({
@@ -275,16 +295,7 @@ export const createServer = async (config: any): Promise<any> => {
   // Get log content endpoint
   app.get("/api/logs", async (req: any, reply: any) => {
     try {
-      const filePath = (req.query as any).file as string;
-      let logFilePath: string;
-
-      if (filePath) {
-        // If file path is specified, use the specified path
-        logFilePath = filePath;
-      } else {
-        // If file path is not specified, use default log file path
-        logFilePath = join(homedir(), ".claude-code-router", "logs", "app.log");
-      }
+      const logFilePath = resolveLogFilePath((req.query as any).file as string | undefined);
 
       if (!existsSync(logFilePath)) {
         return [];
@@ -295,6 +306,10 @@ export const createServer = async (config: any): Promise<any> => {
 
       return logLines;
     } catch (error) {
+      if (error instanceof Error && error.message.includes("logs directory")) {
+        reply.status(400).send({ error: error.message });
+        return;
+      }
       app.log.error({ err: error }, "Failed to get logs");
       reply.status(500).send({ error: "Failed to get logs" });
     }
@@ -303,16 +318,7 @@ export const createServer = async (config: any): Promise<any> => {
   // Clear log content endpoint
   app.delete("/api/logs", async (req: any, reply: any) => {
     try {
-      const filePath = (req.query as any).file as string;
-      let logFilePath: string;
-
-      if (filePath) {
-        // If file path is specified, use the specified path
-        logFilePath = filePath;
-      } else {
-        // If file path is not specified, use default log file path
-        logFilePath = join(homedir(), ".claude-code-router", "logs", "app.log");
-      }
+      const logFilePath = resolveLogFilePath((req.query as any).file as string | undefined);
 
       if (existsSync(logFilePath)) {
         writeFileSync(logFilePath, '', 'utf8');
@@ -320,6 +326,10 @@ export const createServer = async (config: any): Promise<any> => {
 
       return { success: true, message: "Logs cleared successfully" };
     } catch (error) {
+      if (error instanceof Error && error.message.includes("logs directory")) {
+        reply.status(400).send({ error: error.message });
+        return;
+      }
       app.log.error({ err: error }, "Failed to clear logs");
       reply.status(500).send({ error: "Failed to clear logs" });
     }
