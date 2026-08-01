@@ -1100,7 +1100,8 @@ export class ChromeDeviceBridge {
 
     this.page.on("console", (msg: any) => {
       const text = msg.text();
-      if (text.includes("issues.chromium.org")) return;
+      // Drop Chromium issue-tracker noise (match host, not a bare substring).
+      if (/https?:\/\/issues\.chromium\.org\b/i.test(text)) return;
       // Only forward important messages: errors, overflow, stalling, turn completion
       if (
         text.includes("[bridge] ERROR") ||

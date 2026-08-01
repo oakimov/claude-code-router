@@ -168,6 +168,9 @@ importers:
       '@fastify/cors':
         specifier: ^11.3.0
         version: 11.3.0
+      '@fastify/rate-limit':
+        specifier: ^10.3.0
+        version: 10.3.0
       '@google/genai':
         specifier: ^2.15.0
         version: 2.15.0(supports-color@8.1.1)
@@ -235,9 +238,6 @@ importers:
       '@fastify/multipart':
         specifier: ^10.1.0
         version: 10.1.0
-      '@fastify/rate-limit':
-        specifier: ^10.3.0
-        version: 10.3.0
       '@fastify/static':
         specifier: ^10.1.2
         version: 10.1.2

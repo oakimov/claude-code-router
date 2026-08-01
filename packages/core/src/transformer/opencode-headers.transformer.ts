@@ -239,9 +239,13 @@ export class OpencodeHeadersTransformer implements Transformer {
       timeBytes[i] = Number((ts >> BigInt(40 - 8 * i)) & BigInt(0xff));
     }
 
-    const random = randomBytes(14);
+    // Rejection sampling avoids modulo bias (248 = 62 * 4).
     let suffix = "";
-    for (let i = 0; i < 14; i++) suffix += BASE62[random[i] % 62];
+    while (suffix.length < 14) {
+      const byte = randomBytes(1)[0];
+      if (byte >= 248) continue;
+      suffix += BASE62[byte % 62];
+    }
 
     return `${prefix}_${timeBytes.toString("hex")}${suffix}`;
   }

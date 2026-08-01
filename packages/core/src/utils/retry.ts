@@ -190,6 +190,16 @@ export function toClientAbortError(
   });
 }
 
+/** Linear-time client-disconnect check (avoids ReDoS from /client.*(closed|disconnect)/). */
+function isClientDisconnectMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  if (lower.includes("socket hang up")) return true;
+  const clientIdx = lower.indexOf("client");
+  if (clientIdx === -1) return false;
+  const after = lower.slice(clientIdx);
+  return after.includes("closed") || after.includes("disconnect");
+}
+
 export function isClientAbortError(error: unknown): boolean {
   if (error == null || error === false) return false;
 
@@ -199,7 +209,7 @@ export function isClientAbortError(error: unknown): boolean {
   if (typeof error === "string") {
     return (
       error.startsWith(CLIENT_DISCONNECT_REASON) ||
-      /client.*(closed|disconnect)|socket hang up/i.test(error)
+      isClientDisconnectMessage(error)
     );
   }
 
@@ -225,7 +235,7 @@ export function isClientAbortError(error: unknown): boolean {
   if (err.code === "ABORT_ERR") return true;
   if (err.code === "ERR_STREAM_PREMATURE_CLOSE") return true;
   const message = String(err.message || "");
-  return /client.*(closed|disconnect)|socket hang up/i.test(message);
+  return isClientDisconnectMessage(message);
 }
 
 /**

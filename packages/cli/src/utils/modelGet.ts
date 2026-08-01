@@ -86,13 +86,22 @@ function isAntigravityProvider(provider: ProviderConfig): boolean {
   return transformerUseIncludes(provider, "antigravity-auth");
 }
 
+function hostnameOf(urlLike: string): string {
+  try {
+    return new URL(urlLike).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 function isAnthropicProvider(provider: ProviderConfig): boolean {
   const normalizedName = normalizeProviderName(provider.name);
-  const baseUrl = String(provider.api_base_url || "").toLowerCase();
+  const host = hostnameOf(String(provider.api_base_url || ""));
   return (
     normalizedName === "claude" ||
     normalizedName === "anthropic" ||
-    baseUrl.includes("api.anthropic.com") ||
+    host === "api.anthropic.com" ||
+    host.endsWith(".api.anthropic.com") ||
     transformerUseIncludes(provider, "anthropic")
   );
 }

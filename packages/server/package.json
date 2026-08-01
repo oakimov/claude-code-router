@@ -22,7 +22,6 @@
     "@caeliq/llms": "workspace:*",
     "@cursor/sdk": "^1.0.26",
     "@fastify/multipart": "^10.1.0",
-    "@fastify/rate-limit": "^10.3.0",
     "@fastify/static": "^10.1.2",
     "adm-zip": "^0.6.0",
     "dotenv": "^17.4.2",

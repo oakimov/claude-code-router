@@ -2,7 +2,7 @@ import { get_encoding } from "tiktoken";
 import { sessionUsageCache, Usage } from "./cache";
 import { readFile } from "fs/promises";
 import { opendir, stat } from "fs/promises";
-import { join } from "path";
+import { join, resolve, relative, basename } from "path";
 import { CLAUDE_PROJECTS_DIR, HOME_DIR } from "@caeliq/ccr-shared";
 import { LRUCache } from "lru-cache";
 import { ConfigService } from "../services/config";
@@ -302,12 +302,15 @@ const getProjectSpecificRouter = async (
   if (req.sessionId) {
     const project = await searchProjectBySession(req.sessionId);
     if (project) {
-      const projectConfigPath = join(HOME_DIR, project, "config.json");
-      const sessionConfigPath = join(
-        HOME_DIR,
-        project,
-        `${req.sessionId}.json`
-      );
+      const homeRoot = resolve(HOME_DIR);
+      const projectDir = resolve(homeRoot, basename(project));
+      const projectRel = relative(homeRoot, projectDir);
+      if (!projectRel || projectRel.startsWith("..")) {
+        return undefined;
+      }
+      const sessionName = `${basename(String(req.sessionId))}.json`;
+      const projectConfigPath = join(projectDir, "config.json");
+      const sessionConfigPath = join(projectDir, sessionName);
 
       // First try to read sessionConfig file
       try {
@@ -584,12 +587,15 @@ export const searchProjectBySession = async (
     }
 
     // Concurrently check each project folder for sessionId.jsonl file
+    const projectsRoot = resolve(CLAUDE_PROJECTS_DIR);
+    const safeSessionFile = `${basename(String(sessionId))}.jsonl`;
     const checkPromises = folderNames.map(async (folderName) => {
-      const sessionFilePath = join(
-        CLAUDE_PROJECTS_DIR,
-        folderName,
-        `${sessionId}.jsonl`
-      );
+      const projectDir = resolve(projectsRoot, basename(folderName));
+      const projectRel = relative(projectsRoot, projectDir);
+      if (!projectRel || projectRel.startsWith("..")) {
+        return null;
+      }
+      const sessionFilePath = join(projectDir, safeSessionFile);
       try {
         const fileStat = await stat(sessionFilePath);
         return fileStat.isFile() ? folderName : null;

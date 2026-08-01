@@ -5,9 +5,8 @@ import Server, {
   sanitizeHeadersForLog,
 } from "@caeliq/llms";
 import { readConfigFile, writeConfigFile, backupConfigFile } from "./utils";
-import { join, resolve } from "path";
+import { join, resolve, relative, sep, basename } from "path";
 import fastifyStatic from "@fastify/static";
-import rateLimit from "@fastify/rate-limit";
 import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync } from "fs";
 import { homedir } from "os";
 import {
@@ -38,12 +37,16 @@ import { registerAntigravityAuthRoutes } from "./routes/antigravity-auth";
 const LOG_DIR = join(homedir(), ".claude-code-router", "logs");
 
 /** Resolve a log file path, rejecting anything outside LOG_DIR. */
-function resolveLogFilePath(filePath?: string): string {
-  const candidate = filePath
-    ? resolve(filePath)
-    : join(LOG_DIR, "app.log");
+export function resolveLogFilePath(filePath?: string): string {
   const logDir = resolve(LOG_DIR);
-  if (candidate !== logDir && !candidate.startsWith(logDir + "/") && !candidate.startsWith(logDir + "\\")) {
+  // Prefer basename so callers cannot pass absolute paths outside the log dir.
+  const name = filePath ? basename(filePath) : "app.log";
+  if (!name || name === "." || name === ".." || name.includes("..") || !name.endsWith(".log")) {
+    throw new Error("Log file path must be under the logs directory");
+  }
+  const candidate = resolve(logDir, name);
+  const rel = relative(logDir, candidate);
+  if (!rel || rel.startsWith("..") || rel.includes(`..${sep}`)) {
     throw new Error("Log file path must be under the logs directory");
   }
   return candidate;
@@ -135,12 +138,6 @@ export const createServer = async (config: any): Promise<any> => {
       throw error;
     }
   };
-
-  await app.register(rateLimit, {
-    global: true,
-    max: 1000,
-    timeWindow: "1 minute",
-  });
 
   app.register(fastifyMultipart, {
     limits: {

@@ -30,7 +30,7 @@ function testRedact() {
   const text = sanitizeUpstreamErrorText(
     'fetch failed Connecting to api.example.com:443 Bearer sk-abcdefghijklmnop Authorization: "Bearer tok" {"api_key":"secret-value"} from 10.0.0.5:8443'
   );
-  assert.ok(!text.includes("api.example.com"), text);
+  assert.ok(!/\bapi\.example\.com\b/.test(text), text);
   assert.ok(!text.includes("sk-abcdefghijklmnop"), text);
   assert.ok(!text.includes("secret-value"), text);
   assert.ok(!text.includes("10.0.0.5"), text);

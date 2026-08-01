@@ -1,5 +1,6 @@
 import { existsSync } from "fs";
 import { writeFile } from "fs/promises";
+import { randomBytes } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
 import { initConfig, initDir } from "./utils";
@@ -20,10 +21,7 @@ async function initializeClaudeConfig() {
   const homeDir = homedir();
   const configPath = join(homeDir, ".claude.json");
   if (!existsSync(configPath)) {
-    const userID = Array.from(
-      { length: 64 },
-      () => Math.random().toString(16)[2]
-    ).join("");
+    const userID = randomBytes(32).toString("hex");
     const configContent = {
       numStartups: 184,
       autoUpdaterStatus: "enabled",

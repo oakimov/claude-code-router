@@ -37,7 +37,13 @@ function validatePresetName(presetName: string): void {
  */
 export function getPresetDir(presetName: string): string {
   validatePresetName(presetName);
-  return path.join(HOME_DIR, 'presets', presetName);
+  const presetsRoot = path.resolve(HOME_DIR, 'presets');
+  const presetDir = path.resolve(presetsRoot, presetName);
+  const rel = path.relative(presetsRoot, presetDir);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('Invalid preset name: path traversal detected');
+  }
+  return presetDir;
 }
 
 /**
@@ -56,9 +62,10 @@ export function getTempDir(): string {
 function validateAndResolvePath(targetDir: string, entryPath: string): string {
   const resolvedTargetDir = path.resolve(targetDir);
   const resolvedPath = path.resolve(targetDir, entryPath);
+  const rel = path.relative(resolvedTargetDir, resolvedPath);
 
   // Verify that the resolved path is within the target directory
-  if (!resolvedPath.startsWith(resolvedTargetDir)) {
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`Path traversal detected: ${entryPath}`);
   }
 

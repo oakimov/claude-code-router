@@ -163,7 +163,7 @@ async function testWalksPastDisabledStagingToProd() {
   assert.equal(error, undefined, `unexpected error: ${error?.message}`);
   assert.equal(result?.status, 200, "prod must serve the request");
   assert.equal(urls.length, 3, "all three hosts tried in order");
-  assert.ok(urls[2].includes("cloudcode-pa.googleapis.com"));
+  assert.ok(new URL(urls[2]).hostname === "cloudcode-pa.googleapis.com");
 
   // The staging host is out for the rest of the session.
   assert.equal(isEndpointUnusable(ANTIGRAVITY_ENDPOINT_AUTOPUSH), true);

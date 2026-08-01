@@ -6,7 +6,9 @@
 
 /* Tailwind CSS directives */
 @config "../../tailwind.config.js";
-@import "tailwindcss";
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
 @plugin "@tailwindcss/typography";
 
 /* You can override the default Infima variables here. */

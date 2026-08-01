@@ -97,8 +97,8 @@ async function main() {
       method: "GET",
       url: "/auth/callback?error=%3Cscript%3E&error_description=%3Cb%3Ebad%3C%2Fb%3E",
     });
-    assert.doesNotMatch(escaped.body, /<script>/);
-    assert.doesNotMatch(escaped.body, /<b>bad<\/b>/);
+    assert.doesNotMatch(escaped.body, /<script>/i);
+    assert.doesNotMatch(escaped.body, /<b>bad<\/b>/i);
 
     console.log("Codex OAuth callback tests passed.");
   } finally {

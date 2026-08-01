@@ -23,6 +23,7 @@ import Fastify, {
   FastifyServerOptions,
 } from "fastify";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import { ConfigService, AppConfig } from "./services/config";
 import { errorHandler } from "./api/middleware";
 import { registerApiRoutes } from "./api/routes";
@@ -60,6 +61,14 @@ function createApp(options: FastifyServerOptions = {}): FastifyInstance {
 
   // Register CORS
   fastify.register(cors);
+
+  // Global rate limit (CodeQL recognizes @fastify/rate-limit on this Fastify instance)
+  fastify.register(rateLimit, {
+    global: true,
+    max: 1000,
+    timeWindow: "1 minute",
+  });
+
   return fastify;
 }
 
