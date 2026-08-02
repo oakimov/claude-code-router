@@ -24,6 +24,7 @@ const ANTIGRAVITY_AUTH_FILE = join(
   ".claude-code-router",
   "antigravity_auth.json"
 );
+const QWEN_AUTH_FILE = join(homedir(), ".claude-code-router", "qwen_auth.json");
 const CONFIG_PATH_DISPLAY = "~/.claude-code-router/config.json";
 const READABLE_CONFIG_FILE = process.env.CCR_CONFIG_FILE || CONFIG_FILE;
 const DEFAULT_CODEX_CLIENT_VERSION = "0.145.0";
@@ -84,6 +85,13 @@ function isAntigravityProvider(provider: ProviderConfig): boolean {
     return true;
   }
   return transformerUseIncludes(provider, "antigravity-auth");
+}
+
+function isQwenAuthProvider(provider: ProviderConfig): boolean {
+  if (normalizeProviderName(provider.name) === "qwen") {
+    return true;
+  }
+  return transformerUseIncludes(provider, "qwen-auth");
 }
 
 function hostnameOf(urlLike: string): string {
@@ -176,6 +184,30 @@ function getClaudeAccessToken(): string {
   return tokens.access_token;
 }
 
+function getQwenAccessToken(): string {
+  if (!existsSync(QWEN_AUTH_FILE)) {
+    throw new Error("No Qwen token found. Run `ccr qwen-auth` to authenticate.");
+  }
+
+  let tokens: { token?: string; expiresAt?: number | null };
+  try {
+    tokens = JSON.parse(readFileSync(QWEN_AUTH_FILE, "utf-8"));
+  } catch {
+    throw new Error("Failed to read Qwen token from ~/.claude-code-router/qwen_auth.json.");
+  }
+
+  if (!isNonEmptyString(tokens.token)) {
+    throw new Error("Qwen access token is missing. Run `ccr qwen-auth` again.");
+  }
+
+  // expiresAt is stored in epoch milliseconds (see core utils/qwen-auth.ts).
+  if (typeof tokens.expiresAt === "number" && tokens.expiresAt <= Date.now()) {
+    throw new Error("Qwen access token is expired. Run `ccr qwen-auth` again.");
+  }
+
+  return tokens.token;
+}
+
 function getRequestApiKey(provider: ProviderConfig): string | undefined {
   if (isCursorProvider(provider)) {
     const apiKey = getProviderApiKey(provider)?.trim();
@@ -205,6 +237,11 @@ function getRequestApiKey(provider: ProviderConfig): string | undefined {
     return undefined;
   }
 
+  // Qwen uses a JWT from qwen_auth.json; the api_key field is a placeholder.
+  if (isQwenAuthProvider(provider)) {
+    return getQwenAccessToken();
+  }
+
   return getProviderApiKey(provider);
 }
 
@@ -225,6 +262,10 @@ function getMissingApiKeyMessage(provider: ProviderConfig): string {
 
   if (isAntigravityProvider(provider)) {
     return "Antigravity authentication unavailable. Run `ccr antigravity-auth` for OAuth.";
+  }
+
+  if (isQwenAuthProvider(provider)) {
+    return "Qwen authentication unavailable. Run `ccr qwen-auth` to authenticate.";
   }
 
   return `Provider \"${provider.name}\" does not have a usable API key configured.`;
@@ -757,6 +798,10 @@ function printAuthSource(provider: ProviderConfig): void {
 
   if (isAntigravityProvider(provider)) {
     console.log(`${BOLDCYAN}Auth source:${RESET} ${ANTIGRAVITY_AUTH_FILE}`);
+  }
+
+  if (isQwenAuthProvider(provider)) {
+    console.log(`${BOLDCYAN}Auth source:${RESET} ${QWEN_AUTH_FILE}`);
   }
 }
 
