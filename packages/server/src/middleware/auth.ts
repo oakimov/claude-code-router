@@ -1,10 +1,11 @@
 import { FastifyRequest, FastifyReply } from "fastify";
+import { apiKeysMatch, hasValidUiSession } from "../auth/ui-session";
 
 export const apiKeyAuth =
   (config: any) =>
     async (req: FastifyRequest, reply: FastifyReply, done: () => void) => {
       // Public endpoints that don't require authentication
-      const publicPaths = ["/", "/health", "/callback", "/auth/callback", "/oauth-callback", "/qwen/auth", "/qwen/forget", "/qwen/status"];
+      const publicPaths = ["/", "/health", "/api/auth/login", "/callback", "/auth/callback", "/oauth-callback", "/qwen/auth", "/qwen/forget", "/qwen/status"];
       // Match on the path alone — OAuth callbacks arrive as
       // /oauth-callback?code=…&state=… — and keep /oauth-callback an exact match
       // so a lookalike path cannot slip past the API key check.
@@ -48,21 +49,39 @@ export const apiKeyAuth =
       const authKey: string = Array.isArray(authHeaderValue)
         ? authHeaderValue[0]
         : authHeaderValue || "";
-      if (!authKey) {
-        reply.status(401).send("APIKEY is missing");
-        return;
-      }
-      let token = "";
-      if (authKey.startsWith("Bearer")) {
-        token = authKey.split(" ")[1];
-      } else {
-        token = authKey;
-      }
-
-      if (token !== apiKey) {
-        reply.status(401).send("Invalid API key");
+      if (authKey) {
+        const token = authKey.startsWith("Bearer ")
+          ? authKey.slice("Bearer ".length)
+          : authKey;
+        if (!apiKeysMatch(token, apiKey)) {
+          reply.status(401).send("Invalid API key");
+          return;
+        }
+        done();
         return;
       }
 
-      done();
+      if (hasValidUiSession(req)) {
+        const method = req.method.toUpperCase();
+        if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+          const origin = req.headers.origin;
+          if (!origin) {
+            reply.status(403).send("Origin required for session request");
+            return;
+          }
+          try {
+            if (new URL(origin).host !== req.host) {
+              reply.status(403).send("Cross-origin session request denied");
+              return;
+            }
+          } catch {
+            reply.status(403).send("Invalid origin for session request");
+            return;
+          }
+        }
+        done();
+        return;
+      }
+
+      reply.status(401).send("APIKEY is missing");
     };

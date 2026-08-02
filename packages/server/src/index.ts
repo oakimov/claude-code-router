@@ -171,6 +171,7 @@ async function getServer(options: RunOptions = {}) {
     initialConfig: {
       // ...config,
       providers: config.Providers || config.providers,
+      APIKEY: config.APIKEY,
       HOST: HOST,
       PORT: servicePort,
       LOG_FILE: join(

@@ -141,12 +141,6 @@ function App() {
         return;
       }
 
-      const apiKey = localStorage.getItem("apiKey");
-      if (!apiKey) {
-        setIsCheckingAuth(false);
-        return;
-      }
-
       try {
         await api.getConfig();
       } catch (err) {

@@ -1,7 +1,5 @@
 import Fastify, {
   FastifyInstance,
-  FastifyReply,
-  FastifyRequest,
   FastifyPluginAsync,
   FastifyPluginCallback,
   FastifyPluginOptions,
@@ -202,31 +200,6 @@ class Server {
       });
 
       await this.registerNamespace('/')
-
-      this.app.addHook(
-        "preHandler",
-        async (req: FastifyRequest, reply: FastifyReply) => {
-          const url = new URL(`http://127.0.0.1${req.url}`);
-          if (url.pathname.endsWith("/v1/messages") && req.body) {
-            try {
-              const body = req.body as any;
-              if (!body || !body.model) {
-                return reply
-                  .code(400)
-                  .send({ error: "Missing model in request body" });
-              }
-              const [provider, ...modelParts] = body.model.split(",");
-              body.model = modelParts.join(",");
-              req.provider = provider;
-              req.model = modelParts.join(",");
-              return;
-            } catch (err) {
-              req.log.error({error: err}, "Error in modelProviderMiddleware:");
-              return reply.code(500).send({ error: "Internal server error" });
-            }
-          }
-        }
-      );
 
 
       const address = await this.app.listen({

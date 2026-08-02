@@ -3,15 +3,9 @@ import type { Config, Provider, Transformer } from '@/types';
 // API Client Class for handling requests with baseUrl and apikey authentication
 class ApiClient {
   private baseUrl: string;
-  private apiKey: string;
-  private tempApiKey: string | null;
 
-  constructor(baseUrl: string = '/api', apiKey: string = '') {
+  constructor(baseUrl: string = '/api') {
     this.baseUrl = baseUrl;
-    // Load API key from localStorage if available
-    this.apiKey = apiKey || localStorage.getItem('apiKey') || '';
-    // Load temp API key from URL if available
-    this.tempApiKey = new URLSearchParams(window.location.search).get('tempApiKey');
   }
 
   // Update base URL
@@ -19,34 +13,11 @@ class ApiClient {
     this.baseUrl = url;
   }
 
-  // Update API key
-  setApiKey(apiKey: string) {
-    this.apiKey = apiKey;
-    // Save API key to localStorage
-    if (apiKey) {
-      localStorage.setItem('apiKey', apiKey);
-    } else {
-      localStorage.removeItem('apiKey');
-    }
-  }
-
-  // Update temp API key
-  setTempApiKey(tempApiKey: string | null) {
-    this.tempApiKey = tempApiKey;
-  }
-
   // Create headers with API key authentication
   private createHeaders(contentType: string = 'application/json'): HeadersInit {
     const headers: Record<string, string> = {
       'Accept': 'application/json',
     };
-
-    // Use temp API key if available, otherwise use regular API key
-    if (this.tempApiKey) {
-      headers['X-Temp-API-Key'] = this.tempApiKey;
-    } else if (this.apiKey) {
-      headers['X-API-Key'] = this.apiKey;
-    }
 
     if (contentType) {
       headers['Content-Type'] = contentType;
@@ -72,14 +43,11 @@ class ApiClient {
 
       // Handle 401 Unauthorized responses
       if (response.status === 401) {
-        // Remove API key when it's invalid
-        localStorage.removeItem('apiKey');
         // Redirect to login page if not already there
         // For memory router, we need to use the router instance
         // We'll dispatch a custom event that the app can listen to
         window.dispatchEvent(new CustomEvent('unauthorized'));
-        // Return a promise that never resolves to prevent further execution
-        return new Promise(() => {}) as Promise<T>;
+        throw new Error('Unauthorized');
       }
 
       if (!response.ok) {
@@ -107,6 +75,14 @@ class ApiClient {
       console.error('API request error:', error);
       throw error;
     }
+  }
+
+  async login(apiKey: string): Promise<void> {
+    await this.post<void>('/auth/login', { apiKey });
+  }
+
+  async logout(): Promise<void> {
+    await this.post<void>('/auth/logout', {});
   }
 
   // GET request
@@ -262,13 +238,6 @@ class ApiClient {
       'Accept': 'application/json',
     };
 
-    // Use temp API key if available, otherwise use regular API key
-    if (this.tempApiKey) {
-      headers['X-Temp-API-Key'] = this.tempApiKey;
-    } else if (this.apiKey) {
-      headers['X-API-Key'] = this.apiKey;
-    }
-
     const response = await fetch(url, {
       method: 'POST',
       headers,
@@ -276,9 +245,8 @@ class ApiClient {
     });
 
     if (response.status === 401) {
-      localStorage.removeItem('apiKey');
       window.dispatchEvent(new CustomEvent('unauthorized'));
-      return new Promise(() => {}) as any;
+      throw new Error('Unauthorized');
     }
 
     if (!response.ok) {

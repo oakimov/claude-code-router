@@ -14,22 +14,17 @@ export function Login() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  // Check if user is already authenticated
+  // Check whether the browser already has a valid HttpOnly UI session.
   useEffect(() => {
     const checkAuth = async () => {
-      const apiKey = localStorage.getItem('apiKey');
-      if (apiKey) {
-        setIsLoading(true);
-        // Verify the API key is still valid
-        try {
-          await api.getConfig();
-          navigate('/dashboard');
-        } catch {
-          // If verification fails, remove the API key
-          localStorage.removeItem('apiKey');
-        } finally {
-          setIsLoading(false);
-        }
+      setIsLoading(true);
+      try {
+        await api.getConfig();
+        navigate('/dashboard');
+      } catch {
+        // The login form remains visible when there is no valid session.
+      } finally {
+        setIsLoading(false);
       }
     };
 
@@ -50,34 +45,16 @@ export function Login() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    setIsLoading(true);
+    setError('');
     try {
-      // Set the API key
-      api.setApiKey(apiKey);
-      
-      // Dispatch storage event to notify other components of the change
-      window.dispatchEvent(new StorageEvent('storage', {
-        key: 'apiKey',
-        newValue: apiKey,
-        url: window.location.href
-      }));
-      
-      // Test the API key by fetching config
-      await api.getConfig();
-      
-      // Navigate to dashboard
-      // The ConfigProvider will handle fetching the config
+      await api.login(apiKey);
+      window.dispatchEvent(new CustomEvent('authenticated'));
       navigate('/dashboard');
-    } catch (error: any) {
-      // Clear the API key on failure
-      api.setApiKey('');
-      
-      // Check if it's an unauthorized error
-      if (error.message && error.message.includes('401')) {
-        setError(t('login.invalidApiKey'));
-      } else {
-        // For other errors, still allow access (restricted mode)
-        navigate('/dashboard');
-      }
+    } catch {
+      setError(t('login.invalidApiKey'));
+    } finally {
+      setIsLoading(false);
     }
   };
 

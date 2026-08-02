@@ -875,6 +875,16 @@ export const registerApiRoutes = async (
               configService: fastify.configService,
               tokenizerService: fastify.tokenizerService,
             });
+            const body = req.body as any;
+            if (!body?.model) {
+              return reply
+                .code(400)
+                .send({ error: "Missing model in request body" });
+            }
+            const [provider, ...modelParts] = body.model.split(",");
+            body.model = modelParts.join(",");
+            req.provider = provider;
+            req.model = body.model;
           }
           return handleTransformerEndpoint(req, reply, fastify, transformer);
         }
