@@ -16,6 +16,7 @@ import {
   // diffHeadersForLog,
   sanitizeErrorForLog,
   // sanitizeHeadersForLog,
+  sanitizeUpstreamErrorBody,
   sanitizeUpstreamErrorText,
 } from "@/utils/redact";
 import {
@@ -31,9 +32,41 @@ import {
 } from "@/utils/retry";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
 import { sendWithUnauthorizedAuthRecovery } from "@/utils/auth-recovery";
+import {
+  canonicalizeOutboundHeaders,
+  mergeHeadersCaseInsensitive,
+  selectSafeDownstreamHeaders,
+} from "@/utils/headers";
 import { RATE_LIMIT_CONFIG } from "@caeliq/ccr-shared";
-import { router } from "@/utils/router";
 import { TokenizerService } from "@/services/tokenizer";
+import {
+  listClientRouteRegistrations,
+  matchClientProtocol,
+} from "@/routing/protocol-endpoints";
+import {
+  cloneProtocolBody,
+  sanitizePassthroughHeaders,
+} from "@/routing/protocol-adapter";
+import {
+  prepareInboundRequest,
+  protocolAwareBypass,
+  PreparedInboundRequest,
+} from "@/routing/inbound-pipeline";
+
+function isManualExactProtocolPassthrough(
+  provider: any,
+  endpointTransformer: Transformer,
+  protocolContext: any
+): boolean {
+  return Boolean(
+    protocolContext &&
+      provider.transformer?.passthrough === true &&
+      provider.transformer?.use?.some(
+        (providerTransformer: Transformer) =>
+          providerTransformer?.name === endpointTransformer.name
+      )
+  );
+}
 
 // Extend FastifyInstance to include custom services
 declare module "fastify" {
@@ -50,45 +83,79 @@ declare module "fastify" {
 }
 
 /**
- * Main handler for transformer endpoints
- * Coordinates the entire request processing flow: validate provider, handle request transformers,
- * send request, handle response transformers, format response
+ * Main handler for transformer endpoints.
+ * Canonical lifecycle: normalize client→Unified → route → provider In →
+ * upstream → provider Out → client In → format from protocol stream intent.
  */
 async function handleTransformerEndpoint(
   req: FastifyRequest,
   reply: FastifyReply,
   fastify: FastifyInstance,
-  transformer: any
+  transformer: any,
+  routePath: string
 ) {
-  const body = req.body as any;
-  const providerName = req.provider!;
-  const provider = fastify.providerService.getProvider(providerName);
   const disconnect = createClientDisconnectSignal(req, reply);
   const clientSignal = disconnect.signal;
   disconnect.arm();
 
-  // Validate provider exists
+  let prepared: PreparedInboundRequest;
+  try {
+    prepared = await prepareInboundRequest(
+      req,
+      reply,
+      fastify,
+      transformer,
+      routePath
+    );
+  } catch (error: any) {
+    if (isClientAbortError(error) || clientSignal.aborted) {
+      throw typeof error === "string"
+        ? toClientAbortError(error)
+        : toClientAbortError(clientSignal.reason ?? error);
+    }
+    throw error;
+  }
+
+  const provider = fastify.providerService.getProvider(prepared.providerName);
   if (!provider) {
     throw createApiError(
-      `Provider '${providerName}' not found`,
+      `Provider '${prepared.providerName}' not found`,
       404,
       "provider_not_found"
     );
   }
 
-  // req.log.debug(
-  //   {
-  //     reqId: req.id,
-  //     provider: providerName,
-  //     headers: sanitizeHeadersForLog(req.headers as Record<string, unknown>),
-  //   },
-  //   "client request headers"
-  // );
+  // Stash prepared state so fallback can reuse Unified + protocol context.
+  (req as any)._preparedInbound = prepared;
 
   try {
-    // Process request transformer chain
+    // Same-protocol passthrough must send the adapted client wire body
+    // (with the routed model name), not the Unified projection. It uses
+    // clientWireBody rather than originalBody so CCR-only cleanup — subagent
+    // tag removal and REWRITE_SYSTEM_PROMPT — still reaches the upstream.
+    const willBypass = protocolAwareBypass(
+      provider,
+      transformer,
+      prepared.protocolContext,
+      prepared.modelName
+    );
+    const preserveManualWire = isManualExactProtocolPassthrough(
+      provider,
+      transformer,
+      prepared.protocolContext
+    );
+    const exactWireSource = prepared.clientWireBody ?? prepared.originalBody;
+    const pipelineBody = willBypass || preserveManualWire
+      ? {
+          ...(typeof exactWireSource === "object" && exactWireSource
+            ? cloneProtocolBody(exactWireSource)
+            : {}),
+          model: prepared.modelName,
+        }
+      : cloneProtocolBody(prepared.unifiedBody);
+
     const { requestBody, config, bypass } = await processRequestTransformers(
-      body,
+      pipelineBody,
       provider,
       transformer,
       req.headers,
@@ -96,10 +163,13 @@ async function handleTransformerEndpoint(
         req,
         provider,
         signal: clientSignal,
+        clientProtocol: prepared.protocolContext.protocol,
+        protocolContext: prepared.protocolContext,
+        // Client→Unified already ran in prepareInboundRequest.
+        skipClientNormalization: true,
       }
     );
 
-    // Send request to LLM provider
     const response = await sendRequestToProvider(
       requestBody,
       config,
@@ -110,10 +180,10 @@ async function handleTransformerEndpoint(
       {
         req,
         signal: clientSignal,
+        protocolContext: prepared.protocolContext,
       }
     );
 
-    // Process response transformer chain
     const finalResponse = await processResponseTransformers(
       requestBody,
       response,
@@ -123,20 +193,25 @@ async function handleTransformerEndpoint(
       {
         req,
         signal: clientSignal,
+        protocolContext: prepared.protocolContext,
+        skipClientNormalization: bypass,
       }
     );
 
-    return await formatResponse(finalResponse, reply, body, clientSignal);
+    return await formatResponse(
+      finalResponse,
+      reply,
+      prepared.originalBody,
+      clientSignal,
+      prepared.protocolContext.stream
+    );
   } catch (error: any) {
-    // Normalize string / mixed abort shapes from AbortSignal.any + fetch so
-    // errorHandler always takes the quiet 499 path (not HTTP 500).
     if (isClientAbortError(error)) {
       throw typeof error === "string" ? toClientAbortError(error) : error;
     }
     if (clientSignal.aborted) {
       throw toClientAbortError(clientSignal.reason ?? error);
     }
-    // Fallback on provider response errors and network/fetch failures.
     if (isFallbackEligibleError(error)) {
       const fallbackResult = await handleFallback(
         req,
@@ -149,9 +224,6 @@ async function handleTransformerEndpoint(
       if (fallbackResult) {
         return fallbackResult;
       }
-      // handleFallback returns null on client abort during backoff — surface an
-      // abort error so the handler takes the quiet/499 path instead of the
-      // original provider failure.
       if (clientSignal.aborted) {
         throw toClientAbortError(
           clientSignal.reason ?? CLIENT_DISCONNECT_REASON
@@ -223,34 +295,75 @@ async function handleFallback(
     try {
       req.log.info(`Trying fallback model: ${fallbackModel}`);
 
-      // Update request with fallback model
-      const newBody = { ...(req.body as any) };
-      const [fallbackProvider, ...fallbackModelName] = fallbackModel.split(',');
-      newBody.model = fallbackModelName.join(',');
+      // Reuse the already-normalized Unified body + protocol context.
+      const prepared = (req as any)._preparedInbound as
+        | PreparedInboundRequest
+        | undefined;
+      const [fallbackProvider, ...fallbackModelName] = fallbackModel.split(",");
+      const fallbackModelOnly = fallbackModelName.join(",");
 
-      // Create new request object with updated provider and body
+      const unifiedBody = {
+        ...cloneProtocolBody(
+          prepared?.unifiedBody || (req as any).unifiedBody || req.body
+        ),
+        model: fallbackModelOnly,
+      };
+
       const newReq = {
         ...req,
         provider: fallbackProvider,
-        body: newBody,
+        model: fallbackModelOnly,
+        body: prepared?.originalBody ?? req.body,
+        unifiedBody,
+        protocolContext: prepared?.protocolContext,
+        clientProtocol: prepared?.protocolContext?.protocol,
+        scenarioType,
       };
 
       const provider = fastify.providerService.getProvider(fallbackProvider);
       if (!provider) {
-        req.log.warn(`Fallback provider '${fallbackProvider}' not found, skipping`);
+        req.log.warn(
+          `Fallback provider '${fallbackProvider}' not found, skipping`
+        );
         continue;
       }
 
-      // Process request transformer chain
+      const willBypass = protocolAwareBypass(
+        provider,
+        transformer,
+        prepared?.protocolContext,
+        fallbackModelOnly
+      );
+      const preserveManualWire = isManualExactProtocolPassthrough(
+        provider,
+        transformer,
+        prepared?.protocolContext
+      );
+      const exactWireSource = prepared?.clientWireBody ?? prepared?.originalBody;
+      const pipelineBody = willBypass || preserveManualWire
+        ? {
+            ...(typeof exactWireSource === "object" && exactWireSource
+              ? cloneProtocolBody(exactWireSource)
+              : {}),
+            model: fallbackModelOnly,
+          }
+        : unifiedBody;
+
       const { requestBody, config, bypass } = await processRequestTransformers(
-        newBody,
+        pipelineBody,
         provider,
         transformer,
         req.headers,
-        { req: newReq, provider, signal: clientSignal }
+        {
+          req: newReq,
+          provider,
+          signal: clientSignal,
+          clientProtocol: prepared?.protocolContext?.protocol,
+          protocolContext: prepared?.protocolContext,
+          skipClientNormalization: true,
+        }
       );
 
-      // Send request to LLM provider
       const response = await sendRequestToProvider(
         requestBody,
         config,
@@ -258,23 +371,35 @@ async function handleFallback(
         fastify,
         bypass,
         transformer,
-        { req: newReq, signal: clientSignal }
+        {
+          req: newReq,
+          signal: clientSignal,
+          protocolContext: prepared?.protocolContext,
+        }
       );
 
-      // Process response transformer chain
       const finalResponse = await processResponseTransformers(
         requestBody,
         response,
         provider,
         transformer,
         bypass,
-        { req: newReq, signal: clientSignal }
+        {
+          req: newReq,
+          signal: clientSignal,
+          protocolContext: prepared?.protocolContext,
+        }
       );
 
       req.log.info(`Fallback model ${fallbackModel} succeeded`);
 
-      // Format and return response
-      return await formatResponse(finalResponse, reply, newBody, clientSignal);
+      return await formatResponse(
+        finalResponse,
+        reply,
+        prepared?.originalBody ?? req.body,
+        clientSignal,
+        prepared?.protocolContext?.stream
+      );
     } catch (fallbackError: any) {
       if (isClientAbortError(fallbackError)) {
         throw fallbackError;
@@ -283,6 +408,20 @@ async function handleFallback(
         throw toClientAbortError(
           clientSignal.reason ?? CLIENT_DISCONNECT_REASON
         );
+      }
+
+      // A terminal (non-retryable) failure — validation, auth, permissions,
+      // model-not-found — goes straight back to the caller: no further
+      // fallback models, no Retry-After wait.
+      if (!isFallbackEligibleError(fallbackError)) {
+        req.log.warn(
+          {
+            fallbackModel,
+            error: sanitizeErrorForLog(fallbackError),
+          },
+          `Fallback model ${fallbackModel} failed with a terminal error`
+        );
+        throw fallbackError;
       }
 
       req.log.warn(
@@ -324,9 +463,9 @@ async function handleFallback(
 }
 
 /**
- * Process request transformer chain
- * Sequentially execute transformRequestOut, provider transformers, model-specific transformers
- * Returns processed request body, config, and flag indicating whether to skip transformers
+ * Process request transformer chain.
+ * Client→Unified already ran in prepareInboundRequest when
+ * skipClientNormalization is set; here we only run provider In chain.
  */
 async function processRequestTransformers(
   body: any,
@@ -338,22 +477,49 @@ async function processRequestTransformers(
   let requestBody = body;
   let config: any = {};
 
-  // Check if transformers should be bypassed (passthrough mode)
-  const bypass = shouldBypassTransformers(provider, transformer, body);
-  const skipBodyConversion = bypass || provider.transformer?.passthrough;
+  const bypass = protocolAwareBypass(
+    provider,
+    transformer,
+    context?.protocolContext,
+    body?.model
+  );
+  const manualExactPassthrough = isManualExactProtocolPassthrough(
+    provider,
+    transformer,
+    context?.protocolContext
+  );
+  const skipBodyConversion =
+    bypass ||
+    provider.transformer?.passthrough ||
+    context?.skipClientNormalization === true;
 
   if (bypass) {
-    if (headers instanceof Headers) {
-      headers.delete("content-length");
-    } else {
-      delete headers["content-length"];
-    }
-    config.headers = headers;
+    config.headers = sanitizePassthroughHeaders(headers);
   }
 
-  // Execute transformer's transformRequestOut method
-  if (!skipBodyConversion && typeof transformer.transformRequestOut === "function") {
-    const transformOut = await transformer.transformRequestOut(requestBody, context);
+  if (
+    !bypass &&
+    context?.protocolContext?.protocol === "openai_responses" &&
+    !provider.transformer?.use?.some(
+      (providerTransformer: Transformer) =>
+        providerTransformer?.name === "openai-responses"
+    )
+  ) {
+    // This key is an opaque hint scoped to the Responses destination that
+    // interprets it. It must not cross a protocol/provider boundary.
+    delete requestBody.prompt_cache_key;
+  }
+
+  // Legacy path: run transformRequestOut only when client normalization was not
+  // already performed by prepareInboundRequest.
+  if (
+    !skipBodyConversion &&
+    typeof transformer.transformRequestOut === "function"
+  ) {
+    const transformOut = await transformer.transformRequestOut(
+      requestBody,
+      context
+    );
     if (transformOut.body) {
       requestBody = transformOut.body;
       config = transformOut.config || {};
@@ -362,9 +528,14 @@ async function processRequestTransformers(
     }
   }
 
-  // Execute provider-level transformers
   if (!bypass && provider.transformer?.use?.length) {
     for (const providerTransformer of provider.transformer.use) {
+      if (
+        manualExactPassthrough &&
+        providerTransformer?.name === transformer.name
+      ) {
+        continue;
+      }
       if (
         !providerTransformer ||
         typeof providerTransformer.transformRequestIn !== "function"
@@ -378,16 +549,29 @@ async function processRequestTransformers(
       );
       if (transformIn.body) {
         requestBody = transformIn.body;
-        config = { ...config, ...transformIn.config };
+        const nextConfig = transformIn.config || {};
+        config = {
+          ...config,
+          ...nextConfig,
+          headers: mergeHeadersCaseInsensitive(
+            config.headers,
+            nextConfig.headers
+          ),
+        };
       } else {
         requestBody = transformIn;
       }
     }
   }
 
-  // Execute model-specific transformers
   if (!bypass && provider.transformer?.[body.model]?.use?.length) {
     for (const modelTransformer of provider.transformer[body.model].use) {
+      if (
+        manualExactPassthrough &&
+        modelTransformer?.name === transformer.name
+      ) {
+        continue;
+      }
       if (
         !modelTransformer ||
         typeof modelTransformer.transformRequestIn !== "function"
@@ -401,16 +585,21 @@ async function processRequestTransformers(
       );
       if (transformIn.body) {
         requestBody = transformIn.body;
-        config = { ...config, ...transformIn.config };
+        const nextConfig = transformIn.config || {};
+        config = {
+          ...config,
+          ...nextConfig,
+          headers: mergeHeadersCaseInsensitive(
+            config.headers,
+            nextConfig.headers
+          ),
+        };
       } else {
         requestBody = transformIn;
       }
     }
   }
 
-  // Generic OpenAI-compatible providers often have no transformer configured.
-  // Translate or remove Anthropic cache markers according to the actual
-  // upstream rather than leaking provider-specific fields.
   if (
     !bypass &&
     !provider.transformer?.use?.length &&
@@ -424,24 +613,6 @@ async function processRequestTransformers(
   }
 
   return { requestBody, config, bypass };
-}
-
-/**
- * Determine if transformers should be bypassed (passthrough mode)
- * Skip other transformers when provider only uses one transformer and it matches the current one
- */
-function shouldBypassTransformers(
-  provider: any,
-  transformer: any,
-  body: any
-): boolean {
-  return (
-    provider.transformer?.use?.length === 1 &&
-    provider.transformer.use[0].name === transformer.name &&
-    (!provider.transformer?.[body.model]?.use.length ||
-      (provider.transformer?.[body.model]?.use.length === 1 &&
-        provider.transformer?.[body.model]?.use[0].name === transformer.name))
-  );
 }
 
 /**
@@ -463,8 +634,6 @@ async function sendRequestToProvider(
     return config.__providerResponse as Response;
   }
 
-  const url = config.url || new URL(provider.baseUrl);
-
   // Handle authentication in passthrough mode
   if ((bypass || provider.transformer?.passthrough) && typeof transformer.auth === "function") {
     const auth = await transformer.auth(requestBody, provider, context);
@@ -472,10 +641,10 @@ async function sendRequestToProvider(
       requestBody = auth.body;
       let headers = config.headers || {};
       if (auth.config?.headers) {
-        headers = {
-          ...headers,
-          ...auth.config.headers,
-        };
+        headers = mergeHeadersCaseInsensitive(
+          headers,
+          auth.config.headers
+        );
         delete headers.host;
         delete auth.config.headers;
       }
@@ -489,28 +658,17 @@ async function sendRequestToProvider(
     }
   }
 
-  // Send HTTP request
-  // Prepare headers
-  const requestHeaders: Record<string, string> = {
-    Authorization: `Bearer ${provider.apiKey}`,
-    ...(config?.headers || {}),
-  };
+  // Resolved after auth: a passthrough transformer's auth() is the stage that
+  // knows the protocol-correct upstream path (e.g. Anthropic's
+  // /v1/messages?beta=true derived from a bare provider origin).
+  const url = config.url || new URL(provider.baseUrl);
 
-  // Remove Bearer auth when x-api-key is present
-  if (requestHeaders["x-api-key"]) {
-    delete requestHeaders.Authorization;
-  }
-
-  for (const key in requestHeaders) {
-    if (requestHeaders[key] === "undefined") {
-      delete requestHeaders[key];
-    } else if (
-      ["authorization", "Authorization"].includes(key) &&
-      requestHeaders[key]?.includes("undefined")
-    ) {
-      delete requestHeaders[key];
-    }
-  }
+  // Provider auth is generated independently from client headers. Canonicalize
+  // casing and guarantee that only one authentication scheme survives.
+  const requestHeaders = canonicalizeOutboundHeaders(
+    config?.headers,
+    provider.apiKey
+  );
 
   // const clientHeaders = context?.req?.headers as
   //   | Record<string, unknown>
@@ -570,69 +728,93 @@ async function sendRequestToProvider(
   // Keep status handling below active; only raw response header logging is
   // disabled here.
 
-  // Handle request errors
+  // Handle request errors. Read the non-2xx body once and throw a structured
+  // upstream error: the client-protocol boundary (errorHandler) reshapes the
+  // sanitized body into the caller's wire envelope instead of flattening
+  // every failure into an unrecognizable provider_response_error string.
   if (!response.ok) {
     const errorText = await response.text();
     const safeErrorText = sanitizeUpstreamErrorText(errorText) || errorText.slice(0, 240);
 
-    let headers: Record<string, string> | undefined = undefined;
-    const retryAfter = response.headers.get("retry-after");
+    let parsedBody: unknown;
+    try {
+      parsedBody = JSON.parse(errorText);
+    } catch {
+      parsedBody = undefined;
+    }
+    const upstreamError =
+      parsedBody && typeof parsedBody === "object"
+        ? (parsedBody as any).error
+        : undefined;
 
-    if (retryAfter) {
-      headers = { 'Retry-After': retryAfter };
-    } else if (response.status === 429) {
-      try {
-        const errorJson = JSON.parse(errorText);
-        const details = errorJson?.error?.details || errorJson?.details;
-        if (Array.isArray(details)) {
-          const retryInfo = details.find((d: any) => d['@type'] === 'type.googleapis.com/google.rpc.RetryInfo');
-          if (retryInfo?.retryDelay) {
-            const seconds = parseInt(retryInfo.retryDelay, 10);
-            if (!isNaN(seconds)) {
-              headers = { 'Retry-After': seconds.toString() };
-            }
+    // Safe response-header map: retry/observability metadata only.
+    const safeHeaders = selectSafeDownstreamHeaders(response.headers);
+    let headers: Record<string, string> | undefined =
+      Object.keys(safeHeaders).length > 0 ? safeHeaders : undefined;
+
+    // Retry-After may also hide inside a Google-RPC RetryInfo body detail.
+    if (!headers?.["retry-after"] && response.status === 429) {
+      const details =
+        (upstreamError as any)?.details || (parsedBody as any)?.details;
+      if (Array.isArray(details)) {
+        const retryInfo = details.find((d: any) => d['@type'] === 'type.googleapis.com/google.rpc.RetryInfo');
+        if (retryInfo?.retryDelay) {
+          const seconds = parseInt(retryInfo.retryDelay, 10);
+          if (!isNaN(seconds)) {
+            headers = { ...(headers || {}), 'retry-after': seconds.toString() };
           }
         }
-      } catch {
-        // Ignore JSON parse errors
       }
     }
 
-    // Log parsed error details for observability (redacted)
-    try {
-      const errorJson = JSON.parse(errorText);
-      const safeMessage =
-        sanitizeUpstreamErrorText(
-          String(errorJson?.error?.message || errorText)
-        ) || safeErrorText;
-      fastify.log.error(
-        {
-          status: response.status,
-          provider: provider.name,
-          model: requestBody.model,
-          errorMessage: safeMessage,
-        },
-        `[provider_response_error] ${provider.name},${requestBody.model}: ${safeMessage}`,
-      );
-    } catch {
-      fastify.log.error(
-        {
-          status: response.status,
-          provider: provider.name,
-          model: requestBody.model,
-          errorText: safeErrorText,
-        },
-        `[provider_response_error] ${provider.name},${requestBody.model}: ${safeErrorText}`,
-      );
-    }
+    const upstreamMessage =
+      typeof upstreamError?.message === "string"
+        ? upstreamError.message
+        : undefined;
+    const safeMessage =
+      sanitizeUpstreamErrorText(upstreamMessage || errorText) || safeErrorText;
 
-    throw createApiError(
-      `Error from provider(${provider.name},${requestBody.model}: ${response.status}): ${safeErrorText}`,
+    // Log parsed error details for observability (redacted)
+    fastify.log.error(
+      {
+        status: response.status,
+        provider: provider.name,
+        model: requestBody.model,
+        errorMessage: safeMessage,
+        upstreamType:
+          typeof upstreamError?.type === "string"
+            ? upstreamError.type
+            : undefined,
+        upstreamCode:
+          typeof upstreamError?.code === "string"
+            ? upstreamError.code
+            : undefined,
+      },
+      `[provider_response_error] ${provider.name},${requestBody.model}: ${safeMessage}`,
+    );
+
+    const error = createApiError(
+      `Error from provider(${provider.name},${requestBody.model}: ${response.status}): ${safeMessage}`,
       response.status,
-      "provider_response_error",
+      typeof upstreamError?.code === "string"
+        ? upstreamError.code
+        : "provider_response_error",
       "api_error",
       headers
     );
+    (error as any).upstream = {
+      status: response.status,
+      statusText: response.statusText,
+      headers: headers ?? {},
+      body:
+        parsedBody !== undefined
+          ? sanitizeUpstreamErrorBody(parsedBody)
+          : undefined,
+      // Log-side provenance only; never serialized to the client.
+      provider: provider.name,
+      model: requestBody.model,
+    };
+    throw error;
   }
 
   return response;
@@ -651,7 +833,22 @@ async function processResponseTransformers(
   context: any
 ) {
   let finalResponse = response;
-  const skipBodyConversion = bypass || provider.transformer?.passthrough;
+  // Raw provider bytes may reach the client only for an exact-protocol bypass,
+  // including the legacy multi-transformer passthrough mode when its chain
+  // explicitly contains the endpoint owner.
+  const skipBodyConversion =
+    bypass ||
+    isManualExactProtocolPassthrough(
+      provider,
+      transformer,
+      context?.protocolContext
+    ) ||
+    (provider.transformer?.passthrough && !context?.protocolContext);
+  const manualExactPassthrough = isManualExactProtocolPassthrough(
+    provider,
+    transformer,
+    context?.protocolContext
+  );
 
   // Response transformers get the provider too: the request-side context
   // already carries it, and provider identity is what scopes per-provider state
@@ -663,6 +860,12 @@ async function processResponseTransformers(
     for (const providerTransformer of Array.from(
       provider.transformer.use
     ).reverse() as Transformer[]) {
+      if (
+        manualExactPassthrough &&
+        providerTransformer?.name === transformer.name
+      ) {
+        continue;
+      }
       if (
         !providerTransformer ||
         typeof providerTransformer.transformResponseOut !== "function"
@@ -681,6 +884,12 @@ async function processResponseTransformers(
     for (const modelTransformer of Array.from(
       provider.transformer[requestBody.model].use
     ).reverse() as Transformer[]) {
+      if (
+        manualExactPassthrough &&
+        modelTransformer?.name === transformer.name
+      ) {
+        continue;
+      }
       if (
         !modelTransformer ||
         typeof modelTransformer.transformResponseOut !== "function"
@@ -706,22 +915,34 @@ async function processResponseTransformers(
 }
 
 /**
- * Format and return response
- * Handle HTTP status codes, format streaming and regular responses
+ * Format and return response.
+ * Stream intent comes from ClientProtocolContext when provided; body.stream
+ * remains a fallback for legacy callers.
  */
 async function formatResponse(
   response: any,
   reply: FastifyReply,
   body: any,
-  clientSignal?: AbortSignal
+  clientSignal?: AbortSignal,
+  streamIntent?: boolean
 ) {
   // Set HTTP status code
   if (!response.ok) {
     reply.code(response.status);
   }
 
+  // Forward safe upstream observability headers (rate-limit metadata, request
+  // ids, retry hints) that transformers preserved on the reshaped Response.
+  // Local framing headers (Content-Type, Cache-Control, Connection) are set
+  // afterwards, so they always win over anything copied here.
+  const downstreamHeaders = selectSafeDownstreamHeaders(response.headers);
+  for (const [name, value] of Object.entries(downstreamHeaders)) {
+    reply.header(name, value);
+  }
+
   // Handle streaming response
-  const isStream = body.stream === true;
+  const isStream =
+    typeof streamIntent === "boolean" ? streamIntent : body?.stream === true;
   if (isStream && response.ok) {
     // Convert Web API ReadableStream to Node.js stream for Fastify
     if (response.body && typeof response.body.getReader === "function") {
@@ -852,6 +1073,18 @@ export const registerApiRoutes = async (
     config: { rateLimit: { ...RATE_LIMIT_CONFIG } },
   };
 
+  // Detect the wire protocol before body parsing and route validation so even
+  // malformed JSON and other early failures receive the correct error shape.
+  fastify.addHook("onRequest", async (req: FastifyRequest) => {
+    const pathname = String(req.url || "").split("?")[0] || "/";
+    const match = matchClientProtocol(req.method, pathname);
+    (req as any).pathname = pathname;
+    if (match) {
+      (req as any).protocolMatch = match;
+      (req as any).clientProtocol = match.protocol;
+    }
+  });
+
   // Health and info endpoints
   fastify.get("/", rateLimitOptions, async () => {
     return { message: "LLMs API", version };
@@ -861,36 +1094,54 @@ export const registerApiRoutes = async (
     return { status: "ok", timestamp: new Date().toISOString() };
   });
 
-  const transformersWithEndpoint =
-    fastify.transformerService.getTransformersWithEndpoint();
+  // Client protocol routes (canonical + aliases) from the protocol registry.
+  // Owner transformers are resolved by name so Vercel cannot claim Chat.
+  const allTransformers = fastify.transformerService.getAllTransformers();
+  const resolveOwner = (ownerName: string): Transformer | undefined => {
+    const entry = allTransformers.get(ownerName);
+    if (!entry) return undefined;
+    if (typeof entry === "object") return entry as Transformer;
+    try {
+      const instance = new (entry as any)();
+      if (instance && typeof instance === "object") {
+        (instance as any).logger = fastify.log;
+      }
+      return instance as Transformer;
+    } catch {
+      return undefined;
+    }
+  };
 
-  for (const { transformer } of transformersWithEndpoint) {
-    if (transformer.endPoint) {
+  const claimedPaths = new Set<string>();
+  for (const reg of listClientRouteRegistrations()) {
+    const transformer = resolveOwner(reg.ownerTransformerName);
+    if (!transformer) {
+      fastify.log.warn(
+        `protocol route ${reg.path}: owner transformer '${reg.ownerTransformerName}' not found`
+      );
+      continue;
+    }
+    for (const routePath of [reg.path, `${reg.path}/`]) {
+      if (claimedPaths.has(routePath)) continue;
+      claimedPaths.add(routePath);
       fastify.post(
-        transformer.endPoint,
+        routePath,
         rateLimitOptions,
         async (req: FastifyRequest, reply: FastifyReply) => {
-          if (transformer.endPoint === "/v1/messages") {
-            await router(req, reply, {
-              configService: fastify.configService,
-              tokenizerService: fastify.tokenizerService,
-            });
-            const body = req.body as any;
-            if (!body?.model) {
-              return reply
-                .code(400)
-                .send({ error: "Missing model in request body" });
-            }
-            const [provider, ...modelParts] = body.model.split(",");
-            body.model = modelParts.join(",");
-            req.provider = provider;
-            req.model = body.model;
-          }
-          return handleTransformerEndpoint(req, reply, fastify, transformer);
+          return handleTransformerEndpoint(
+            req,
+            reply,
+            fastify,
+            transformer,
+            routePath
+          );
         }
       );
     }
   }
+
+  // `endPoint` remains provider-transformer metadata, but client route
+  // registration is intentionally limited to the explicit protocol registry.
 
   fastify.post(
     "/providers",

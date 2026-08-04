@@ -1,5 +1,32 @@
 import { FastifyRequest, FastifyReply } from "fastify";
+import { matchClientProtocol, protocolErrorBody } from "@caeliq/llms";
 import { apiKeysMatch, hasValidUiSession } from "../auth/ui-session";
+
+function sendAuthError(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  message: string,
+  statusCode: number,
+  code: string
+) {
+  const protocol = (req as any).clientProtocol;
+  const shaped = protocolErrorBody(
+    protocol,
+    message,
+    statusCode,
+    code,
+    statusCode === 403 ? "permission_error" : "authentication_error"
+  );
+  reply.type("application/json");
+  reply.status(shaped.statusCode).send(shaped.body);
+}
+
+function firstHeader(
+  value: string | string[] | undefined
+): string {
+  if (Array.isArray(value)) return value[0] || "";
+  return value || "";
+}
 
 export const apiKeyAuth =
   (config: any) =>
@@ -20,6 +47,23 @@ export const apiKeyAuth =
         return done();
       }
 
+      // Reject query-string API keys — they leak into URLs and logs.
+      const url = new URL(`http://127.0.0.1${req.url}`);
+      const hasQueryApiKey =
+        url.searchParams.has("key") ||
+        url.searchParams.has("api_key") ||
+        url.searchParams.has("apiKey");
+      if ((req as any).clientProtocol && hasQueryApiKey) {
+        sendAuthError(
+          req,
+          reply,
+          "API keys in query strings are not supported",
+          400,
+          "query_api_key_rejected"
+        );
+        return;
+      }
+
       // Check if Providers is empty or not configured
       const providers = config.Providers || config.providers || [];
       if (!providers || providers.length === 0) {
@@ -35,7 +79,13 @@ export const apiKeyAuth =
           `http://localhost:${config.PORT || 3456}`,
         ];
         if (req.headers.origin && !allowedOrigins.includes(req.headers.origin)) {
-          reply.status(403).send("CORS not allowed for this origin");
+          sendAuthError(
+            req,
+            reply,
+            "CORS not allowed for this origin",
+            403,
+            "cors_denied"
+          );
           return;
         } else {
           reply.header('Access-Control-Allow-Origin', `http://127.0.0.1:${config.PORT || 3456}`);
@@ -45,16 +95,15 @@ export const apiKeyAuth =
       }
 
       const authHeaderValue =
-        req.headers.authorization || req.headers["x-api-key"];
-      const authKey: string = Array.isArray(authHeaderValue)
-        ? authHeaderValue[0]
-        : authHeaderValue || "";
+        req.headers.authorization ||
+        req.headers["x-api-key"];
+      const authKey = firstHeader(authHeaderValue as string | string[] | undefined);
       if (authKey) {
         const token = authKey.startsWith("Bearer ")
           ? authKey.slice("Bearer ".length)
           : authKey;
         if (!apiKeysMatch(token, apiKey)) {
-          reply.status(401).send("Invalid API key");
+          sendAuthError(req, reply, "Invalid API key", 401, "invalid_api_key");
           return;
         }
         done();
@@ -66,16 +115,34 @@ export const apiKeyAuth =
         if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
           const origin = req.headers.origin;
           if (!origin) {
-            reply.status(403).send("Origin required for session request");
+            sendAuthError(
+              req,
+              reply,
+              "Origin required for session request",
+              403,
+              "origin_required"
+            );
             return;
           }
           try {
             if (new URL(origin).host !== req.host) {
-              reply.status(403).send("Cross-origin session request denied");
+              sendAuthError(
+                req,
+                reply,
+                "Cross-origin session request denied",
+                403,
+                "cors_denied"
+              );
               return;
             }
           } catch {
-            reply.status(403).send("Invalid origin for session request");
+            sendAuthError(
+              req,
+              reply,
+              "Invalid origin for session request",
+              403,
+              "invalid_origin"
+            );
             return;
           }
         }
@@ -83,5 +150,18 @@ export const apiKeyAuth =
         return;
       }
 
-      reply.status(401).send("APIKEY is missing");
+      sendAuthError(req, reply, "APIKEY is missing", 401, "missing_api_key");
     };
+
+/** Detect inbound client protocol before auth replies. */
+export function detectClientProtocol(req: FastifyRequest) {
+  const pathname =
+    (req as any).pathname ||
+    String(req.url || "").split("?")[0] ||
+    "/";
+  const match = matchClientProtocol(req.method, pathname);
+  if (match) {
+    (req as any).protocolMatch = match;
+    (req as any).clientProtocol = match.protocol;
+  }
+}

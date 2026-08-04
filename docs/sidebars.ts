@@ -77,6 +77,8 @@ const sidebars: SidebarsConfig = {
           items: [
             'server/api/overview',
             'server/api/messages-api',
+            'server/api/chat-completions-api',
+            'server/api/responses-api',
             'server/api/config-api',
             'server/api/logs-api',
           ],
@@ -128,6 +130,7 @@ const sidebars: SidebarsConfig = {
           },
           items: [
             'server/advanced/custom-router',
+            'server/advanced/unified-v2-spec',
           ],
         },
       ],

@@ -5,7 +5,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { initConfig, initDir } from "./utils";
 import { createServer } from "./server";
-import { apiKeyAuth } from "./middleware/auth";
+import { apiKeyAuth, detectClientProtocol } from "./middleware/auth";
 import {
   CONFIG_FILE,
   HOME_DIR,
@@ -190,24 +190,28 @@ async function getServer(options: RunOptions = {}) {
   // Register and configure plugins from config
   await registerPluginsFromConfig(serverInstance, config);
 
-  // Add async preHandler hook for authentication
+  // Pathname + protocol detection MUST run before auth so 401/403 can use
+  // the client protocol error envelope.
+  serverInstance.addHook("onRequest", async (req: any, _reply: any) => {
+    const url = new URL(`http://127.0.0.1${req.url}`);
+    req.pathname = url.pathname;
+    detectClientProtocol(req);
+    // Preset namespace for any registered client protocol, not only /v1/messages.
+    const presetMatch = req.pathname.match(/^\/preset\/([^/]+)\//);
+    if (presetMatch) {
+      req.preset = presetMatch[1];
+    }
+  });
+
   serverInstance.addHook("preHandler", async (req: any, reply: any) => {
     return new Promise<void>((resolve, reject) => {
       const done = (err?: Error) => {
         if (err) reject(err);
         else resolve();
       };
-      // Call the async auth function
       apiKeyAuth(config)(req, reply, done).catch(reject);
     });
   });
-  serverInstance.addHook("preHandler", async (req: any, reply: any) => {
-    const url = new URL(`http://127.0.0.1${req.url}`);
-    req.pathname = url.pathname;
-    if (req.pathname.endsWith("/v1/messages") && req.pathname !== "/v1/messages") {
-      req.preset = req.pathname.replace("/v1/messages", "").replace("/", "");
-    }
-  })
 
   serverInstance.addHook("preHandler", async (req: any, reply: any) => {
     if (req.pathname.endsWith("/v1/messages")) {

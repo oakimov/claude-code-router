@@ -164,6 +164,49 @@ async function testMediaAndToolUseCacheControlRoundTrip() {
   });
 }
 
+// Finding 16: metadata/thinking/output_config/stop_sequences must survive
+// pre-routing normalization even though no destination provider is known yet
+// (prepareInboundRequest() calls transformRequestOut() before routing). They
+// must live in request-local protocolContext.anthropicSource, not be gated on
+// context.provider containing a claude-auth chain.
+async function testSourceExtensionsSurviveWithoutProvider() {
+  const transformer = new AnthropicTransformer();
+  const inbound = {
+    model: "claude-sonnet-4-6",
+    max_tokens: 100,
+    metadata: { user_id: "user_pre_routing" },
+    thinking: { type: "adaptive" },
+    output_config: { effort: "high" },
+    stop_sequences: ["</done>"],
+    system: "sys",
+    messages: [{ role: "user", content: "hi" }],
+  };
+
+  const context: any = {
+    protocolContext: { protocol: "anthropic_messages" },
+  };
+  assert.equal(context.provider, undefined);
+
+  const unified = await transformer.transformRequestOut(inbound, context);
+
+  assert.deepEqual(context.protocolContext.anthropicSource, {
+    metadata: { user_id: "user_pre_routing" },
+    thinking: { type: "adaptive" },
+    outputConfig: { effort: "high" },
+    stopSequences: ["</done>"],
+  });
+
+  const rebuilt = AnthropicTransformer.buildAnthropicBody(
+    unified,
+    undefined,
+    context
+  );
+  assert.deepEqual(rebuilt.metadata, { user_id: "user_pre_routing" });
+  assert.deepEqual(rebuilt.thinking, { type: "adaptive" });
+  assert.deepEqual(rebuilt.output_config, { effort: "high" });
+  assert.deepEqual(rebuilt.stop_sequences, ["</done>"]);
+}
+
 async function main() {
   testMergeAnthropicBetaValues();
   testReadHeaderValue();
@@ -171,6 +214,7 @@ async function main() {
   testResolveOnlyOauthWithoutClientBeta();
   await testCacheControlRoundTrip();
   await testMediaAndToolUseCacheControlRoundTrip();
+  await testSourceExtensionsSurviveWithoutProvider();
   console.log("claude-auth.beta-headers: ok");
 }
 

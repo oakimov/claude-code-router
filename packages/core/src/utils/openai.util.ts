@@ -157,18 +157,22 @@ export function applyOpenAIChatCaching(
         : message.content,
     })),
     tools: Array.isArray(request.tools)
-      ? request.tools.map((tool) => ({
-          ...tool,
-          function: {
-            ...tool.function,
-            parameters: { ...tool.function.parameters },
-          },
-        }))
+      ? request.tools.map((tool: any) =>
+          tool?.function
+            ? {
+                ...tool,
+                function: {
+                  ...tool.function,
+                  parameters: { ...tool.function.parameters },
+                },
+              }
+            : { ...tool }
+        )
       : request.tools,
   };
 
   const cacheKey = deriveCacheSessionKey(context, request);
-  if (cacheKey) {
+  if (cacheKey && !(next as any).prompt_cache_key) {
     (next as any).prompt_cache_key = cacheKey;
   }
 

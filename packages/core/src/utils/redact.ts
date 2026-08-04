@@ -34,6 +34,43 @@ export function sanitizeUpstreamErrorText(value: string): string {
     .slice(0, 240);
 }
 
+const SENSITIVE_BODY_KEY = new RegExp(`^(?:${SENSITIVE_JSON_KEYS})$`, "i");
+
+const MAX_BODY_DEPTH = 6;
+const MAX_BODY_ARRAY_ITEMS = 20;
+
+/**
+ * Deep-sanitize a parsed upstream error body before it is logged or
+ * serialized to a client: secret-bearing keys are redacted outright and
+ * every string value passes through sanitizeUpstreamErrorText. Depth and
+ * array length are bounded so an adversarial body cannot balloon.
+ */
+export function sanitizeUpstreamErrorBody(
+  value: unknown,
+  depth: number = 0
+): unknown {
+  if (value == null) return value;
+  if (depth > MAX_BODY_DEPTH) return undefined;
+  if (typeof value === "string") return sanitizeUpstreamErrorText(value);
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, MAX_BODY_ARRAY_ITEMS)
+      .map((item) => sanitizeUpstreamErrorBody(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(
+      value as Record<string, unknown>
+    )) {
+      out[key] = SENSITIVE_BODY_KEY.test(key)
+        ? "[redacted]"
+        : sanitizeUpstreamErrorBody(entry, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
 function sanitizeMultiline(value: string, maxLength: number): string {
   return value
     .split("\n")

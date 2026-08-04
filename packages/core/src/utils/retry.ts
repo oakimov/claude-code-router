@@ -275,12 +275,34 @@ export function isProviderNetworkError(error: unknown): boolean {
   );
 }
 
+/**
+ * HTTP statuses worth trying another model for: transient throttling,
+ * contention, and server-side failures. Ordinary 4xx responses (validation,
+ * authentication, permissions, model-not-found) are terminal — resending the
+ * identical request to a fallback model would fail the same way.
+ */
+export function isFallbackEligibleStatus(
+  status: number | undefined
+): boolean {
+  if (typeof status !== "number" || !Number.isFinite(status)) return false;
+  if (status === 408 || status === 409 || status === 425 || status === 429) {
+    return true;
+  }
+  return status >= 500 && status <= 599;
+}
+
 export function isFallbackEligibleError(error: unknown): boolean {
   const err = error as any;
   if (!err || isClientAbortError(err)) return false;
-  return (
-    err.code === "provider_response_error" ||
-    err.code === "provider_network_error" ||
-    isProviderNetworkError(err)
-  );
+  // Network errors and provider timeouts are always retryable.
+  if (isProviderNetworkError(err)) return true;
+  const status =
+    typeof err.statusCode === "number"
+      ? err.statusCode
+      : typeof err.upstream?.status === "number"
+        ? err.upstream.status
+        : undefined;
+  if (status !== undefined) return isFallbackEligibleStatus(status);
+  // No status information: only an explicit provider error code qualifies.
+  return err.code === "provider_response_error";
 }

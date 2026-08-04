@@ -10,6 +10,7 @@ Claude Code Router is an adaptive LLM gateway for Claude Code. It routes each re
 - **Tool Use & Thinking**: Preserve tool calls, tool results, and reasoning content across providers with different API formats.
 - **Multi-Provider Support**: Supports various model providers like OpenRouter, DeepSeek, Ollama, Gemini, Antigravity, Volcengine, SiliconFlow, Codex, Claude subscription, Qwen, Chrome On-Device, and Cursor (SDK).
 - **Request/Response Transformation**: Customize requests and responses for different providers using transformers.
+- **Native Client Protocols**: Accept Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses requests through the same router and fallback pipeline.
 - **Dynamic Model Switching**: Switch models on-the-fly within Claude Code using the `/model` command.
 - **CLI Model Management**: Manage models and providers directly from the terminal with `ccr model`.
 - **GitHub Actions Integration**: Trigger Claude Code tasks in your GitHub workflows.
@@ -281,6 +282,19 @@ You can also configure Claude Code to always use the router by editing its `sett
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` | Maximum capability model (Opus equivalent) |
 
 This approach lets you run `claude` directly without needing `ccr code`.
+
+#### Via OpenAI-compatible clients
+
+OpenAI SDK clients can use CCR without an Anthropic compatibility layer:
+
+```shell
+export OPENAI_BASE_URL=http://127.0.0.1:3456/v1
+export OPENAI_API_KEY=your-router-api-key
+```
+
+CCR accepts Chat Completions at `/v1/chat/completions` (alias `/chat/completions`) and Responses at `/v1/responses` (alias `/responses`). Send a model as `provider,model` to select a destination explicitly, or send a bare model and configure `Router.default`. Both JSON and SSE responses are converted back to the protocol used by the client.
+
+The compatibility layer supports ordinary text, images, function tools/results, reasoning effort, and usage reporting. Stateful Responses features such as `store: true`, `previous_response_id`, conversations, background mode, provider file IDs, and unsupported hosted tools return an explicit 400 error instead of being silently discarded.
 
 > **Note**: After modifying the configuration file, you need to restart the service for the changes to take effect:
 >
@@ -916,7 +930,7 @@ Three transformers are required in the chain:
 
 - `qwen-auth` — sets the `Authorization: Bearer <jwt>` header on every outbound request (loading/refreshing the JWT from `~/.claude-code-router/qwen_auth.json`) and strips the trailing `<details>...</details>` block Qwen injects into responses.
 - `reasoning` — maps Claude Code's unified `reasoning` field onto the request so the Qwen endpoint's `enable_thinking` and `thinking_budget` parameters are populated.
-- `OpenAI` — registers the `POST /v1/chat/completions` route. It is a thin endpoint stub with no body conversion, so it must remain last in the chain.
+- `OpenAI` — owns the `POST /v1/chat/completions` client route, validates inbound Chat requests, and applies OpenAI-compatible provider normalization. In this Qwen provider chain it remains last so the endpoint wire stage runs after the Qwen-specific middleware.
 
 > **Note**: The `api_key` field is a placeholder — actual authentication is handled via the JWT stored in `~/.claude-code-router/qwen_auth.json`. Run `ccr qwen-auth` to authenticate before using the Qwen provider.
 
@@ -939,7 +953,7 @@ The `claude-auth` transformer routes requests to Anthropic's API using your Clau
 Two transformers are required in the chain:
 
 - `claude-auth` — converts the request from Unified (OpenAI) format to Anthropic format, injects `Authorization: Bearer <token>` (loading/refreshing the token from `~/.claude-code-router/claude_auth.json`), and converts the Anthropic SSE response back to Unified format.
-- `Anthropic` — registers the `POST /v1/messages` route. It has no body conversion in the provider chain, so it acts as a no-op endpoint stub.
+- `Anthropic` — owns the `POST /v1/messages` client route and provides direct Unified ↔ Anthropic conversion for static-key Anthropic providers. When `claude-auth` is present, it delegates conversion to that OAuth transformer to avoid a double conversion.
 
 > **Note**: The `api_key` field is a placeholder — actual authentication is handled via OAuth tokens stored in `~/.claude-code-router/claude_auth.json`. Run `ccr claude-auth` to authenticate before using this provider. The transformer automatically sends Anthropic's `oauth-2025-04-20` beta so subscription OAuth Bearer tokens are accepted.
 

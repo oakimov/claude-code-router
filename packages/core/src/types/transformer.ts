@@ -18,6 +18,15 @@ export interface TransformerContext {
   signal?: AbortSignal;
   /** Protocol semantics that must not be serialized into the provider body. */
   unifiedRequest?: UnifiedRequestRuntime;
+  /**
+   * Set by claude-auth's transformRequestIn (non-Claude-Code branch) so that
+   * AnthropicTransformer.transformRequestIn — which owns building the wire
+   * body — can apply claude-auth's catalog-driven capability clamping and
+   * synthesized user_id metadata immediately after building it. Keeps model
+   * capability/identity-synthesis policy owned by claude-auth while
+   * AnthropicTransformer remains the sole body-shape/timing owner.
+   */
+  claudeAuthPostBuildHook?: (anthropicBody: Record<string, any>) => void;
   [key: string]: any;
 }
 

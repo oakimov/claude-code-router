@@ -68,6 +68,29 @@ async function main() {
   await app.ready();
   await app.close();
 
+  // Protocol registry owns client routes + aliases; OpenAI keeps Chat ownership
+  // and openai-responses owns Responses (Vercel must not claim Chat).
+  const {
+    listClientRouteRegistrations,
+  } = await import("../routing/protocol-endpoints");
+  const regs = listClientRouteRegistrations();
+  assert.ok(regs.some((r) => r.path === "/v1/chat/completions" && r.ownerTransformerName === "OpenAI"));
+  assert.ok(regs.some((r) => r.path === "/chat/completions" && !r.isCanonical));
+  assert.ok(regs.some((r) => r.path === "/v1/responses" && r.ownerTransformerName === "openai-responses"));
+  assert.ok(regs.some((r) => r.path === "/responses" && !r.isCanonical));
+  assert.ok(regs.some((r) => r.path === "/v1/messages" && r.ownerTransformerName === "Anthropic"));
+
+  // Simulate registry registration: no duplicate Fastify paths.
+  const app2 = Fastify({ logger: false });
+  const claimed = new Set<string>();
+  for (const reg of regs) {
+    assert.equal(claimed.has(reg.path), false, `duplicate protocol path ${reg.path}`);
+    claimed.add(reg.path);
+    app2.post(reg.path, async () => ({ ok: true }));
+  }
+  await app2.ready();
+  await app2.close();
+
   console.log("transformer-service.endpoints: PASS");
 }
 

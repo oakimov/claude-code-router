@@ -32,6 +32,20 @@ function sanitizerContract() {
   assert.equal(sanitizeResponsesCallId(undefined), undefined);
 }
 
+async function perTurnMapAvoidsSanitizedCollisions() {
+  const { createCallIdMap, mapCallId } = await import(
+    "../utils/openai.responses.util"
+  );
+  const invalid = "call_with_a_newline\n";
+  const sanitized = sanitizeResponsesCallId(invalid)!;
+  const map = createCallIdMap();
+  assert.equal(mapCallId(map, invalid), sanitized);
+  const collidingValidId = mapCallId(map, sanitized)!;
+  assert.notEqual(collidingValidId, sanitized);
+  assert.match(collidingValidId, RESPONSES_CALL_ID_PATTERN);
+  assert.equal(mapCallId(map, sanitized), collidingValidId);
+}
+
 function pairedRequest() {
   return {
     model: "gpt-5.6-sol",
@@ -91,6 +105,49 @@ async function openAIResponsesRequestIsSanitized() {
     {}
   );
   assertPairedInput((result as any).input);
+}
+
+async function openAIResponsesProviderRequestPreservesAssistantText() {
+  const transformer = new OpenAIResponsesTransformer();
+  const result = await transformer.transformRequestIn(
+    {
+      model: "gpt-5.6-sol",
+      messages: [
+        {
+          role: "assistant",
+          content: "I will use a tool",
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "Read", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "done" },
+      ],
+      tool_choice: {
+        type: "function",
+        function: { name: "Read" },
+      },
+      reasoning: { enabled: true, effort: "high" },
+    } as any,
+    {},
+    {}
+  );
+  const input = (result as any).input;
+  assert.ok(
+    input.some(
+      (item: any) =>
+        item.role === "assistant" && item.content === "I will use a tool"
+    )
+  );
+  assert.ok(input.some((item: any) => item.type === "function_call"));
+  assert.deepEqual((result as any).tool_choice, {
+    type: "function",
+    name: "Read",
+  });
+  assert.equal((result as any).reasoning.summary, undefined);
 }
 
 function functionCallEvent() {
@@ -171,12 +228,86 @@ async function nonStreamingResponsesAreSanitized() {
   }
 }
 
+async function clientBoundCallIdsAreMapped() {
+  const {
+    createCallIdMap,
+    mapCallId,
+    responsesRequestToUnified,
+    unifiedResponseToResponses,
+  } = await import("../utils/openai.responses.util");
+
+  const map = createCallIdMap();
+  const unified = responsesRequestToUnified(
+    {
+      model: "openai,gpt-4o",
+      input: [
+        {
+          type: "function_call",
+          call_id: CURSOR_CONCATENATED_ID,
+          name: "Bash",
+          arguments: '{}',
+        },
+        {
+          type: "function_call_output",
+          call_id: CURSOR_CONCATENATED_ID,
+          output: "/tmp",
+        },
+      ],
+    },
+    map
+  );
+
+  const assistant = unified.messages.find(
+    (m: any) => m.role === "assistant" && m.tool_calls
+  );
+  const tool = unified.messages.find((m: any) => m.role === "tool");
+  assert.ok(assistant);
+  assert.ok(tool);
+  const sanitized = sanitizeResponsesCallId(CURSOR_CONCATENATED_ID)!;
+  assert.equal(assistant!.tool_calls![0].id, sanitized);
+  assert.equal(tool!.tool_call_id, sanitized);
+
+  // Client-bound response remains conforming; never restore an invalid id.
+  const restored = mapCallId(map, sanitized, "unified_to_client");
+  assert.equal(restored, sanitized);
+
+  const responses = unifiedResponseToResponses(
+    {
+      id: "chatcmpl-x",
+      created: 1,
+      model: "gpt-4o",
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: sanitized,
+                type: "function",
+                function: { name: "Bash", arguments: '{}' },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    { callIdMap: map }
+  );
+  assert.equal(responses.output[0].call_id, sanitized);
+  assert.match(responses.output[0].call_id, RESPONSES_CALL_ID_PATTERN);
+}
+
 async function main() {
   sanitizerContract();
+  await perTurnMapAvoidsSanitizedCollisions();
   await codexRequestIsSanitized();
   await openAIResponsesRequestIsSanitized();
+  await openAIResponsesProviderRequestPreservesAssistantText();
   await streamingResponsesAreSanitized();
   await nonStreamingResponsesAreSanitized();
+  await clientBoundCallIdsAreMapped();
   console.log("responses.call-id-sanitize: ok");
 }
 

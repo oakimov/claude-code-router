@@ -255,3 +255,12 @@ export {
   ANTIGRAVITY_SCOPES,
   type AntigravityTokens,
 } from "./utils/antigravity-auth";
+export {
+  matchClientProtocol,
+  isRoutedLlmPost,
+  listClientRouteRegistrations,
+  type ClientProtocol,
+  type ClientProtocolContext,
+  type ProtocolRouteMatch,
+} from "./routing/protocol-endpoints";
+export { protocolErrorBody } from "./routing/protocol-errors";

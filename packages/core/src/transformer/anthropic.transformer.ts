@@ -17,6 +17,18 @@ import { formatBase64 } from "@/utils/image";
 import { applyRawAnthropicPromptCaching } from "@/utils/cacheControl";
 import { sanitizeToolCallId } from "@/utils/toolCallId";
 import { buildAnthropicRequestRuntime } from "@/types/turn-intent";
+import { transformResponseOut as anthropicWireToUnifiedResponse } from "../utils/vertex-claude.util";
+import { stripOneMillionContextMarker } from "@/utils/claude-model-catalog";
+
+function buildAnthropicMessagesUrl(baseUrl: string | undefined): string {
+  const url = new URL(baseUrl || "https://api.anthropic.com");
+  const path = url.pathname.replace(/\/$/, "");
+  if (!path.endsWith("/v1/messages")) {
+    url.pathname = `${path}/v1/messages`.replace(/\/+/g, "/");
+  }
+  url.searchParams.set("beta", "true");
+  return url.toString();
+}
 
 function toAnthropicCacheUsage(usage: any): Record<string, number> {
   const cached = usage?.prompt_tokens_details?.cached_tokens || 0;
@@ -46,23 +58,98 @@ export class AnthropicTransformer implements Transformer {
     this.useBearer = this.options?.UseBearer ?? false;
   }
 
-  async auth(request: any, provider: LLMProvider, _context?: any): Promise<any> {
+  async auth(
+    request: any,
+    provider: LLMProvider,
+    context?: TransformerContext
+  ): Promise<any> {
     const headers: Record<string, string | undefined> = {};
 
     if (this.useBearer) {
-      headers["authorization"] = `Bearer ${provider.apiKey}`;
+      headers["Authorization"] = `Bearer ${provider.apiKey}`;
       headers["x-api-key"] = undefined;
     } else {
       headers["x-api-key"] = provider.apiKey;
-      headers["authorization"] = undefined;
+      headers["Authorization"] = undefined;
     }
 
     return {
-      body: applyRawAnthropicPromptCaching(request),
+      body:
+        context?.protocolContext?.anthropicCacheMode === "preserve"
+          ? request
+          : applyRawAnthropicPromptCaching(request),
       config: {
+        url: buildAnthropicMessagesUrl(provider.baseUrl),
         headers,
       },
     };
+  }
+
+  /**
+   * Provider-side: Unified → Anthropic Messages wire.
+   * Enables cross-protocol clients (Chat/Responses) to reach Anthropic-shaped
+   * upstreams. Same-protocol Anthropic clients still use transformRequestOut
+   * for client→Unified and may bypass via protocol-aware passthrough.
+   */
+  async transformRequestIn(
+    request: UnifiedChatRequest,
+    provider: LLMProvider,
+    _context?: TransformerContext
+  ): Promise<Record<string, any>> {
+    const anthropicBody = AnthropicTransformer.buildAnthropicBody(
+      request,
+      this.logger,
+      _context
+    );
+
+    anthropicBody.model = stripOneMillionContextMarker(anthropicBody.model).modelId;
+
+    // claude-auth's non-Claude-Code branch stashes catalog-driven capability
+    // clamping and synthesized identity metadata here, to run immediately
+    // after the body this stage owns building. See TransformerContext.
+    _context?.claudeAuthPostBuildHook?.(anthropicBody);
+
+    const url = buildAnthropicMessagesUrl(provider?.baseUrl);
+
+    const headers: Record<string, string | undefined> = {
+      "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01",
+    };
+
+    // claude-auth owns OAuth bearer auth when it shares this provider's
+    // chain; this stage must never introduce or clobber it with a static key.
+    const ownsAuth = !provider?.transformer?.use?.some(
+      (transformer: Transformer) => transformer?.name === "claude-auth"
+    );
+    if (ownsAuth) {
+      if (this.useBearer) {
+        headers["Authorization"] = `Bearer ${provider.apiKey}`;
+        headers["x-api-key"] = undefined;
+      } else {
+        headers["x-api-key"] = provider.apiKey;
+        headers["Authorization"] = undefined;
+      }
+    }
+
+    return {
+      body: anthropicBody,
+      config: {
+        url,
+        headers,
+      },
+    };
+  }
+
+  /**
+   * Provider-side: Anthropic Messages wire → Unified (Chat Completions shape).
+   * Reuses the Vertex Claude Anthropic→Unified converter so streaming and JSON
+   * envelopes match existing Anthropic upstream behavior.
+   */
+  async transformResponseOut(
+    response: Response,
+    _context?: TransformerContext
+  ): Promise<Response> {
+    return anthropicWireToUnifiedResponse(response, this.name, this.logger);
   }
 
   async transformRequestOut(
@@ -246,17 +333,39 @@ export class AnthropicTransformer implements Transformer {
       };
     }
 
-    // Preserve Anthropic-specific parameters through the Unified roundtrip
-    // only when claude-auth is in the outbound transformer chain. Other
-    // backends (codex, gemini, openai, etc.) mutate the Unified body in place
-    // and would leak these fields upstream as unsupported parameters.
-    const usesClaudeAuth = Array.isArray(context?.provider?.transformer?.use)
-      && context.provider.transformer.use.some((t: any) => t?.name === "claude-auth");
+    // Retain source-only Anthropic parameters before destination routing. They
+    // live in request-local protocol context so unrelated providers never
+    // serialize implementation fields from the Unified request.
+    const protocolContext = context?.protocolContext;
+    if (protocolContext?.protocol === "anthropic_messages") {
+      protocolContext.anthropicCacheMode = "preserve";
+      protocolContext.anthropicSource = {
+        ...(request.metadata
+          ? { metadata: JSON.parse(JSON.stringify(request.metadata)) }
+          : {}),
+        ...(request.thinking
+          ? { thinking: JSON.parse(JSON.stringify(request.thinking)) }
+          : {}),
+        ...(request.output_config
+          ? { outputConfig: JSON.parse(JSON.stringify(request.output_config)) }
+          : {}),
+        ...(request.stop_sequences
+          ? { stopSequences: [...request.stop_sequences] }
+          : {}),
+      };
+    }
+    // Legacy direct transformer callers may already know the provider chain.
+    const usesClaudeAuth = Array.isArray(context?.provider?.transformer?.use) &&
+      context.provider.transformer.use.some(
+        (t: any) => t?.name === "claude-auth"
+      );
     if (usesClaudeAuth) {
       if (request.thinking) result.anthropic_thinking = request.thinking;
       if (request.output_config) result.anthropic_output_config = request.output_config;
       if (request.metadata) result.anthropic_metadata = request.metadata;
-      if (request.stop_sequences) result.anthropic_stop_sequences = request.stop_sequences;
+      if (request.stop_sequences) {
+        result.anthropic_stop_sequences = request.stop_sequences;
+      }
     }
     if (request.tool_choice) {
       if (request.tool_choice.type === "tool") {
@@ -310,49 +419,42 @@ export class AnthropicTransformer implements Transformer {
    * Used by claude-auth.transformRequestIn() to reconstruct the body before
    * sending to Anthropic, preserving all original parameters.
    */
-  static buildAnthropicBody(request: UnifiedChatRequest, logger?: any): Record<string, any> {
-    // System prompt: check request.system first (set by some transformers),
-    // otherwise recover from role:"system" messages (how transformRequestOut stores it).
-    let system: any = undefined;
-    if (request.system) {
-      if (typeof request.system === "string") {
-        system = request.system;
-      } else if (Array.isArray(request.system) && request.system.length) {
-        system = request.system
-          .filter((part) => part.type === "text")
-          .map((part) => ({
-          type: "text",
-          text: part.text,
-          ...(part as any).cache_control ? { cache_control: (part as any).cache_control } : {},
-        }));
+  static buildAnthropicBody(
+    request: UnifiedChatRequest,
+    logger?: any,
+    context?: TransformerContext
+  ): Record<string, any> {
+    // System prompt: fold every source exactly once and in source order —
+    // top-level request.system (set by some transformers) first, then any
+    // residual role:"system"/"developer" messages (how transformRequestOut
+    // stores it). The normal pipeline consumes those messages earlier, so
+    // residual ones only appear for direct callers and must merge, not drop.
+    const systemBlocks: any[] = [];
+    const appendSystemBlocks = (value: any) => {
+      if (typeof value === "string") {
+        if (value) systemBlocks.push({ type: "text", text: value });
+        return;
       }
+      if (!Array.isArray(value)) return;
+      for (const part of value) {
+        if (part?.type === "text" && part.text) {
+          systemBlocks.push({
+            type: "text",
+            text: part.text,
+            ...(part.cache_control ? { cache_control: part.cache_control } : {}),
+          });
+        }
+      }
+    };
+    if (request.system) {
+      appendSystemBlocks(request.system);
     }
 
     // Messages: convert Unified format back to Anthropic format
     const messages: any[] = [];
     for (const msg of request.messages) {
-      if (msg.role === "system") {
-        // Recover system prompt from role:"system" messages when request.system
-        // was not populated by the pipeline (e.g. transformRequestOut stores it here).
-        if (!system) {
-          if (typeof msg.content === "string") {
-            system = msg.content;
-          } else if (Array.isArray(msg.content)) {
-            const textParts = msg.content.filter(
-              (c): c is Extract<MessageContent, { type: "text" }> =>
-                c.type === "text" && Boolean(c.text)
-            );
-            if (textParts.length === 1 && !textParts[0].cache_control) {
-              system = textParts[0].text;
-            } else if (textParts.length > 0) {
-              system = textParts.map((c: any) => ({
-                type: "text",
-                text: c.text,
-                ...(c.cache_control ? { cache_control: c.cache_control } : {}),
-              }));
-            }
-          }
-        }
+      if (msg.role === "system" || (msg.role as string) === "developer") {
+        appendSystemBlocks(msg.content);
         continue;
       }
 
@@ -364,7 +466,20 @@ export class AnthropicTransformer implements Transformer {
           // (or by any provider using a non-conforming alphabet) still match.
           tool_use_id:
             sanitizeToolCallId(msg.tool_call_id) ?? msg.tool_call_id,
-          content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+          content:
+            typeof msg.content === "string"
+              ? msg.content
+              : Array.isArray(msg.content)
+                ? msg.content
+                    .filter((part: any) => part?.type === "text")
+                    .map((part: any) => ({
+                      type: "text",
+                      text: part.text || "",
+                      ...(part.cache_control
+                        ? { cache_control: part.cache_control }
+                        : {}),
+                    }))
+                : JSON.stringify(msg.content),
           ...(msg.cache_control ? { cache_control: msg.cache_control } : {}),
         };
         const last = messages[messages.length - 1];
@@ -456,6 +571,17 @@ export class AnthropicTransformer implements Transformer {
     // Tools: convert Unified format back to Anthropic format
     let tools: any[] | undefined;
     if (request.tools?.length) {
+      const unsupported = request.tools.find(
+        (tool: any) => tool?.type !== "function" || !tool?.function
+      );
+      if (unsupported) {
+        throw createApiError(
+          `Tool type '${(unsupported as any)?.type || "unknown"}' cannot be represented by Anthropic Messages`,
+          400,
+          "unsupported_hosted_tool",
+          "invalid_request_error"
+        );
+      }
       tools = request.tools.map((tool) => ({
         name: tool.function.name,
         description: tool.function.description || "",
@@ -474,6 +600,15 @@ export class AnthropicTransformer implements Transformer {
       else if (tc.type === "function") tool_choice = { type: "tool", name: tc.function?.name };
     }
 
+    // Collapse to the legacy string form only for a single plain-text block;
+    // anything else stays an Anthropic system block array.
+    const system: any =
+      systemBlocks.length === 1 && !systemBlocks[0].cache_control
+        ? systemBlocks[0].text
+        : systemBlocks.length > 0
+          ? systemBlocks
+          : undefined;
+
     const body: Record<string, any> = {
       model: request.model,
       max_tokens: request.max_tokens ?? 8192,
@@ -483,20 +618,50 @@ export class AnthropicTransformer implements Transformer {
 
     if (system !== undefined) body.system = system;
     if (request.temperature !== undefined) body.temperature = request.temperature;
+    if (request.top_p !== undefined) body.top_p = request.top_p;
+    if ((request as any).stop !== undefined) {
+      body.stop_sequences = Array.isArray((request as any).stop)
+        ? (request as any).stop
+        : [(request as any).stop];
+    }
     if (request.tool_choice !== "none" && tools?.length) body.tools = tools;
     if (request.tool_choice !== "none" && tool_choice) body.tool_choice = tool_choice;
 
-    // Pass through Anthropic-specific fields preserved during the roundtrip
-    if (request.anthropic_thinking) body.thinking = request.anthropic_thinking;
-    if (request.anthropic_output_config) body.output_config = request.anthropic_output_config;
-    if (request.anthropic_metadata) body.metadata = request.anthropic_metadata;
-    if (request.anthropic_stop_sequences) body.stop_sequences = request.anthropic_stop_sequences;
+    const source = context?.protocolContext?.anthropicSource;
+    // Prefer exact source Anthropic fields when this request originated as
+    // Messages. Legacy direct callers can still use the temporary request fields.
+    if (source?.thinking) {
+      body.thinking = source.thinking;
+    } else if (request.anthropic_thinking) {
+      body.thinking = request.anthropic_thinking;
+    } else if (request.reasoning?.enabled || request.reasoning?.effort) {
+      body.thinking = { type: "adaptive" };
+    }
+    if (source?.outputConfig) {
+      body.output_config = source.outputConfig;
+    } else if (request.anthropic_output_config) {
+      body.output_config = request.anthropic_output_config;
+    } else if (request.reasoning?.effort) {
+      body.output_config = { effort: request.reasoning.effort };
+    }
+    if (source?.metadata) {
+      body.metadata = source.metadata;
+    } else if (request.anthropic_metadata) {
+      body.metadata = request.anthropic_metadata;
+    }
+    if (source?.stopSequences) {
+      body.stop_sequences = source.stopSequences;
+    } else if (request.anthropic_stop_sequences) {
+      body.stop_sequences = request.anthropic_stop_sequences;
+    }
 
     if ((request as any).cache_control) {
       body.cache_control = (request as any).cache_control;
     }
 
-    return applyRawAnthropicPromptCaching(body);
+    return context?.protocolContext?.anthropicCacheMode === "preserve"
+      ? body
+      : applyRawAnthropicPromptCaching(body);
   }
 
   private convertAnthropicToolsToUnified(tools: any[]): UnifiedTool[] {

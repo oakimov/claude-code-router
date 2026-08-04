@@ -95,6 +95,24 @@ function toOpenAIUsage(usage: any): Record<string, any> {
   };
 }
 
+function anthropicStopReasonToOpenAI(reason: unknown): string | null {
+  switch (reason) {
+    case "tool_use":
+      return "tool_calls";
+    case "max_tokens":
+    case "model_context_window_exceeded":
+      return "length";
+    case "refusal":
+      return "content_filter";
+    case "end_turn":
+    case "stop_sequence":
+    case "pause_turn":
+      return "stop";
+    default:
+      return typeof reason === "string" && reason ? "stop" : null;
+  }
+}
+
 export function buildRequestBody(
   request: UnifiedChatRequest
 ): VertexClaudeRequest {
@@ -286,33 +304,68 @@ export async function transformResponseOut(
   logger?: any
 ): Promise<Response> {
   if (response.headers.get("Content-Type")?.includes("application/json")) {
-    const jsonResponse = (await response.json()) as VertexClaudeResponse;
+    const jsonResponse = (await response.json()) as any;
 
-    // Handle tool calls
-    let tool_calls = undefined;
-    if (jsonResponse.tool_use && jsonResponse.tool_use.length > 0) {
-      tool_calls = jsonResponse.tool_use.map((tool) => ({
+    // Prefer standard Anthropic content[] blocks (text / tool_use / thinking).
+    // Fall back to the Vertex-only top-level tool_use array when present.
+    const contentBlocks: any[] = Array.isArray(jsonResponse.content)
+      ? jsonResponse.content
+      : [];
+    const textParts = contentBlocks
+      .filter((c) => c?.type === "text" && typeof c.text === "string")
+      .map((c) => c.text);
+    const thinkingBlock = contentBlocks.find(
+      (c) => c?.type === "thinking" && typeof c.thinking === "string"
+    );
+
+    let tool_calls: any[] | undefined;
+    const contentToolUses = contentBlocks.filter((c) => c?.type === "tool_use");
+    if (contentToolUses.length > 0) {
+      tool_calls = contentToolUses.map((tool) => ({
         id: tool.id,
         type: "function" as const,
         function: {
           name: tool.name,
-          arguments: JSON.stringify(tool.input),
+          arguments: JSON.stringify(tool.input ?? {}),
+        },
+      }));
+    } else if (
+      Array.isArray(jsonResponse.tool_use) &&
+      jsonResponse.tool_use.length > 0
+    ) {
+      tool_calls = jsonResponse.tool_use.map((tool: any) => ({
+        id: tool.id,
+        type: "function" as const,
+        function: {
+          name: tool.name,
+          arguments: JSON.stringify(tool.input ?? {}),
         },
       }));
     }
 
-    // Convert to OpenAI format response
+    const finishReason = anthropicStopReasonToOpenAI(
+      jsonResponse.stop_reason
+    );
+
+    const message: Record<string, any> = {
+      role: "assistant",
+      content: textParts.length > 0 ? textParts.join("") : null,
+      ...(tool_calls && { tool_calls }),
+    };
+    if (thinkingBlock) {
+      message.thinking = {
+        content: thinkingBlock.thinking,
+        signature: thinkingBlock.signature,
+      };
+    }
+
     const res = {
       id: jsonResponse.id,
       choices: [
         {
-          finish_reason: jsonResponse.stop_reason || null,
+          finish_reason: finishReason,
           index: 0,
-          message: {
-            content: jsonResponse.content[0]?.text || "",
-            role: "assistant",
-            ...(tool_calls && { tool_calls }),
-          },
+          message,
         },
       ],
       created: parseInt(new Date().getTime() / 1000 + "", 10),
@@ -333,6 +386,9 @@ export async function transformResponseOut(
     }
 
     let streamInputUsage: Record<string, any> = {};
+    let streamId = "";
+    let streamModel = "";
+    const toolBlockIndexes = new Map<number, number>();
     const processLine = (
       line: string,
       ctx: { controller: ReadableStreamDefaultController, encoder: TextEncoder }
@@ -348,13 +404,21 @@ export async function transformResponseOut(
             // Handle Anthropic native format streaming response
             if (chunk.type === "message_start") {
               streamInputUsage = chunk.message?.usage || chunk.usage || {};
+              streamId = chunk.message?.id || chunk.id || streamId;
+              streamModel = chunk.message?.model || chunk.model || streamModel;
               const res = {
-                choices: [],
+                choices: [
+                  {
+                    delta: { role: "assistant" },
+                    finish_reason: null,
+                    index: 0,
+                    logprobs: null,
+                  },
+                ],
                 created: parseInt(new Date().getTime() / 1000 + "", 10),
-                id: chunk.message?.id || chunk.id || "",
-                model: chunk.message?.model || chunk.model || "",
+                id: streamId,
+                model: streamModel,
                 object: "chat.completion.chunk",
-                usage: toOpenAIUsage(streamInputUsage),
               };
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
@@ -377,17 +441,13 @@ export async function transformResponseOut(
                   },
                 ],
                 created: parseInt(new Date().getTime() / 1000 + "", 10),
-                id: chunk.id || "",
-                model: chunk.model || "",
+                id: chunk.id || streamId,
+                model: chunk.model || streamModel,
                 object: "chat.completion.chunk",
                 system_fingerprint: "fp_a49d71b8a1",
-                usage: {
-                  completion_tokens: chunk.usage?.output_tokens || 0,
-                  prompt_tokens: chunk.usage?.input_tokens || 0,
-                  total_tokens:
-                    (chunk.usage?.input_tokens || 0) +
-                    (chunk.usage?.output_tokens || 0),
-                },
+                ...(chunk.usage
+                  ? { usage: toOpenAIUsage(chunk.usage) }
+                  : {}),
               };
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
@@ -403,7 +463,9 @@ export async function transformResponseOut(
                     delta: {
                       tool_calls: [
                         {
-                          index: chunk.index || 0,
+                          index:
+                            toolBlockIndexes.get(Number(chunk.index || 0)) ??
+                            Number(chunk.index || 0),
                           function: {
                             arguments: chunk.delta.partial_json || "",
                           },
@@ -416,17 +478,13 @@ export async function transformResponseOut(
                   },
                 ],
                 created: parseInt(new Date().getTime() / 1000 + "", 10),
-                id: chunk.id || "",
-                model: chunk.model || "",
+                id: chunk.id || streamId,
+                model: chunk.model || streamModel,
                 object: "chat.completion.chunk",
                 system_fingerprint: "fp_a49d71b8a1",
-                usage: {
-                  completion_tokens: chunk.usage?.output_tokens || 0,
-                  prompt_tokens: chunk.usage?.input_tokens || 0,
-                  total_tokens:
-                    (chunk.usage?.input_tokens || 0) +
-                    (chunk.usage?.output_tokens || 0),
-                },
+                ...(chunk.usage
+                  ? { usage: toOpenAIUsage(chunk.usage) }
+                  : {}),
               };
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
@@ -449,17 +507,13 @@ export async function transformResponseOut(
                   },
                 ],
                 created: parseInt(new Date().getTime() / 1000 + "", 10),
-                id: chunk.id || "",
-                model: chunk.model || "",
+                id: chunk.id || streamId,
+                model: chunk.model || streamModel,
                 object: "chat.completion.chunk",
                 system_fingerprint: "fp_a49d71b8a1",
-                usage: {
-                  completion_tokens: chunk.usage?.output_tokens || 0,
-                  prompt_tokens: chunk.usage?.input_tokens || 0,
-                  total_tokens:
-                    (chunk.usage?.input_tokens || 0) +
-                    (chunk.usage?.output_tokens || 0),
-                },
+                ...(chunk.usage
+                  ? { usage: toOpenAIUsage(chunk.usage) }
+                  : {}),
               };
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
@@ -482,17 +536,13 @@ export async function transformResponseOut(
                   },
                 ],
                 created: parseInt(new Date().getTime() / 1000 + "", 10),
-                id: chunk.id || "",
-                model: chunk.model || "",
+                id: chunk.id || streamId,
+                model: chunk.model || streamModel,
                 object: "chat.completion.chunk",
                 system_fingerprint: "fp_a49d71b8a1",
-                usage: {
-                  completion_tokens: chunk.usage?.output_tokens || 0,
-                  prompt_tokens: chunk.usage?.input_tokens || 0,
-                  total_tokens:
-                    (chunk.usage?.input_tokens || 0) +
-                    (chunk.usage?.output_tokens || 0),
-                },
+                ...(chunk.usage
+                  ? { usage: toOpenAIUsage(chunk.usage) }
+                  : {}),
               };
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
@@ -502,13 +552,16 @@ export async function transformResponseOut(
               chunk.content_block?.type === "tool_use"
             ) {
               // Handle tool call start
+              const blockIndex = Number(chunk.index || 0);
+              const toolIndex = toolBlockIndexes.size;
+              toolBlockIndexes.set(blockIndex, toolIndex);
               const res = {
                 choices: [
                   {
                     delta: {
                       tool_calls: [
                         {
-                          index: chunk.index || 0,
+                          index: toolIndex,
                           id: chunk.content_block.id,
                           type: "function",
                           function: {
@@ -524,17 +577,13 @@ export async function transformResponseOut(
                   },
                 ],
                 created: parseInt(new Date().getTime() / 1000 + "", 10),
-                id: chunk.id || "",
-                model: chunk.model || "",
+                id: chunk.id || streamId,
+                model: chunk.model || streamModel,
                 object: "chat.completion.chunk",
                 system_fingerprint: "fp_a49d71b8a1",
-                usage: {
-                  completion_tokens: chunk.usage?.output_tokens || 0,
-                  prompt_tokens: chunk.usage?.input_tokens || 0,
-                  total_tokens:
-                    (chunk.usage?.input_tokens || 0) +
-                    (chunk.usage?.output_tokens || 0),
-                },
+                ...(chunk.usage
+                  ? { usage: toOpenAIUsage(chunk.usage) }
+                  : {}),
               };
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
@@ -546,20 +595,16 @@ export async function transformResponseOut(
                   {
                     delta: {},
                     finish_reason:
-                      chunk.delta?.stop_reason === "tool_use"
-                        ? "tool_calls"
-                        : chunk.delta?.stop_reason === "max_tokens"
-                          ? "length"
-                          : chunk.delta?.stop_reason === "stop_sequence"
-                            ? "content_filter"
-                            : "stop",
+                      anthropicStopReasonToOpenAI(
+                        chunk.delta?.stop_reason
+                      ) || "stop",
                     index: 0,
                     logprobs: null,
                   },
                 ],
                 created: parseInt(new Date().getTime() / 1000 + "", 10),
-                id: chunk.id || "",
-                model: chunk.model || "",
+                id: chunk.id || streamId,
+                model: chunk.model || streamModel,
                 object: "chat.completion.chunk",
                 system_fingerprint: "fp_a49d71b8a1",
                 usage: toOpenAIUsage({
@@ -573,6 +618,13 @@ export async function transformResponseOut(
             } else if (chunk.type === "message_stop") {
               // Send end marker
               controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+            } else if (
+              chunk.type === "content_block_start" ||
+              chunk.type === "content_block_stop" ||
+              chunk.type === "ping"
+            ) {
+              // Lifecycle-only Anthropic events have no Chat delta payload.
+              return;
             } else {
               // Handle other format responses (keep original logic as fallback)
               const res = {
@@ -582,23 +634,21 @@ export async function transformResponseOut(
                       role: "assistant",
                       content: chunk.content?.[0]?.text || "",
                     },
-                    finish_reason: chunk.stop_reason?.toLowerCase() || null,
+                    finish_reason: anthropicStopReasonToOpenAI(
+                      chunk.stop_reason
+                    ),
                     index: 0,
                     logprobs: null,
                   },
                 ],
                 created: parseInt(new Date().getTime() / 1000 + "", 10),
-                id: chunk.id || "",
-                model: chunk.model || "",
+                id: chunk.id || streamId,
+                model: chunk.model || streamModel,
                 object: "chat.completion.chunk",
                 system_fingerprint: "fp_a49d71b8a1",
-                usage: {
-                  completion_tokens: chunk.usage?.output_tokens || 0,
-                  prompt_tokens: chunk.usage?.input_tokens || 0,
-                  total_tokens:
-                    (chunk.usage?.input_tokens || 0) +
-                    (chunk.usage?.output_tokens || 0),
-                },
+                ...(chunk.usage
+                  ? { usage: toOpenAIUsage(chunk.usage) }
+                  : {}),
               };
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(res)}\n\n`)

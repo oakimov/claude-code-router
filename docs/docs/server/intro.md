@@ -4,9 +4,9 @@ title: Server Introduction
 
 # Server Introduction
 
-Claude Code Router Server is a core service component responsible for routing Claude Code API requests to different LLM providers. It provides a complete HTTP API with support for:
+Claude Code Router Server routes Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses requests to different LLM providers. It provides a complete HTTP API with support for:
 
-- **API Request Routing**: Convert Anthropic-format requests to various provider API formats
+- **API Request Routing**: Normalize supported client protocols, select a provider/model, and convert to the provider wire format
 - **Authentication & Authorization**: Support API Key authentication
 - **Configuration Management**: Dynamic configuration of providers, routing rules, and transformers
 - **Web UI**: Built-in management interface

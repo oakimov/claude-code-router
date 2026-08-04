@@ -1,8 +1,19 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { homedir } from "os";
+import { randomBytes } from "crypto";
 
-const CLAUDE_AUTH_FILE = join(homedir(), ".claude-code-router", "claude_auth.json");
+const DEFAULT_CLAUDE_AUTH_FILE = join(homedir(), ".claude-code-router", "claude_auth.json");
+const DEFAULT_CLAUDE_DEVICE_FILE = join(homedir(), ".claude-code-router", "claude_device.json");
+const DEVICE_ID_PATTERN = /^[0-9a-f]{64}$/;
+
+function getClaudeAuthFilePath(): string {
+  return process.env.CCR_CLAUDE_AUTH_FILE || DEFAULT_CLAUDE_AUTH_FILE;
+}
+
+function getClaudeDeviceFilePath(): string {
+  return process.env.CCR_CLAUDE_DEVICE_FILE || DEFAULT_CLAUDE_DEVICE_FILE;
+}
 
 const OAUTH_CONFIG = {
   client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
@@ -23,8 +34,9 @@ export interface ClaudeTokens {
 
 export function loadTokens(): ClaudeTokens | null {
   try {
-    if (!existsSync(CLAUDE_AUTH_FILE)) return null;
-    const data = readFileSync(CLAUDE_AUTH_FILE, "utf-8");
+    const authFile = getClaudeAuthFilePath();
+    if (!existsSync(authFile)) return null;
+    const data = readFileSync(authFile, "utf-8");
     const tokens = JSON.parse(data);
     if (!tokens.access_token) return null;
     return tokens as ClaudeTokens;
@@ -34,9 +46,10 @@ export function loadTokens(): ClaudeTokens | null {
 }
 
 export function saveTokens(tokens: ClaudeTokens): void {
-  const dir = join(homedir(), ".claude-code-router");
+  const authFile = getClaudeAuthFilePath();
+  const dir = dirname(authFile);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(CLAUDE_AUTH_FILE, JSON.stringify(tokens, null, 2), {
+  writeFileSync(authFile, JSON.stringify(tokens, null, 2), {
     mode: 0o600,
     encoding: "utf-8",
   });
@@ -96,4 +109,33 @@ export async function getValidAccessToken(): Promise<ClaudeTokens> {
   return tokens;
 }
 
-export { OAUTH_CONFIG, CLAUDE_AUTH_FILE };
+/**
+ * Load the persisted synthesized-client device id, minting and persisting a
+ * fresh 64-hex value on first use. Stored alongside the OAuth token file
+ * (mode 0600) but kept separate from it — it is not a credential.
+ */
+export function loadOrCreateDeviceId(): string {
+  const deviceFile = getClaudeDeviceFilePath();
+  try {
+    if (existsSync(deviceFile)) {
+      const data = JSON.parse(readFileSync(deviceFile, "utf-8"));
+      if (typeof data.device_id === "string" && DEVICE_ID_PATTERN.test(data.device_id)) {
+        return data.device_id;
+      }
+    }
+  } catch {
+    // Fall through and regenerate.
+  }
+
+  const deviceId = randomBytes(32).toString("hex");
+  const dir = dirname(deviceFile);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    deviceFile,
+    JSON.stringify({ device_id: deviceId }, null, 2),
+    { mode: 0o600, encoding: "utf-8" }
+  );
+  return deviceId;
+}
+
+export { OAUTH_CONFIG, getClaudeAuthFilePath, getClaudeDeviceFilePath };

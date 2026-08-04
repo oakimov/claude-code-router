@@ -7,6 +7,8 @@ title: API Overview
 Claude Code Router Server provides a complete HTTP API with support for:
 
 - **Messages API**: Message interface compatible with Anthropic Claude API
+- **Chat Completions API**: OpenAI-compatible chat interface
+- **Responses API**: OpenAI-compatible typed input/output interface
 - **Configuration API**: Read and update server configuration
 - **Logs API**: View and manage service logs
 - **Tools API**: Calculate token counts
@@ -15,7 +17,7 @@ Claude Code Router Server provides a complete HTTP API with support for:
 
 **Base URL**: `http://localhost:3456`
 
-**Authentication**: API Key (via `x-api-key` header)
+**Authentication**: API key via `Authorization: Bearer` or `x-api-key`
 
 ```bash
 curl -H "x-api-key: your-api-key" http://localhost:3456/api/config
@@ -29,6 +31,8 @@ curl -H "x-api-key: your-api-key" http://localhost:3456/api/config
 |----------|--------|-------------|
 | `/v1/messages` | POST | Send message (compatible with Anthropic API) |
 | `/v1/messages/count_tokens` | POST | Count tokens in messages |
+| `/v1/chat/completions` | POST | OpenAI Chat Completions (alias: `/chat/completions`) |
+| `/v1/responses` | POST | OpenAI Responses (alias: `/responses`) |
 
 ### Configuration Management
 
@@ -69,7 +73,7 @@ curl -X POST http://localhost:3456/v1/messages \
 
 ## Streaming Responses
 
-The Messages API supports streaming responses (Server-Sent Events):
+The Messages, Chat Completions, and Responses APIs support Server-Sent Events. Each route emits its native client protocol: Anthropic event names, Chat `chat.completion.chunk` records ending in `[DONE]`, or ordered `response.*` events ending in `response.completed`/`response.failed`.
 
 ```bash
 curl -X POST http://localhost:3456/v1/messages \

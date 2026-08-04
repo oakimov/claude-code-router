@@ -42,7 +42,8 @@ const encodeSafe = (text: string) => enc.encode(text, undefined, []);
 
 const CCR_SUBAGENT_MODEL_OPEN_TAG = "<CCR-SUBAGENT-MODEL>";
 const CCR_SUBAGENT_MODEL_CLOSE_TAG = "</CCR-SUBAGENT-MODEL>";
-const CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX = "x-anthropic-billing-header";
+export const CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX =
+  "x-anthropic-billing-header";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -61,7 +62,7 @@ export function normalizeModelSelector(
   return trimmed;
 }
 
-function claudeCodeBillingMetadataIsSubagent(text: string): boolean {
+export function claudeCodeBillingMetadataIsSubagent(text: string): boolean {
   const prefix = `${CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX}:`;
   if (!text.startsWith(prefix)) return false;
   const payload = text.slice(prefix.length).trim();
@@ -240,6 +241,34 @@ export function extractAndRemoveClaudeCodeSubagentModelTag(
   );
 }
 
+/** Read Claude Code's billing/subagent marker without mutating the source body. */
+export function inspectClaudeCodeBillingSystemHeader(body: any): {
+  present: boolean;
+  isSubagent: boolean;
+} {
+  const system = body?.system;
+  if (!Array.isArray(system) || system.length === 0) {
+    return { present: false, isSubagent: false };
+  }
+  const firstBlock = system[0];
+  const firstText =
+    typeof firstBlock === "string"
+      ? firstBlock
+      : isRecord(firstBlock) &&
+          firstBlock.type === "text" &&
+          typeof firstBlock.text === "string"
+        ? firstBlock.text
+        : undefined;
+  if (!firstText?.startsWith(CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX)) {
+    return { present: false, isSubagent: false };
+  }
+  return {
+    present: true,
+    isSubagent: claudeCodeBillingMetadataIsSubagent(firstText),
+  };
+}
+
+
 export const calculateTokenCount = (
   messages: MessageParam[],
   system: any,
@@ -330,6 +359,56 @@ const getProjectSpecificRouter = async (
   return undefined; // Return undefined to use original configuration
 };
 
+/**
+ * Routing body: prefer Unified projection when present so scenario detection
+ * does not interpret Responses wire shapes as Anthropic bodies.
+ */
+function routingBody(req: any): any {
+  return req.unifiedBody && typeof req.unifiedBody === "object"
+    ? req.unifiedBody
+    : req.body;
+}
+
+function isAnthropicClient(req: any): boolean {
+  return (
+    !req.clientProtocol || req.clientProtocol === "anthropic_messages"
+  );
+}
+
+function hasWebSearchTool(tools: any[] | undefined): boolean {
+  if (!Array.isArray(tools)) return false;
+  return tools.some((tool: any) => {
+    if (!tool || typeof tool !== "object") return false;
+    if (
+      typeof tool.type === "string" &&
+      (tool.type === "web_search" || tool.type.startsWith("web_search"))
+    ) {
+      return true;
+    }
+    const name =
+      tool.function?.name || tool.name || tool.function?.function?.name;
+    return (
+      typeof name === "string" &&
+      (name === "web_search" || name.toLowerCase() === "websearch")
+    );
+  });
+}
+
+function hasThinkSignal(body: any): boolean {
+  if (body?.thinking) return true;
+  const reasoning = body?.reasoning;
+  if (reasoning && typeof reasoning === "object") {
+    if (reasoning.enabled === true) return true;
+    if (
+      typeof reasoning.effort === "string" &&
+      reasoning.effort.trim().length > 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const getUseModel = async (
   req: any,
   tokenCount: number,
@@ -339,28 +418,77 @@ const getUseModel = async (
   const projectSpecificRouter = await getProjectSpecificRouter(req, configService);
   const providers = configService.get<any[]>("providers") || [];
   const Router = projectSpecificRouter || configService.get("Router");
+  const body = routingBody(req);
+  const modelValue =
+    typeof body?.model === "string" ? body.model : String(body?.model ?? "");
 
-  if (req.body.model.includes(",")) {
-    const [provider, model] = req.body.model.split(",");
+  if (modelValue.includes(",")) {
+    const [provider, model] = modelValue.split(",");
     const finalProvider = providers.find(
-      (p: any) => p.name.toLowerCase() === provider
+      (p: any) => p.name.toLowerCase() === provider.toLowerCase()
     );
     const finalModel = finalProvider?.models?.find(
-      (m: any) => m.toLowerCase() === model
+      (m: any) => m.toLowerCase() === model.toLowerCase()
     );
     if (finalProvider && finalModel) {
       return { model: `${finalProvider.name},${finalModel}`, scenarioType: 'default' };
     }
-    return { model: req.body.model, scenarioType: 'default' };
+    return { model: modelValue, scenarioType: 'default' };
   }
 
-  // if tokenCount is greater than the configured threshold, use the long context model
+  // Scenario precedence: explicit provider,model (above) → subagent →
+  // background → webSearch → think → longContext → default. The long-context
+  // check intentionally runs after the higher-priority scenarios so a large
+  // subagent/background/web-search/thinking request keeps its scenario route.
   const longContextThreshold = Router?.longContextThreshold || 60000;
   const lastUsageThreshold =
     lastUsage &&
     lastUsage.input_tokens > longContextThreshold &&
     tokenCount > 20000;
   const tokenCountThreshold = tokenCount > longContextThreshold;
+
+  // subagent / background: Anthropic Messages clients only (Claude Code signals).
+  if (isAnthropicClient(req)) {
+    const taggedSubagentModel = req.protocolContext?.taggedSubagentModel;
+    const isClaudeCodeSubagent =
+      req.protocolContext?.claudeCodeSubagent === true;
+    if (taggedSubagentModel) {
+      req.log.info(`Using CCR subagent tag model: ${taggedSubagentModel}`);
+      return { model: taggedSubagentModel, scenarioType: 'subagent' };
+    }
+    if (isClaudeCodeSubagent) {
+      const envModel = normalizeModelSelector(
+        process.env.CLAUDE_CODE_SUBAGENT_MODEL
+      );
+      if (envModel) {
+        req.log.info(
+          `Using CLAUDE_CODE_SUBAGENT_MODEL for Claude Code subagent: ${envModel}`
+        );
+        return { model: envModel, scenarioType: 'subagent' };
+      }
+    }
+
+    const globalRouter = configService.get("Router");
+    if (
+      modelValue?.includes("claude") &&
+      modelValue?.includes("haiku") &&
+      globalRouter?.background
+    ) {
+      req.log.info(`Using background model for ${modelValue}`);
+      return { model: globalRouter.background, scenarioType: 'background' };
+    }
+  }
+
+  // The priority of websearch must be higher than thinking.
+  if (hasWebSearchTool(body?.tools) && Router?.webSearch) {
+    return { model: Router.webSearch, scenarioType: 'webSearch' };
+  }
+  if (hasThinkSignal(body) && Router?.think) {
+    req.log.info(`Using think model for reasoning/thinking request`);
+    return { model: Router.think, scenarioType: 'think' };
+  }
+
+  // if tokenCount is greater than the configured threshold, use the long context model
   if ((lastUsageThreshold || tokenCountThreshold) && Router?.longContext) {
     req.log.info(
       `Using long context model due to token count: ${tokenCount}, threshold: ${longContextThreshold}`
@@ -368,52 +496,9 @@ const getUseModel = async (
     return { model: Router.longContext, scenarioType: 'longContext' };
   }
 
-  // Claude Code subagent signals: strip billing helper system text, then prefer
-  // explicit <CCR-SUBAGENT-MODEL> tag, else CLAUDE_CODE_SUBAGENT_MODEL env.
-  const isClaudeCodeSubagent = removeClaudeCodeBillingSystemHeader(req.body);
-  const taggedSubagentModel = extractAndRemoveClaudeCodeSubagentModelTag(req.body);
-  if (taggedSubagentModel) {
-    req.log.info(`Using CCR subagent tag model: ${taggedSubagentModel}`);
-    return { model: taggedSubagentModel, scenarioType: 'subagent' };
-  }
-  if (isClaudeCodeSubagent) {
-    const envModel = normalizeModelSelector(
-      process.env.CLAUDE_CODE_SUBAGENT_MODEL
-    );
-    if (envModel) {
-      req.log.info(
-        `Using CLAUDE_CODE_SUBAGENT_MODEL for Claude Code subagent: ${envModel}`
-      );
-      return { model: envModel, scenarioType: 'subagent' };
-    }
-  }
-
-  // Use the background model for any Claude Haiku variant
-  const globalRouter = configService.get("Router");
-  if (
-    req.body.model?.includes("claude") &&
-    req.body.model?.includes("haiku") &&
-    globalRouter?.background
-  ) {
-    req.log.info(`Using background model for ${req.body.model}`);
-    return { model: globalRouter.background, scenarioType: 'background' };
-  }
-  // The priority of websearch must be higher than thinking.
-  if (
-    Array.isArray(req.body.tools) &&
-    req.body.tools.some((tool: any) => tool.type?.startsWith("web_search")) &&
-    Router?.webSearch
-  ) {
-    return { model: Router.webSearch, scenarioType: 'webSearch' };
-  }
-  // if exits thinking, use the think model
-  if (req.body.thinking && Router?.think) {
-    req.log.info(`Using think model for ${req.body.thinking}`);
-    return { model: Router.think, scenarioType: 'think' };
-  }
   // No scenario matched and no default route is configured: keep the
   // caller's original model instead of wiping it out.
-  return { model: Router?.default || req.body.model, scenarioType: 'default' };
+  return { model: Router?.default || modelValue, scenarioType: 'default' };
 };
 
 export interface RouterContext {
@@ -463,55 +548,53 @@ const parseSessionId = (userId: unknown): string | undefined => {
 
 export const router = async (req: any, _res: any, context: RouterContext) => {
   const { configService, event } = context;
-  req.sessionId = parseSessionId(req.body.metadata?.user_id);
+  const body = routingBody(req);
+
+  // Session identity: Anthropic metadata.user_id, or Unified metadata if present.
+  const sessionSource =
+    req.body?.metadata?.user_id ?? body?.metadata?.user_id;
+  req.sessionId = parseSessionId(sessionSource);
   const lastMessageUsage = sessionUsageCache.get(req.sessionId);
-  const { messages, system = [], tools }: MessageCreateParamsBase = req.body;
-  const rewritePrompt = configService.get("REWRITE_SYSTEM_PROMPT");
-  if (
-    rewritePrompt &&
-    system.length > 1 &&
-    system[1]?.text?.includes("<env>")
-  ) {
-    const prompt = await readFile(rewritePrompt, "utf-8");
-    system[1].text = `${prompt}<env>${system[1].text.split("<env>").pop()}`;
-  }
+
+  // Token counting always uses the Unified projection when available.
+  const messages = (body.messages || []) as MessageParam[];
+  const system = body.system ?? [];
+  const tools = (body.tools || []) as Tool[];
 
   try {
-    // Try to get tokenizer config for the current model
-    const [providerName, modelName] = req.body.model.split(",");
+    const modelForTokenizer =
+      typeof body.model === "string" ? body.model : String(body.model ?? "");
+    const [providerName, modelName] = modelForTokenizer.split(",");
     const tokenizerConfig = context.tokenizerService?.getTokenizerConfigForModel(
       providerName,
       modelName
     );
 
-    // Use TokenizerService if available, otherwise fall back to legacy method
     let tokenCount: number;
 
     if (context.tokenizerService) {
       const result = await context.tokenizerService.countTokens(
         {
-          messages: messages as MessageParam[],
+          messages,
           system,
-          tools: tools as Tool[],
+          tools,
         },
         tokenizerConfig
       );
       tokenCount = result.tokenCount;
     } else {
-      // Legacy fallback
-      tokenCount = calculateTokenCount(
-        messages as MessageParam[],
-        system,
-        tools as Tool[]
-      );
+      tokenCount = calculateTokenCount(messages, system, tools);
     }
+
+    req.tokenCount = tokenCount;
 
     let model;
     const customRouterPath = configService.get("CUSTOM_ROUTER_PATH");
     if (customRouterPath) {
       try {
         const customRouter = require(customRouterPath);
-        req.tokenCount = tokenCount; // Pass token count to custom router
+        // Anthropic custom routers continue to receive original Anthropic req.body.
+        // Multi-protocol routers can read req.clientProtocol / req.unifiedBody.
         model = await customRouter(req, configService.getAll(), {
           event,
         });
@@ -520,21 +603,32 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
       }
     }
     if (!model) {
-      const result = await getUseModel(req, tokenCount, configService, lastMessageUsage);
+      const result = await getUseModel(
+        req,
+        tokenCount,
+        configService,
+        lastMessageUsage
+      );
       model = result.model;
       req.scenarioType = result.scenarioType;
     } else {
-      // Custom router doesn't provide scenario type, default to 'default'
-      req.scenarioType = 'default';
+      req.scenarioType = "default";
     }
-    req.body.model = model;
+
+    // Apply selected model to canonical Unified. Do not mutate immutable client wire provenance.
+    body.model = model;
+    if (req.unifiedBody && typeof req.unifiedBody === "object") {
+      req.unifiedBody.model = model;
+    }
   } catch (error: any) {
     req.log.error(`Error in router middleware: ${error.message}`);
     const Router = configService.get("Router");
-    // Fall back to the caller's original model rather than wiping it out
-    // when no default route is configured.
-    req.body.model = Router?.default || req.body.model;
-    req.scenarioType = 'default';
+    const fallbackModel = Router?.default || body.model;
+    body.model = fallbackModel;
+    if (req.unifiedBody && typeof req.unifiedBody === "object") {
+      req.unifiedBody.model = fallbackModel;
+    }
+    req.scenarioType = "default";
   }
   return;
 };

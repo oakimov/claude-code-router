@@ -1,5 +1,7 @@
 import { UnifiedChatRequest, MessageContent } from "@/types/llm";
-import { Transformer } from "@/types/transformer";
+import { Transformer, TransformerContext } from "@/types/transformer";
+import { createApiError } from "@/api/middleware";
+import { sanitizeUpstreamErrorText } from "@/utils/redact";
 import { sanitizeResponsesCallId } from "@/utils/toolCallId";
 import {
   applyOpenAIChatCaching,
@@ -7,6 +9,16 @@ import {
   openAIContentCacheBreakpoint,
 } from "../utils/openai.util";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
+import {
+  createCallIdMap,
+  createResponsesStreamState,
+  finalizeResponsesStream,
+  responsesFailedEvent,
+  responsesRequestToUnified,
+  unifiedChunkToResponsesEvents,
+  unifiedResponseToResponses,
+  type ResponsesCallIdMap,
+} from "../utils/openai.responses.util";
 
 interface ResponsesAPIOutputItem {
   type: string;
@@ -73,6 +85,12 @@ interface ResponsesStreamEvent {
   response?: {
     id?: string;
     model?: string;
+    status?: string;
+    error?: {
+      message?: string;
+      type?: string;
+      code?: string;
+    };
     output?: Array<{
       type: string;
     }>;
@@ -101,21 +119,231 @@ export class OpenAIResponsesTransformer implements Transformer {
   name = "openai-responses";
   endPoint = "/v1/responses";
 
+  /**
+   * Client → Unified: validate Responses MVP and project to Chat Completions shape.
+   * Call-id mapping is stored on the transformer context for the response path.
+   */
+  async transformRequestOut(
+    request: any,
+    context?: TransformerContext
+  ): Promise<UnifiedChatRequest> {
+    const callIdMap = createCallIdMap();
+    if (context) {
+      (context as any).responsesCallIdMap = callIdMap;
+      if ((context as any).protocolContext) {
+        (context as any).protocolContext.responsesCallIdMap = callIdMap;
+      }
+    }
+    return responsesRequestToUnified(request, callIdMap);
+  }
+
+  /**
+   * Unified → client Responses: JSON object or SSE lifecycle with mandatory
+   * content_part events (Codex requires these or streamed text is discarded).
+   */
+  async transformResponseIn(
+    response: Response,
+    context?: TransformerContext
+  ): Promise<Response> {
+    const callIdMap: ResponsesCallIdMap =
+      (context as any)?.responsesCallIdMap ||
+      (context as any)?.protocolContext?.responsesCallIdMap ||
+      (context as any)?.req?.protocolContext?.responsesCallIdMap ||
+      createCallIdMap();
+    const originalModel =
+      (context as any)?.protocolContext?.originalModel ||
+      (context as any)?.req?.protocolContext?.originalModel;
+
+    const contentType = response.headers.get("Content-Type") || "";
+    if (contentType.includes("application/json")) {
+      const json: any = await response.json();
+      // Already a Responses object (same-protocol passthrough).
+      if (json?.object === "response") {
+        return new Response(JSON.stringify(json), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      }
+      const responsesBody = unifiedResponseToResponses(json, {
+        originalModel,
+        callIdMap,
+      });
+      return new Response(JSON.stringify(responsesBody), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
+
+    if (contentType.includes("text/event-stream")) {
+      return this.convertUnifiedStreamToResponses(response, {
+        callIdMap,
+        originalModel,
+      });
+    }
+
+    return response;
+  }
+
+  private convertUnifiedStreamToResponses(
+    response: Response,
+    options: { callIdMap: ResponsesCallIdMap; originalModel?: string }
+  ): Response {
+    if (!response.body) return response;
+
+    const state = createResponsesStreamState({
+      model: options.originalModel,
+      callIdMap: options.callIdMap,
+    });
+
+    return createSSEStreamReader(
+      response,
+      (line: string, ctx: StreamContext) => {
+        if (state.finished) return;
+        if (!line.trim()) return;
+        if (line.startsWith("event: ")) return;
+
+        if (!line.startsWith("data: ")) {
+          // SSE comments are transport keepalives. Any other non-data payload
+          // is malformed for the supported Responses compatibility stream.
+          if (!line.startsWith(":")) {
+            const failed = responsesFailedEvent(
+              "Malformed upstream SSE event",
+              state
+            );
+            ctx.controller.enqueue(
+              encodeSSEData(JSON.stringify(failed), ctx.encoder)
+            );
+            state.finished = true;
+          }
+          return;
+        }
+
+        const dataStr = line.slice(5).trim();
+        if (dataStr === "[DONE]") {
+          if (!state.finished) {
+            for (const event of finalizeResponsesStream(state)) {
+              ctx.controller.enqueue(
+                encodeSSEData(JSON.stringify(event), ctx.encoder)
+              );
+            }
+          }
+          // Responses streams do not require Chat Completions' [DONE].
+          return;
+        }
+
+        try {
+          const data = JSON.parse(dataStr);
+
+          // Upstream already speaking Responses — pass through.
+          if (typeof data?.type === "string" && data.type.startsWith("response.")) {
+            ctx.controller.enqueue(
+              encodeSSEData(JSON.stringify(data), ctx.encoder)
+            );
+            if (data.type === "response.completed" || data.type === "response.failed") {
+              state.finished = true;
+            }
+            return;
+          }
+
+          // Provider error object mid-stream.
+          if (data?.error && !data?.choices) {
+            const failed = responsesFailedEvent(
+              sanitizeUpstreamErrorText(
+                String(data.error.message || data.error)
+              ) || "Upstream stream failed",
+              state
+            );
+            ctx.controller.enqueue(
+              encodeSSEData(JSON.stringify(failed), ctx.encoder)
+            );
+            state.finished = true;
+            return;
+          }
+
+          const events = unifiedChunkToResponsesEvents(data, state);
+          for (const event of events) {
+            ctx.controller.enqueue(
+              encodeSSEData(JSON.stringify(event), ctx.encoder)
+            );
+          }
+        } catch {
+          const failed = responsesFailedEvent(
+            "Malformed JSON in upstream SSE event",
+            state
+          );
+          ctx.controller.enqueue(
+            encodeSSEData(JSON.stringify(failed), ctx.encoder)
+          );
+          state.finished = true;
+        }
+      },
+      {
+        onComplete: (ctx: StreamContext) => {
+          if (!state.finished) {
+            for (const event of finalizeResponsesStream(state)) {
+              ctx.controller.enqueue(
+                encodeSSEData(JSON.stringify(event), ctx.encoder)
+              );
+            }
+          }
+        },
+        onError: (error: unknown, ctx: StreamContext) => {
+          if (!state.finished) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            const failed = responsesFailedEvent(
+              sanitizeUpstreamErrorText(message) || "Upstream stream failed",
+              state
+            );
+            ctx.controller.enqueue(
+              encodeSSEData(JSON.stringify(failed), ctx.encoder)
+            );
+            state.finished = true;
+          }
+          return true;
+        },
+        logger: this.logger,
+      }
+    );
+  }
+
   async transformRequestIn(
     request: UnifiedChatRequest,
     provider?: any,
     context?: any
   ): Promise<UnifiedChatRequest> {
-    delete request.temperature;
+    request = structuredClone(request);
+    const tokenLimit =
+      request.max_tokens ?? (request as any).max_completion_tokens;
+    if (tokenLimit != null) {
+      (request as any).max_output_tokens = tokenLimit;
+    }
     delete request.max_tokens;
+    delete (request as any).max_completion_tokens;
 
     if (request.reasoning) {
       request.reasoning = {
-        effort: request.reasoning.effort,
-        // @ts-expect-error - summary is specific to this API
-        summary: "detailed",
+        ...(request.reasoning.effort
+          ? { effort: request.reasoning.effort }
+          : {}),
+        ...((request.reasoning as any).summary
+          ? { summary: (request.reasoning as any).summary }
+          : {}),
       };
     }
+    if ((request as any).stop !== undefined) {
+      throw createApiError(
+        "stop cannot be represented by the Responses API provider adapter",
+        400,
+        "unsupported_stop",
+        "invalid_request_error"
+      );
+    }
+    // Chat's include_usage request is unnecessary for Responses: terminal
+    // response events carry usage when the provider reports it.
+    delete (request as any).stream_options;
 
     const model = request.model || "";
     request = applyOpenAIChatCaching(request, provider, context);
@@ -129,10 +357,9 @@ export class OpenAIResponsesTransformer implements Transformer {
     const systemMessages = request.messages.filter(
       (msg) => msg.role === "system"
     );
-    if (systemMessages.length > 0) {
-      const firstSystem = systemMessages[0];
-      if (Array.isArray(firstSystem.content)) {
-        firstSystem.content.forEach((item) => {
+    systemMessages.forEach((systemMessage, systemIndex) => {
+      if (Array.isArray(systemMessage.content)) {
+        systemMessage.content.forEach((item) => {
           let text = "";
           if (typeof item === "string") {
             text = item;
@@ -150,10 +377,17 @@ export class OpenAIResponsesTransformer implements Transformer {
             ],
           });
         });
+      } else if (systemIndex === 0) {
+        (request as any).instructions = systemMessage.content;
       } else {
-        (request as any).instructions = firstSystem.content;
+        input.push({
+          role: "system",
+          content: [
+            { type: "input_text", text: String(systemMessage.content || "") },
+          ],
+        });
       }
-    }
+    });
 
     request.messages.forEach((message) => {
       if (message.role === "system") return;
@@ -194,6 +428,11 @@ export class OpenAIResponsesTransformer implements Transformer {
           (typeof message.content === "string" ||
             (Array.isArray(message.content) && message.content.length > 0));
         lastWasTool = false;
+        if (hasContent) {
+          const contentMessage: any = { ...message };
+          delete contentMessage.tool_calls;
+          input.push(contentMessage);
+        }
         message.tool_calls.forEach((tool) => {
           input.push({
             type: "function_call",
@@ -203,9 +442,6 @@ export class OpenAIResponsesTransformer implements Transformer {
           });
         });
 
-        if (hasContent) {
-          // Keep the message content in the message object for the Responses API
-        }
         return;
       }
 
@@ -225,14 +461,16 @@ export class OpenAIResponsesTransformer implements Transformer {
 
     if (Array.isArray(request.tools)) {
       const webSearch = request.tools.find(
-        (tool) => tool.function.name === "web_search"
+        (tool: any) => tool?.type === "web_search"
       );
 
       (request as any).tools = request.tools
-        .filter((tool) => tool.function.name !== "web_search")
-        .map((tool) => {
+        .filter((tool: any) => tool?.type !== "web_search")
+        .map((tool: any) => {
           if (tool.function.name === "WebSearch") {
-            delete tool.function.parameters.properties.allowed_domains;
+            if (tool.function.parameters?.properties) {
+              delete tool.function.parameters.properties.allowed_domains;
+            }
           }
           if (tool.function.name === "Edit") {
             return {
@@ -261,12 +499,22 @@ export class OpenAIResponsesTransformer implements Transformer {
 
       if (webSearch) {
         (request as any).tools.push({
+          ...webSearch,
           type: "web_search",
         });
       }
     }
 
-    request.parallel_tool_calls = false;
+    if (
+      request.tool_choice &&
+      typeof request.tool_choice === "object" &&
+      request.tool_choice.type === "function"
+    ) {
+      (request as any).tool_choice = {
+        type: "function",
+        name: request.tool_choice.function?.name,
+      };
+    }
 
     return request;
   }
@@ -296,20 +544,42 @@ export class OpenAIResponsesTransformer implements Transformer {
         return response;
       }
 
-      let currentIndex = -1;
-      let lastEventType = "";
+      // Stream state scoped to this one upstream response. Tool identity is
+      // keyed by the Responses item id (falling back to output_index), never
+      // inferred from event-type transitions, so interleaved parallel calls
+      // keep stable Chat tool indexes.
+      const toolIndexByKey = new Map<string, number>();
+      let nextToolIndex = 0;
+      let terminated = false;
 
-      const getCurrentIndex = (eventType: string) => {
-        if (eventType !== lastEventType) {
-          currentIndex++;
-          lastEventType = eventType;
+      const toolIndexFor = (
+        data: ResponsesStreamEvent
+      ): number => {
+        const key =
+          data.item_id ||
+          data.item?.id ||
+          (typeof data.output_index === "number"
+            ? `output:${data.output_index}`
+            : undefined);
+        if (key !== undefined) {
+          const existing = toolIndexByKey.get(key);
+          if (existing !== undefined) return existing;
+          const index = nextToolIndex++;
+          toolIndexByKey.set(key, index);
+          return index;
         }
-        return currentIndex;
+        return nextToolIndex++;
+      };
+
+      const terminate = () => {
+        terminated = true;
+        toolIndexByKey.clear();
       };
 
       return createSSEStreamReader(
         response,
         (line: string, ctx: StreamContext) => {
+          if (terminated) return;
           if (!line.trim()) return;
 
           if (line.startsWith("event: ")) return;
@@ -318,14 +588,54 @@ export class OpenAIResponsesTransformer implements Transformer {
             const dataStr = line.slice(5).trim();
             if (dataStr === "[DONE]") {
               ctx.controller.enqueue(encodeSSEData("[DONE]", ctx.encoder));
+              terminate();
               return;
             }
 
             try {
               const data: ResponsesStreamEvent = JSON.parse(dataStr);
-              const chunk = this.convertStreamEvent(data, getCurrentIndex);
+
+              // Terminal provider failure: emit one protocol-shaped streamed
+              // error, then [DONE]. Partial output already delivered stays
+              // delivered, but the stream must never end looking like a
+              // successful empty completion.
+              if (data.type === "response.failed") {
+                terminate();
+                const failed = data.response?.error ?? {};
+                const message =
+                  sanitizeUpstreamErrorText(
+                    String(failed.message || "Upstream response failed")
+                  ) || "Upstream response failed";
+                ctx.controller.enqueue(
+                  encodeSSEData(
+                    JSON.stringify({
+                      error: {
+                        message,
+                        type:
+                          typeof failed.type === "string"
+                            ? failed.type
+                            : "api_error",
+                        code:
+                          typeof failed.code === "string" ? failed.code : null,
+                      },
+                    }),
+                    ctx.encoder
+                  )
+                );
+                ctx.controller.enqueue(encodeSSEData("[DONE]", ctx.encoder));
+                return;
+              }
+
+              const chunk = this.convertStreamEvent(data, toolIndexFor);
               if (chunk) {
                 ctx.controller.enqueue(encodeSSEData(JSON.stringify(chunk), ctx.encoder));
+              }
+
+              // Responses upstreams end after response.completed without a
+              // [DONE]; Chat consumers rely on the terminator, so add it.
+              if (data.type === "response.completed") {
+                ctx.controller.enqueue(encodeSSEData("[DONE]", ctx.encoder));
+                terminate();
               }
             } catch {
               ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
@@ -340,7 +650,12 @@ export class OpenAIResponsesTransformer implements Transformer {
     return response;
   }
 
-  private convertStreamEvent(data: ResponsesStreamEvent, getCurrentIndex: (type: string) => number): any | null {
+  /**
+   * Convert one Responses stream event to a Chat chunk. `choices[0].index` is
+   * always 0 — parallel-call identity lives in `delta.tool_calls[n].index`,
+   * allocated per Responses item by `toolIndexFor`.
+   */
+  private convertStreamEvent(data: ResponsesStreamEvent, toolIndexFor: (data: ResponsesStreamEvent) => number): any | null {
     if (data.type === "response.output_text.delta") {
       return {
         id: data.item_id || "chatcmpl-" + Date.now(),
@@ -349,7 +664,7 @@ export class OpenAIResponsesTransformer implements Transformer {
         model: data.response?.model,
         choices: [
           {
-            index: getCurrentIndex(data.type),
+            index: 0,
             delta: {
               content: data.delta || "",
             },
@@ -367,12 +682,12 @@ export class OpenAIResponsesTransformer implements Transformer {
         model: data.response?.model || "gpt-5-codex-",
         choices: [
           {
-            index: getCurrentIndex(data.type),
+            index: 0,
             delta: {
               role: "assistant",
               tool_calls: [
                 {
-                  index: 0,
+                  index: toolIndexFor(data),
                   id:
                     sanitizeResponsesCallId(
                       data.item.call_id || data.item.id
@@ -416,7 +731,7 @@ export class OpenAIResponsesTransformer implements Transformer {
           model: data.response?.model,
           choices: [
             {
-              index: getCurrentIndex(data.type),
+              index: 0,
               delta,
               finish_reason: null,
             },
@@ -434,7 +749,7 @@ export class OpenAIResponsesTransformer implements Transformer {
         model: data.response?.model || "gpt-5-codex",
         choices: [
           {
-            index: getCurrentIndex(data.type),
+            index: 0,
             delta: {
               annotations: [
                 {
@@ -463,11 +778,11 @@ export class OpenAIResponsesTransformer implements Transformer {
         model: data.response?.model || "gpt-5-codex-",
         choices: [
           {
-            index: getCurrentIndex(data.type),
+            index: 0,
             delta: {
               tool_calls: [
                 {
-                  index: 0,
+                  index: toolIndexFor(data),
                   function: {
                     arguments: data.delta || "",
                   },
@@ -526,7 +841,7 @@ export class OpenAIResponsesTransformer implements Transformer {
         model: data.response?.model,
         choices: [
           {
-            index: getCurrentIndex(data.type),
+            index: 0,
             delta: {
               thinking: {
                 content: data.delta || "",
@@ -546,7 +861,7 @@ export class OpenAIResponsesTransformer implements Transformer {
         model: data.response?.model,
         choices: [
           {
-            index: getCurrentIndex(data.type),
+            index: 0,
             delta: {
               thinking: {
                 signature: data.item_id,
@@ -595,7 +910,9 @@ export class OpenAIResponsesTransformer implements Transformer {
     const messageOutput = responseData.output?.find(
       (item) => item.type === "message"
     );
-    const functionCallOutput = responseData.output?.find(
+    // Every function_call output survives, in source order — parallel calls
+    // must not collapse into the first one found.
+    const functionCallOutputs = (responseData.output ?? []).filter(
       (item) => item.type === "function_call"
     );
     let annotations;
@@ -617,7 +934,7 @@ export class OpenAIResponsesTransformer implements Transformer {
       });
     }
 
-    this.logger.debug({
+    this.logger?.debug?.({
       data: annotations,
       type: "url_citation",
     });
@@ -673,20 +990,18 @@ export class OpenAIResponsesTransformer implements Transformer {
       }
     }
 
-    if (functionCallOutput) {
-      toolCalls = [
-        {
-          id:
-            sanitizeResponsesCallId(
-              functionCallOutput.call_id || functionCallOutput.id
-            ) || functionCallOutput.call_id || functionCallOutput.id,
-          function: {
-            name: functionCallOutput.name,
-            arguments: functionCallOutput.arguments,
-          },
-          type: "function",
+    if (functionCallOutputs.length > 0) {
+      toolCalls = functionCallOutputs.map((call) => ({
+        id:
+          sanitizeResponsesCallId(call.call_id || call.id) ||
+          call.call_id ||
+          call.id,
+        function: {
+          name: call.name,
+          arguments: call.arguments,
         },
-      ];
+        type: "function",
+      }));
     }
 
     return {

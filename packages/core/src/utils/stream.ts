@@ -1,5 +1,6 @@
 import { SSEParserTransform, SSESerializerTransform } from "./sse";
 import { isClientAbortError, isProviderNetworkError } from "./retry";
+import { preserveUpstreamResponseHeaders } from "./headers";
 
 export interface StreamContext {
   controller: ReadableStreamDefaultController;
@@ -44,6 +45,8 @@ export function createSSEStreamReader(
   options?: {
     bufferSize?: number;
     onComplete?: (context: StreamContext) => void;
+    /** Return true when the protocol adapter emitted its own terminal error. */
+    onError?: (error: unknown, context: StreamContext) => boolean | void;
     logger?: any;
   }
 ): Response {
@@ -99,11 +102,22 @@ export function createSSEStreamReader(
         // Our own cancel() rejects the pending read and already terminates the
         // controller — erroring it again would throw. Any other failure must
         // still reach the consumer, or it hangs waiting for bytes.
-        streamFailed = true;
         if (!cancelled) {
           const normalized = normalizeStreamError(error);
           (options?.logger?.error ?? console.error)("Stream error:", normalized);
-          controller.error(normalized);
+          let handled = false;
+          try {
+            handled = options?.onError?.(normalized, ctx) === true;
+          } catch (handlerError) {
+            (options?.logger?.error ?? console.error)(
+              "Stream error handler failed:",
+              handlerError
+            );
+          }
+          streamFailed = !handled;
+          if (!handled) {
+            controller.error(normalized);
+          }
         }
       } finally {
         upstreamReader = null;
@@ -140,6 +154,7 @@ export function createSSEStreamReader(
     status: response.status,
     statusText: response.statusText,
     headers: {
+      ...preserveUpstreamResponseHeaders(response.headers),
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
