@@ -38,6 +38,15 @@ function sanitizerContract() {
   const long = sanitizeToolCallId("x".repeat(300) + "\n" + "y".repeat(50))!;
   assert.ok(long.length <= 256);
   assert.match(long, ANTHROPIC_PATTERN);
+
+  // Trailing-underscore runs trim without the backtracking `/_+$/` regex
+  // (ReDoS-safe; same fix as sanitizeResponsesCallId).
+  const underscored = sanitizeToolCallId(`${"a".repeat(200)}${"_".repeat(500)}`)!;
+  assert.equal(underscored, "a".repeat(200));
+  assert.equal(
+    sanitizeToolCallId(`${"a".repeat(200)}${"_".repeat(500)}`),
+    underscored
+  );
 }
 
 /**

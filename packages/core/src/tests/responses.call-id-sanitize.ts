@@ -32,6 +32,24 @@ function sanitizerContract() {
   assert.equal(sanitizeResponsesCallId(undefined), undefined);
 }
 
+function redosAdversarialInputIsLinear() {
+  // `/_+$/` is quadratic on a run of "_" followed by a non-underscore: the
+  // engine re-scans the run for every start position. A client-supplied call
+  // id of unbounded length must sanitize in linear time (CodeQL
+  // js/polynomial-redos). The fixed implementation trims without a regex.
+  const adversarial = `${"_".repeat(1_000_000)}x`;
+  const started = performance.now();
+  const result = sanitizeResponsesCallId(adversarial)!;
+  const elapsed = performance.now() - started;
+
+  assert.match(result, RESPONSES_CALL_ID_PATTERN);
+  assert.equal(sanitizeResponsesCallId(adversarial), result); // idempotent
+  assert.ok(
+    elapsed < 2000,
+    `ReDoS regression: sanitizeResponsesCallId took ${elapsed.toFixed(0)}ms`
+  );
+}
+
 async function perTurnMapAvoidsSanitizedCollisions() {
   const { createCallIdMap, mapCallId } = await import(
     "../utils/openai.responses.util"
@@ -301,6 +319,7 @@ async function clientBoundCallIdsAreMapped() {
 
 async function main() {
   sanitizerContract();
+  redosAdversarialInputIsLinear();
   await perTurnMapAvoidsSanitizedCollisions();
   await codexRequestIsSanitized();
   await openAIResponsesRequestIsSanitized();

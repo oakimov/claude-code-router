@@ -25,6 +25,20 @@ function isConformingId(id: string): boolean {
   );
 }
 
+/**
+ * Remove trailing `_` characters without a backtracking regex.
+ *
+ * `/_+$/` is quadratic on strings of many underscores followed by a
+ * non-underscore: the engine re-scans the run for every possible start
+ * position. Callers feed this client-controlled ids of unbounded length, so
+ * the trim must not depend on regex backtracking.
+ */
+function trimTrailingUnderscores(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x5f) end--;
+  return value.slice(0, end);
+}
+
 export function isValidAnthropicToolCallId(id: unknown): id is string {
   return typeof id === "string" && isConformingId(id);
 }
@@ -46,11 +60,11 @@ export function sanitizeToolCallId(id: unknown): string | undefined {
   if (typeof id !== "string" || id.length === 0) return undefined;
   if (isConformingId(id)) return id;
 
-  const cleaned = id
-    .replace(ANTHROPIC_TOOL_ID_DISALLOWED, "_")
-    .slice(0, MAX_TOOL_ID_LENGTH)
-    // A trailing "_" from truncation carries no information.
-    .replace(/_+$/, "");
+  const cleaned = trimTrailingUnderscores(
+    id
+      .replace(ANTHROPIC_TOOL_ID_DISALLOWED, "_")
+      .slice(0, MAX_TOOL_ID_LENGTH)
+  );
 
   return cleaned.length ? cleaned : undefined;
 }
@@ -80,13 +94,12 @@ export function sanitizeResponsesCallId(id: unknown): string | undefined {
   if (typeof id !== "string" || id.length === 0) return undefined;
   if (isConformingResponsesCallId(id)) return id;
 
-  const normalized = id
-    .replace(ANTHROPIC_TOOL_ID_DISALLOWED, "_")
-    .replace(/_+$/, "");
+  const normalized = trimTrailingUnderscores(
+    id.replace(ANTHROPIC_TOOL_ID_DISALLOWED, "_")
+  );
   const prefix =
-    normalized
-      .slice(0, RESPONSES_CALL_ID_PREFIX_LENGTH)
-      .replace(/_+$/, "") || "call";
+    trimTrailingUnderscores(normalized.slice(0, RESPONSES_CALL_ID_PREFIX_LENGTH)) ||
+    "call";
   const hash = createHash("sha256")
     .update(id, "utf8")
     .digest("base64url")
