@@ -6,6 +6,13 @@ sidebar_position: 7
 
 Authentication commands for provider backends that require OAuth or JWT tokens.
 
+:::warning Consult provider Terms & Conditions
+
+The account-level auth flows below (Claude subscription, Codex, Antigravity, Qwen) authenticate against third-party services using your own account. Before using them, review each provider's Terms & Conditions — access may be limited by subscription tier, region, or the provider's service terms, and using client credentials outside the client they were issued for may violate those terms. You use this functionality at your own risk; CCR provides it for interoperability only and does not guarantee continued access to any third-party service.
+
+See [DISCLAIMER.md](https://github.com/oakimov/claude-code-router/blob/main/DISCLAIMER.md) for the project's interoperability statement.
+:::
+
 ## ccr claude-auth
 
 Authenticate with Anthropic's API using your Claude Pro or Max subscription via OAuth with PKCE.

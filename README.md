@@ -251,6 +251,8 @@ ccr model get openai
 >
 > **Note**: After syncing models into `config.json`, restart the service with `ccr restart`.
 
+> **Note — account OAuth providers**: The provider auth flows below (Antigravity, Codex, Claude subscription, Qwen) authenticate through your account-level OAuth session rather than a dedicated API key. See [DISCLAIMER.md](DISCLAIMER.md) for the interoperability and compliance notes that apply to those providers.
+
 #### Antigravity Authentication
 
 Route Claude Code through Google's Antigravity gateway (`cloudcode-pa`) using account OAuth instead of an API key.
