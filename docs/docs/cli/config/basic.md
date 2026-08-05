@@ -107,6 +107,33 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 }
 ```
 
+#### Capturing request bodies
+
+`LOG_REQUEST_BODY` adds the body of every outbound provider request to the
+`Upstream Provider Request` log record, so you can read back exactly what was
+sent upstream after all transformers ran. It is off by default and requires
+`LOG_LEVEL: "debug"` (or lower) to be visible.
+
+```json5
+{
+  "LOG_LEVEL": "debug",
+  "LOG_REQUEST_BODY": true,           // Off by default
+  "LOG_REQUEST_BODY_MAX_BYTES": 32768 // Per-body cap, default 32768
+}
+```
+
+:::warning
+This writes full conversation content — system prompts, user messages, tool
+results — to `~/.claude-code-router/logs/`. Credentials are redacted
+(`Authorization`, `api_key`, `access_token`, `sk-…` style keys), but the
+prompts themselves are not. Log files rotate at 50 MB with 3 kept. Enable it
+for a debugging window, then turn it back off.
+:::
+
+Only request bodies are captured. Successful responses are streamed and stay
+uncaptured; error responses are already logged in full as
+`Upstream Provider Error Body`.
+
 ### Routing Configuration
 
 ```json5

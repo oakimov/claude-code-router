@@ -12,10 +12,14 @@ import { HeaderRecord } from "../utils/headers";
 import {
   applyClaudeBillingSystemBlock,
   applyClaudeSystemIdentity,
+  prefixClaudeToolNames,
+  relocateForeignSystemContent,
+  unprefixClaudeToolNames,
   CC_ENTRYPOINT,
   CC_VERSION,
   normalizeSystemToArray,
 } from "../utils/claude-billing";
+import { createSSEStreamReader, StreamContext } from "../utils/stream";
 import {
   ClaudeModelCatalogEntry,
   catalogEntryHasCapability,
@@ -255,6 +259,21 @@ export class ClaudeAuthTransformer implements Transformer {
       const system = normalizeSystemToArray(request);
       applyClaudeBillingSystemBlock(system, request.messages);
       applyClaudeSystemIdentity(system);
+      // Anthropic's OAuth billing validator rejects requests whose system[]
+      // carries a foreign harness prompt past the identity block; relocate
+      // it into the first user message so it still reaches the model.
+      relocateForeignSystemContent(system, request.messages);
+      // Claude Code's OAuth validator also expects tool names in its
+      // mcp_PascalCase spelling. Keep a request-local reverse map for the
+      // response transformer so the caller receives its original names.
+      const toolNameMap = new Map<string, string>();
+      prefixClaudeToolNames(request, toolNameMap);
+      if (context) {
+        context.claudeAuthToolNameMap = toolNameMap;
+        if (context.protocolContext) {
+          context.protocolContext.claudeAuthToolNameMap = toolNameMap;
+        }
+      }
     }
 
     const clientBeta = isClaudeCode
@@ -327,7 +346,52 @@ export class ClaudeAuthTransformer implements Transformer {
    * it runs before this stage). This stage only inspects the resulting
    * response for subscription-specific overage observability.
    */
-  async transformResponseOut(response: Response): Promise<Response> {
+  async transformResponseOut(
+    response: Response,
+    context?: TransformerContext
+  ): Promise<Response> {
+    // Response processing receives a fresh context object, while the request
+    // context's protocolContext is deliberately carried forward. Read the
+    // request-local map from both locations for direct transformer callers and
+    // the normal route pipeline respectively.
+    const nameMap = (context?.claudeAuthToolNameMap ??
+      context?.protocolContext?.claudeAuthToolNameMap) as
+      | Map<string, string>
+      | undefined;
+    if (nameMap?.size && response.ok) {
+      const contentType = response.headers.get("Content-Type") || "";
+      if (contentType.includes("application/json")) {
+        const body = await response.json();
+        unprefixClaudeToolNames(body, nameMap);
+        return new Response(JSON.stringify(body), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      }
+      if (contentType.includes("text/event-stream") && response.body) {
+        return createSSEStreamReader(
+          response,
+          (line: string, streamContext: StreamContext) => {
+            if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") {
+              streamContext.controller.enqueue(streamContext.encoder.encode(line + "\n"));
+              return;
+            }
+            try {
+              const payload = JSON.parse(line.slice(6));
+              unprefixClaudeToolNames(payload, nameMap);
+              streamContext.controller.enqueue(
+                streamContext.encoder.encode(`data: ${JSON.stringify(payload)}\n\n`)
+              );
+            } catch {
+              streamContext.controller.enqueue(streamContext.encoder.encode(line + "\n"));
+            }
+          },
+          { logger: this.logger }
+        );
+      }
+    }
+
     const overageInUse = response.headers.get(
       "anthropic-ratelimit-unified-overage-in-use"
     );

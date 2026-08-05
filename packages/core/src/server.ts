@@ -241,6 +241,8 @@ export { isClientAbortError } from "./utils/retry";
 export {
   sanitizeHeadersForLog,
   diffHeadersForLog,
+  sanitizeBodyForLog,
+  DEFAULT_LOG_BODY_MAX_BYTES,
 } from "./utils/redact";
 export {
   exchangeAuthorizationCode,

@@ -71,6 +71,38 @@ export function sanitizeUpstreamErrorBody(
   return value;
 }
 
+/** Default cap for a single logged request body. */
+export const DEFAULT_LOG_BODY_MAX_BYTES = 32768;
+
+/**
+ * Redact secrets from a request body that is about to be logged verbatim.
+ *
+ * Unlike sanitizeUpstreamErrorText this preserves whitespace, newlines and
+ * full string values: the point of body capture is to read prompts and
+ * message content back, so per-string truncation would defeat it. Only
+ * secret-bearing patterns are rewritten, then the whole payload is capped.
+ */
+export function sanitizeBodyForLog(
+  value: string,
+  maxBytes: number = DEFAULT_LOG_BODY_MAX_BYTES
+): string {
+  const redacted = value
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]")
+    .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}/gi, "[redacted-secret]")
+    .replace(
+      new RegExp(
+        `"(${SENSITIVE_JSON_KEYS})"\\s*:\\s*"(?:\\\\.|[^"\\\\])*"`,
+        "gi"
+      ),
+      '"$1":"[redacted]"'
+    );
+
+  const limit = Math.max(0, maxBytes);
+  if (redacted.length <= limit) return redacted;
+  const dropped = redacted.length - limit;
+  return `${redacted.slice(0, limit)}…[truncated ${dropped} bytes]`;
+}
+
 function sanitizeMultiline(value: string, maxLength: number): string {
   return value
     .split("\n")

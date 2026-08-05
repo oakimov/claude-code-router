@@ -21,6 +21,8 @@ import {
   SYSTEM_IDENTITY,
   CC_VERSION,
   __resetClaudeBillingStateForTests,
+  prefixClaudeToolName,
+  unprefixClaudeToolName,
 } from "../utils/claude-billing";
 import {
   CLAUDE_MODEL_CATALOG,
@@ -67,6 +69,15 @@ function testCchShape() {
   assert.match(first, /^[0-9a-f]{5}$/);
   assert.equal(first, second, "cch must be stable within a process");
   resetState();
+}
+
+function testClaudeToolNameMapping() {
+  assert.equal(prefixClaudeToolName("bash"), "mcp_Bash");
+  assert.equal(prefixClaudeToolName("read_file"), "mcp_Read_file");
+  assert.equal(prefixClaudeToolName("mcp_Bash"), "mcp_Bash");
+  assert.equal(unprefixClaudeToolName("mcp_Bash"), "bash");
+  assert.equal(unprefixClaudeToolName("mcp_Read_file"), "read_file");
+  assert.equal(unprefixClaudeToolName("bash"), "bash");
 }
 
 function testFullSystemZeroStringEquality() {
@@ -147,6 +158,11 @@ async function testInboundProtocolMatrixSynthesis() {
 // --- System handling regression guards -------------------------------------
 
 async function testSystemHandlingRegressionGuards() {
+  // Anthropic's OAuth billing validator rejects requests whose system[]
+  // carries foreign content past the identity block ("out of extra usage"
+  // 400 — see opencode-claude-auth's transforms.ts for the same finding).
+  // The caller's own system content is relocated into the first user
+  // message instead, so system[] holds only billing + identity.
   resetState();
   const transformer = new ClaudeAuthTransformer();
   const request: UnifiedChatRequest = {
@@ -162,17 +178,93 @@ async function testSystemHandlingRegressionGuards() {
   await transformer.transformRequestIn(request, {}, context);
 
   const system = request.system as any[];
-  assert.equal(system.length, 3);
+  assert.equal(system.length, 2);
   assert.ok(system[0].text.startsWith("x-anthropic-billing-header:"));
   assert.equal(system[1].text, SYSTEM_IDENTITY);
-  assert.equal(system[2].text, "caller system");
-  assert.deepEqual(system[2].cache_control, { type: "ephemeral" });
-  assert.equal((request.messages[0].content as any), "hello world");
+  assert.equal(
+    request.messages[0].content as any,
+    "caller system\n\nhello world"
+  );
   assert.equal(
     request.messages.some((m) => m.role === "system"),
     false
   );
   resetState();
+}
+
+async function testForeignSystemContentRelocatedMultiBlock() {
+  // Mirrors the pi/opencode scenario: a harness system prompt spanning
+  // multiple system[] blocks, all relocated together in order.
+  resetState();
+  const transformer = new ClaudeAuthTransformer();
+  const request: UnifiedChatRequest = {
+    model: "claude-sonnet-4-6",
+    max_tokens: 100,
+    system: [
+      { type: "text", text: "You are pi, a coding agent harness." },
+      { type: "text", text: "Available tools: read, bash, edit, write." },
+    ],
+    messages: [{ role: "user", content: "hi" }],
+  } as UnifiedChatRequest;
+  const context: TransformerContext = {
+    req: { headers: { "user-agent": "pi/1.0" } },
+  };
+
+  await transformer.transformRequestIn(request, {}, context);
+
+  const system = request.system as any[];
+  assert.equal(system.length, 2);
+  assert.ok(system[0].text.startsWith("x-anthropic-billing-header:"));
+  assert.equal(system[1].text, SYSTEM_IDENTITY);
+  assert.equal(
+    request.messages[0].content as any,
+    "You are pi, a coding agent harness.\n\nAvailable tools: read, bash, edit, write.\n\nhi"
+  );
+}
+
+async function testForeignSystemContentKeptWithoutUserMessage() {
+  // No user message to attach relocated text to — nothing is silently
+  // dropped, so the caller's system content stays in system[].
+  resetState();
+  const transformer = new ClaudeAuthTransformer();
+  const request: UnifiedChatRequest = {
+    model: "claude-sonnet-4-6",
+    max_tokens: 100,
+    system: [{ type: "text", text: "caller system" }],
+    messages: [{ role: "assistant", content: "prior reply" }],
+  } as UnifiedChatRequest;
+  const context: TransformerContext = {
+    req: { headers: { "user-agent": "some-third-party/1.0" } },
+  };
+
+  await transformer.transformRequestIn(request, {}, context);
+
+  const system = request.system as any[];
+  assert.equal(system.length, 3);
+  assert.equal(system[2].text, "caller system");
+}
+
+async function testForeignSystemContentNotRelocatedForClaudeCode() {
+  // Real Claude Code clients: claude-auth doesn't touch system[] at all, so
+  // this only applies to the synthesis branch.
+  resetState();
+  const transformer = new ClaudeAuthTransformer();
+  const request: UnifiedChatRequest = {
+    model: "claude-sonnet-4-6",
+    max_tokens: 100,
+    system: [{ type: "text", text: "own claude code system prompt" }],
+    messages: [{ role: "user", content: "hi" }],
+  } as UnifiedChatRequest;
+  const context: TransformerContext = {
+    req: { headers: { "user-agent": "claude-cli/2.1.220" } },
+  };
+
+  await transformer.transformRequestIn(request, {}, context);
+
+  assert.deepEqual(request.system, [
+    { type: "text", text: "own claude code system prompt" },
+  ]);
+  assert.equal(request.messages[0].content as any, "hi");
 }
 
 // --- Betas: exact expected lists --------------------------------------------
@@ -688,6 +780,54 @@ async function testChainClaudeAuthPlusAnthropicMergesNotReplaces() {
     );
     assert.equal(spoofed.body.system?.some((s: any) => s.text === SYSTEM_IDENTITY), true);
 
+    const toolRequest: UnifiedChatRequest = {
+      model: "claude-sonnet-4-6",
+      max_tokens: 100,
+      messages: [{ role: "user", content: "use a tool" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "bash",
+            description: "Run a command",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+        {
+          type: "function",
+          function: {
+            name: "mcp__server__lookup",
+            description: "Look something up",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+      tool_choice: { type: "function", function: { name: "bash" } },
+    } as UnifiedChatRequest;
+    const toolContext: TransformerContext = {
+      req: { headers: { "user-agent": "spoofed-client/1.0" } },
+    };
+    const toolResult = await runProviderChain(toolRequest, provider, toolContext);
+    assert.deepEqual(
+      toolResult.body.tools.map((tool: any) => tool.name),
+      ["mcp_Bash", "mcp_Mcp__server__lookup"]
+    );
+    assert.deepEqual(toolResult.body.tool_choice, {
+      type: "tool",
+      name: "mcp_Bash",
+    });
+
+    const restored = await new ClaudeAuthTransformer().transformResponseOut(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { tool_calls: [{ function: { name: "mcp_Bash" } }] } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      ),
+      toolContext
+    );
+    assert.equal((await restored.json()).choices[0].message.tool_calls[0].function.name, "bash");
+
     // Genuine Claude Code client: bearer present, no markers.
     resetState();
     const ccRequest: UnifiedChatRequest = {
@@ -817,9 +957,13 @@ async function main() {
   testIsClaudeCodeClient();
   testSuffixVectorsPinned();
   testCchShape();
+  testClaudeToolNameMapping();
   testFullSystemZeroStringEquality();
   await testInboundProtocolMatrixSynthesis();
   await testSystemHandlingRegressionGuards();
+  await testForeignSystemContentRelocatedMultiBlock();
+  await testForeignSystemContentKeptWithoutUserMessage();
+  await testForeignSystemContentNotRelocatedForClaudeCode();
   testExactBetaLists();
   testUsageParityOneMillionSuffix();
   await testNoPreflightCountTokensCall();

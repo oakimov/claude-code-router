@@ -174,6 +174,8 @@ async function getServer(options: RunOptions = {}) {
       APIKEY: config.APIKEY,
       HOST: HOST,
       PORT: servicePort,
+      LOG_REQUEST_BODY: config.LOG_REQUEST_BODY,
+      LOG_REQUEST_BODY_MAX_BYTES: config.LOG_REQUEST_BODY_MAX_BYTES,
       LOG_FILE: join(
         homedir(),
         ".claude-code-router",

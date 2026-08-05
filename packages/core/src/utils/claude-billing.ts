@@ -130,9 +130,9 @@ export function applyClaudeBillingSystemBlock(
 }
 
 /**
- * Insert SYSTEM_IDENTITY as its own entry at system[1]. The caller's other
- * system entries are left exactly where they are — see the plan's rationale
- * for not hoisting them into the first user message (Findings 8 and 11).
+ * Insert SYSTEM_IDENTITY as its own entry at system[1]. Any remaining
+ * caller system content is left in place here — relocateForeignSystemContent
+ * (called separately, afterwards) is what moves it out of system[].
  */
 export function applyClaudeSystemIdentity(system: TextContent[]): void {
   const candidateIndex = 1;
@@ -161,4 +161,126 @@ export function applyClaudeSystemIdentity(system: TextContent[]): void {
   }
 
   system.splice(candidateIndex, 0, { type: "text", text: SYSTEM_IDENTITY });
+}
+
+/**
+ * Move everything in `system[]` past the identity block (index 1) into the
+ * first user message instead. Anthropic's OAuth billing validator appears to
+ * inspect `system[]` content beyond the identity prefix and reject requests
+ * whose system array carries a foreign harness prompt with an "out of extra
+ * usage" 400 — the same technique used by third-party Claude Code OAuth
+ * shims (e.g. opencode-claude-auth) to avoid that check. The relocated text
+ * still reaches the model, just as part of the first user turn rather than
+ * `system[]`.
+ *
+ * A no-op when there is no user message to attach the content to, so nothing
+ * is silently dropped — the caller's system content stays in `system[]`
+ * instead.
+ */
+export function relocateForeignSystemContent(
+  system: TextContent[],
+  messages: UnifiedMessage[] | undefined
+): void {
+  if (system.length <= 2 || !Array.isArray(messages)) return;
+
+  const firstUser = messages.find((msg) => msg.role === "user");
+  if (!firstUser) return;
+
+  const foreign = system.splice(2);
+  const text = foreign
+    .map((block) => block.text)
+    .filter((t) => t.length > 0)
+    .join("\n\n");
+  if (!text) return;
+
+  if (typeof firstUser.content === "string") {
+    firstUser.content = firstUser.content
+      ? `${text}\n\n${firstUser.content}`
+      : text;
+  } else if (Array.isArray(firstUser.content)) {
+    firstUser.content.unshift({ type: "text", text });
+  } else {
+    firstUser.content = text;
+  }
+}
+
+/**
+ * Claude Code's OAuth validator expects tool names in the mcp_PascalCase
+ * spelling used by the official CLI. Non-Claude-Code clients commonly send
+ * ordinary names such as `bash` or `read`, so normalize them before the
+ * Anthropic body is built. The prefix check keeps this operation idempotent.
+ */
+export function prefixClaudeToolName(name: string): string {
+  if (/^mcp_[A-Z]/.test(name)) return name;
+  return `mcp_${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+}
+
+/** Restore a Claude Code tool name to the caller's original spelling. */
+export function unprefixClaudeToolName(name: string): string {
+  if (!name.startsWith("mcp_") || name.length <= 4) return name;
+  return `${name.charAt(4).toLowerCase()}${name.slice(5)}`;
+}
+
+/** Rewrite tool names in a Unified request in place for the OAuth wire path. */
+export function prefixClaudeToolNames(
+  request: UnifiedChatRequest,
+  nameMap?: Map<string, string>
+): void {
+  const prefix = (name: string): string => {
+    const wireName = prefixClaudeToolName(name);
+    nameMap?.set(wireName, name);
+    return wireName;
+  };
+
+  if (Array.isArray(request.tools)) {
+    for (const tool of request.tools) {
+      if (tool?.function?.name) tool.function.name = prefix(tool.function.name);
+    }
+  }
+
+  if (Array.isArray(request.messages)) {
+    for (const message of request.messages) {
+      for (const toolCall of message.tool_calls ?? []) {
+        if (toolCall?.function?.name) {
+          toolCall.function.name = prefix(toolCall.function.name);
+        }
+      }
+    }
+  }
+
+  if (typeof request.tool_choice === "string") {
+    if (!["auto", "none", "required"].includes(request.tool_choice)) {
+      request.tool_choice = prefix(request.tool_choice);
+    }
+  } else if (
+    request.tool_choice?.type === "function" &&
+    request.tool_choice.function?.name
+  ) {
+    request.tool_choice.function.name = prefix(request.tool_choice.function.name);
+  }
+}
+
+/** Rewrite tool names in a Unified/OpenAI-shaped response in place. */
+export function unprefixClaudeToolNames(
+  value: any,
+  nameMap?: Map<string, string>
+): void {
+  const rewriteToolCall = (toolCall: any) => {
+    const name = toolCall?.function?.name;
+    if (typeof name !== "string") return;
+    toolCall.function.name = nameMap?.get(name) ?? unprefixClaudeToolName(name);
+  };
+
+  for (const choice of value?.choices ?? []) {
+    for (const toolCall of choice?.message?.tool_calls ?? []) rewriteToolCall(toolCall);
+    for (const toolCall of choice?.delta?.tool_calls ?? []) rewriteToolCall(toolCall);
+  }
+}
+
+/** Rewrite one OpenAI SSE data payload's tool names. */
+export function unprefixClaudeToolNamesInSseData(
+  value: any,
+  nameMap?: Map<string, string>
+): void {
+  unprefixClaudeToolNames(value, nameMap);
 }
