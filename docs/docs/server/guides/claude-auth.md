@@ -6,6 +6,13 @@ sidebar_position: 2
 
 Claude Code Router can route requests through your **existing Claude subscription** (Pro or Max) using OAuth authentication. This lets you leverage your Claude.ai subscription directly — no separate API key needed.
 
+:::warning Consult provider Terms & Conditions
+
+This integration authenticates against a third-party service using your own account. Before using it, review the provider's Terms & Conditions — access may be limited by subscription tier, region, or the provider's service terms, and using client credentials outside the client they were issued for may violate those terms. You use this functionality at your own risk; CCR provides it for interoperability only and does not guarantee continued access to any third-party service.
+
+See [DISCLAIMER.md](https://github.com/oakimov/claude-code-router/blob/main/DISCLAIMER.md) for the project's interoperability statement.
+:::
+
 ## How It Works
 
 1. `ccr claude-auth` generates a PKCE challenge and prints an authorization URL from `claude.ai`

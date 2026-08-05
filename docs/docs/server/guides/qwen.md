@@ -6,6 +6,13 @@ sidebar_position: 2
 
 Claude Code Router supports routing through **Qwen Chat** (通义千问) via the `qwen.aikit.club` API. It uses JWT-based authentication where you paste a token copied from the `chat.qwen.ai` web application.
 
+:::warning Consult provider Terms & Conditions
+
+This integration authenticates against a third-party service using your own account. Before using it, review the provider's Terms & Conditions — access may be limited by subscription tier, region, or the provider's service terms, and using client credentials outside the client they were issued for may violate those terms. You use this functionality at your own risk; CCR provides it for interoperability only and does not guarantee continued access to any third-party service.
+
+See [DISCLAIMER.md](https://github.com/oakimov/claude-code-router/blob/main/DISCLAIMER.md) for the project's interoperability statement.
+:::
+
 ## How It Works
 
 1. The CCR server hosts an auth page at `http://localhost:3456/qwen/auth`

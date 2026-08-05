@@ -6,6 +6,13 @@ sidebar_position: 1
 
 Claude Code Router can use a **ChatGPT/Codex subscription** to route Claude Code requests through OpenAI's models. The Codex backend powers OpenAI's ChatGPT product and this integration lets you leverage that subscription with Claude Code.
 
+:::warning Consult provider Terms & Conditions
+
+This integration authenticates against a third-party service using your own account. Before using it, review the provider's Terms & Conditions — access may be limited by subscription tier, region, or the provider's service terms, and using client credentials outside the client they were issued for may violate those terms. You use this functionality at your own risk; CCR provides it for interoperability only and does not guarantee continued access to any third-party service.
+
+See [DISCLAIMER.md](https://github.com/oakimov/claude-code-router/blob/main/DISCLAIMER.md) for the project's interoperability statement.
+:::
+
 Codex supports **two authentication modes**:
 
 - **OAuth** via `ccr codex-auth` — recommended when you want CCR to manage OpenAI tokens for you
