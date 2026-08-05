@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,6 +41,39 @@ const routesSource = readFileSync(
 function resetState() {
   __resetClaudeAuthTransformerStateForTests();
   __resetClaudeBillingStateForTests();
+}
+
+/**
+ * Make the suite hermetic when no real OAuth credentials exist (e.g. CI).
+ *
+ * OAuth-backed tests (claude-auth) call `transformRequestIn`, which loads
+ * `~/.claude-code-router/claude_auth.json` and throws when it is absent.
+ * Locally the file exists (from `ccr claude-auth`), so tests pass; on a fresh
+ * checkout they fail. If no auth file is present — neither one configured via
+ * `CCR_CLAUDE_AUTH_FILE` nor the default path — provision a synthetic token
+ * file in the exact shape `ccr claude-auth` writes, so the tests exercise the
+ * real code path instead of erroring. Tests that need to control the file
+ * themselves override `CCR_CLAUDE_AUTH_FILE` and restore it.
+ */
+function ensureHermeticAuthFileForTest(): void {
+  const configured = process.env.CCR_CLAUDE_AUTH_FILE;
+  const defaultAuthFile = join(homedir(), ".claude-code-router", "claude_auth.json");
+  if ((configured && existsSync(configured)) || existsSync(defaultAuthFile)) return;
+
+  const dir = mkdtempSync(join(tmpdir(), "ccr-claude-auth-hermetic-"));
+  const authFile = join(dir, "claude_auth.json");
+  const deviceFile = join(dir, "claude_device.json");
+  writeFileSync(
+    authFile,
+    JSON.stringify({
+      access_token: "hermetic-subscription-token",
+      token_type: "Bearer",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    }),
+    { mode: 0o600 }
+  );
+  process.env.CCR_CLAUDE_AUTH_FILE = authFile;
+  process.env.CCR_CLAUDE_DEVICE_FILE = deviceFile;
 }
 
 // --- Classification -------------------------------------------------------
@@ -954,6 +987,7 @@ function testRouteOwnershipUnchanged() {
 }
 
 async function main() {
+  ensureHermeticAuthFileForTest();
   testIsClaudeCodeClient();
   testSuffixVectorsPinned();
   testCchShape();

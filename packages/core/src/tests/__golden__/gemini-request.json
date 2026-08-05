@@ -1,0 +1,626 @@
+{
+  "consolidate-roles": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "First"
+          },
+          {
+            "text": "Second"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "text": "Reply"
+          }
+        ],
+        "role": "model"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "generation-config-max-tokens": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Short answer"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 100,
+      "temperature": 0.5
+    }
+  },
+  "generation-config-thinking": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Think hard"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingBudget": 16384
+      }
+    }
+  },
+  "generation-config-thinking-gemini3": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Think"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingLevel": "medium"
+      }
+    }
+  },
+  "multi-turn": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hi"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "text": "Hello!"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "text": "How are you?"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "multimodal-image-base64": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Describe"
+          },
+          {
+            "inlineData": {
+              "data": "iVBORw0KGgo=",
+              "mimeType": "image/png"
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "multimodal-image-url": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "What is in this image?"
+          },
+          {
+            "fileData": {
+              "fileUri": "https://example.com/image.jpg",
+              "mimeType": "image/jpeg"
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "simple-text": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello, world!"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "system-instruction": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {},
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are a helpful assistant."
+        }
+      ]
+    }
+  },
+  "system-role-message": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {},
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "System prompt here"
+        }
+      ]
+    }
+  },
+  "thinking-block": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Think about this"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "text": "Let me think step by step...",
+            "thought": true,
+            "thoughtSignature": "sig_abc123"
+          },
+          {
+            "text": "The answer is 42."
+          }
+        ],
+        "role": "model"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "thinking-no-signature": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Think"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "text": "Answer"
+          }
+        ],
+        "role": "model"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "tool-call-missing-signature": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "List files"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "command": "ls -la"
+              },
+              "id": "call_bash",
+              "name": "Bash"
+            },
+            "thoughtSignature": "skip_thought_signature_validator"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "call_bash",
+              "name": "Bash",
+              "response": {
+                "result": "total 0"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "tool-call-with-thought-signature": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Search for X"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "text": "I need to search",
+            "thought": true,
+            "thoughtSignature": "sig_xyz789"
+          },
+          {
+            "functionCall": {
+              "args": {
+                "query": "X"
+              },
+              "id": "call_2",
+              "name": "web_search"
+            },
+            "thoughtSignature": "sig_tool_xyz789"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "call_2",
+              "name": "web_search",
+              "response": {
+                "result": "Results for X"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "tool-calls": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "What is the weather?"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "location": "NYC"
+              },
+              "id": "call_1",
+              "name": "get_weather"
+            },
+            "thoughtSignature": "skip_thought_signature_validator"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "call_1",
+              "name": "get_weather",
+              "response": {
+                "result": "Sunny, 72F"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {},
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "Get weather",
+            "name": "get_weather",
+            "parameters": {
+              "properties": {
+                "location": {
+                  "type": "STRING"
+                }
+              },
+              "required": [
+                "location"
+              ],
+              "type": "OBJECT"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "tool-choice-auto": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Use tools"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {},
+    "toolConfig": {
+      "functionCallingConfig": {
+        "mode": "auto"
+      }
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "A function",
+            "name": "my_func",
+            "parameters": {
+              "properties": {},
+              "type": "OBJECT"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "tool-choice-none": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "No tools"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {},
+    "toolConfig": {
+      "functionCallingConfig": {
+        "mode": "none"
+      }
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "A function",
+            "name": "my_func",
+            "parameters": {
+              "properties": {},
+              "type": "OBJECT"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "tool-choice-required": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Must use tool"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {},
+    "toolConfig": {
+      "functionCallingConfig": {
+        "mode": "any"
+      }
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "A function",
+            "name": "my_func",
+            "parameters": {
+              "properties": {},
+              "type": "OBJECT"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "tool-choice-specific": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Use specific tool"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {},
+    "toolConfig": {
+      "functionCallingConfig": {
+        "allowedFunctionNames": [
+          "specific_func"
+        ],
+        "mode": "any"
+      }
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "Specific",
+            "name": "specific_func",
+            "parameters": {
+              "properties": {},
+              "type": "OBJECT"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "tool-response-array": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Do something"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {},
+              "id": "call_3",
+              "name": "my_tool"
+            },
+            "thoughtSignature": "skip_thought_signature_validator"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "call_3",
+              "name": "my_tool",
+              "response": {
+                "result": "Result part 1\nResult part 2"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "tool-response-object": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Do something"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {},
+              "id": "call_4",
+              "name": "my_tool"
+            },
+            "thoughtSignature": "skip_thought_signature_validator"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "call_4",
+              "name": "my_tool",
+              "response": {
+                "result": "{\"key\":\"value\"}"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {}
+  },
+  "web-search-tool": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Search for X"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {},
+    "tools": [
+      {
+        "googleSearch": {}
+      }
+    ]
+  }
+}

@@ -1,0 +1,843 @@
+{
+  "antigravity-content-then-signature": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "Hello from Antigravity",
+            "role": "assistant"
+          },
+          "finish_reason": null,
+          "index": 1,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_ag_1",
+      "model": "gemini-3.6-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "",
+            "role": "assistant"
+          },
+          "finish_reason": "stop",
+          "index": 2,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_ag_1",
+      "model": "gemini-3.6-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "antigravity-same-chunk-text-and-signature": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "One-shot reply",
+            "role": "assistant"
+          },
+          "finish_reason": "stop",
+          "index": 1,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_ag_2",
+      "model": "gemini-3.6-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "antigravity-tool-with-sibling-signature": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "I'll list the directory.",
+            "role": "assistant"
+          },
+          "finish_reason": null,
+          "index": 1,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_ag_tool",
+      "model": "gemini-3.6-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"command\":\"ls -la\",\"description\":\"List files\"}",
+                  "name": "Bash"
+                },
+                "id": "G3UHpzGQ",
+                "index": 0,
+                "thought_signature": "sig_ag_tool_sibling",
+                "type": "function"
+              }
+            ]
+          },
+          "finish_reason": "tool_calls",
+          "index": 2,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_ag_tool",
+      "model": "gemini-3.6-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "empty-thinking-sig-only": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "content": "(no content)"
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "signature": "sig_empty_thinking"
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "Content after empty thinking",
+            "role": "assistant"
+          },
+          "finish_reason": "stop",
+          "index": 2,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "finish-reason-only": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "Hello",
+            "role": "assistant"
+          },
+          "finish_reason": "stop",
+          "index": 1,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "gemini3-buffered-content-final-tool": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "content": "Hmm let me think"
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-3-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "signature": "ccr_1785082767951"
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-3-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "Intermediate content",
+            "role": "assistant"
+          },
+          "finish_reason": null,
+          "index": 1,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-3-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{}",
+                  "name": "final_tool"
+                },
+                "id": "tool_final",
+                "index": 0,
+                "type": "function"
+              }
+            ]
+          },
+          "finish_reason": "tool_calls",
+          "index": 2,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-3-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "gemini3-out-of-order": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "content": "Thinking..."
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "signature": "sig_delayed"
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-3-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "Final answer text",
+            "role": "assistant"
+          },
+          "finish_reason": null,
+          "index": 1,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-3-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "",
+            "role": "assistant"
+          },
+          "finish_reason": "stop",
+          "index": 2,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-3-flash",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "grounding-annotations": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "annotations": [
+              {
+                "type": "url_citation",
+                "url_citation": {
+                  "content": "search results",
+                  "end_index": 15,
+                  "start_index": 0,
+                  "title": "Result 1",
+                  "url": "https://example.com/1"
+                }
+              }
+            ],
+            "content": "Based on search results...",
+            "role": "assistant"
+          },
+          "finish_reason": "stop",
+          "index": 1,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "happy-path-thinking-sig-content": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "content": "Let me think..."
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "signature": "sig_real_abc"
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "The answer is 42.",
+            "role": "assistant"
+          },
+          "finish_reason": "stop",
+          "index": 2,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "missing-signature-fallback": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "content": "Some thinking"
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "signature": "ccr_1785082767949"
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "Final text without signature",
+            "role": "assistant"
+          },
+          "finish_reason": "stop",
+          "index": 1,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "multiple-tool-calls": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"x\":1}",
+                  "name": "func_a"
+                },
+                "id": "tool_1",
+                "index": 0,
+                "type": "function"
+              }
+            ]
+          },
+          "finish_reason": null,
+          "index": 1,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"y\":2}",
+                  "name": "func_b"
+                },
+                "id": "tool_2",
+                "index": 1,
+                "type": "function"
+              }
+            ]
+          },
+          "finish_reason": "tool_calls",
+          "index": 2,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "no-thinking-simple-content": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": "Just a simple response.",
+            "role": "assistant"
+          },
+          "finish_reason": "stop",
+          "index": 1,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ],
+  "tool-calls-with-thinking": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "content": "Planning tool use..."
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "content": null,
+            "role": "assistant",
+            "thinking": {
+              "signature": "sig_tool_123"
+            }
+          },
+          "finish_reason": null,
+          "index": 0,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1"
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"location\":\"NYC\"}",
+                  "name": "get_weather"
+                },
+                "id": "tool_abc",
+                "index": 0,
+                "type": "function"
+              }
+            ]
+          },
+          "finish_reason": "tool_calls",
+          "index": 2,
+          "logprobs": null
+        }
+      ],
+      "created": 1785082767,
+      "id": "resp_123",
+      "model": "gemini-2.5-pro",
+      "object": "chat.completion.chunk",
+      "system_fingerprint": "fp_a49d71b8a1",
+      "usage": {
+        "completion_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 0,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 0
+      }
+    }
+  ]
+}

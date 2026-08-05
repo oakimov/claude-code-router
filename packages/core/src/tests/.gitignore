@@ -1,1 +1,7 @@
-__golden__
+# Golden fixtures. The gemini parity fixtures are committed so the test is
+# deterministic on a fresh checkout (CI); they contain only synthetic request/
+# response bodies with no credentials. Any other golden artifacts stay ignored.
+__golden__/*
+!__golden__/gemini-request.json
+!__golden__/gemini-response-json.json
+!__golden__/gemini-response-stream.json

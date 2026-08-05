@@ -1,0 +1,128 @@
+{
+  "simple-response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Hello!",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1785082767,
+    "id": "resp_json_1",
+    "model": "gemini-2.5-pro",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 2,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens": 5,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 7
+    }
+  },
+  "thinking-no-sig-response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Answer",
+          "role": "assistant",
+          "thinking": {
+            "content": "Thinking without sig",
+            "signature": "ccr_1785082767945"
+          }
+        }
+      }
+    ],
+    "created": 1785082767,
+    "id": "resp_json_4",
+    "model": "gemini-2.5-pro",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 10,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens": 5,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 15
+    }
+  },
+  "thinking-response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "The answer.",
+          "role": "assistant",
+          "thinking": {
+            "content": "Deep thoughts...",
+            "signature": "sig_json_abc"
+          }
+        }
+      }
+    ],
+    "created": 1785082767,
+    "id": "resp_json_2",
+    "model": "gemini-2.5-pro",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 30,
+      "output_tokens_details": {
+        "reasoning_tokens": 15
+      },
+      "prompt_tokens": 10,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 40
+    }
+  },
+  "tool-call-response": {
+    "choices": [
+      {
+        "finish_reason": "tool_calls",
+        "index": 0,
+        "message": {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"param\":\"value\"}",
+                "name": "my_function"
+              },
+              "id": "fc_1",
+              "type": "function"
+            }
+          ]
+        }
+      }
+    ],
+    "created": 1785082767,
+    "id": "resp_json_3",
+    "model": "gemini-2.5-pro",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 20,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens": 8,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 28
+    }
+  }
+}
