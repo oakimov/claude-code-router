@@ -336,7 +336,7 @@ This command:
 
 Built-in endpoint support is included for `anthropic`/`claude`, `gemini`, `openai`, `codex`, and `cursor`. For Claude subscription providers using `claude-auth`, discovery reads `~/.claude-code-router/claude_auth.json` and sends the required Anthropic OAuth beta headers; the provider `api_key` is only a placeholder in that mode. For other providers, you can configure `models_api_url` and a custom `models_response_format` to handle different JSON response structures.
 
-For the `codex` provider, model discovery sends the current Codex CLI `client_version` because the ChatGPT backend can gate newly released Codex model slugs by client version. CCR defaults to the latest stable version known at release time; override it with `codex_client_version` on the provider or `CCR_CODEX_CLIENT_VERSION` when testing a newer Codex CLI rollout. Runtime Codex requests are handled separately by the core Codex transformer, which spoofs the Codex CLI request version and identity headers without depending on CCR's CLI package.
+For the `codex` provider, model discovery sends the current Codex CLI `client_version` because the ChatGPT backend can gate newly released Codex model slugs by client version. CCR defaults to the latest stable version known at release time; override it with `codex_client_version` on the provider or `CCR_CODEX_CLIENT_VERSION` when testing a newer Codex CLI rollout. Runtime Codex requests are handled separately by the core Codex transformer, which presents the Codex CLI request version and identity headers without depending on CCR's CLI package.
 
 The `models_response_format` object supports:
 - `listPath`: JSON path to the array of models (e.g., `"data"`, `"models"`, or `""` for root array)

@@ -484,7 +484,7 @@ async function testSynthesizedHeadersPresenceByClient() {
       messages: [{ role: "user", content: "hi" }],
     } as UnifiedChatRequest;
     const nonCcResult = await nonCcTransformer.transformRequestIn(nonCcRequest, {}, {
-      req: { headers: { "user-agent": "spoofed-client/1.0" } },
+      req: { headers: { "user-agent": "non-claude-code-client/1.0" } },
     });
     for (const name of [
       "x-app",
@@ -760,25 +760,25 @@ async function testChainClaudeAuthPlusAnthropicMergesNotReplaces() {
       transformer: { use: [new ClaudeAuthTransformer(), new AnthropicTransformer()] },
     };
 
-    // Spoofed (non-CC) client: bearer present, no x-api-key, full marker set.
+    // Non-Claude-Code client: bearer present, no x-api-key, full marker set.
     resetState();
-    const spoofedRequest: UnifiedChatRequest = {
+    const nonClaudeCodeRequest: UnifiedChatRequest = {
       model: "claude-sonnet-4-6",
       max_tokens: 100,
       messages: [{ role: "user", content: "hi" }],
     } as UnifiedChatRequest;
-    const spoofedContext: TransformerContext = {
-      req: { headers: { "user-agent": "spoofed-client/1.0" } },
+    const nonClaudeCodeContext: TransformerContext = {
+      req: { headers: { "user-agent": "non-claude-code-client/1.0" } },
     };
-    const spoofed = await runProviderChain(spoofedRequest, provider, spoofedContext);
-    const spoofedOutbound = canonicalizeOutboundHeaders(spoofed.config.headers, provider.apiKey);
-    assert.equal(spoofedOutbound.Authorization, "Bearer hermetic-subscription-token");
-    assert.equal(spoofedOutbound["x-api-key"], undefined);
+    const nonClaudeCode = await runProviderChain(nonClaudeCodeRequest, provider, nonClaudeCodeContext);
+    const nonClaudeCodeOutbound = canonicalizeOutboundHeaders(nonClaudeCode.config.headers, provider.apiKey);
+    assert.equal(nonClaudeCodeOutbound.Authorization, "Bearer hermetic-subscription-token");
+    assert.equal(nonClaudeCodeOutbound["x-api-key"], undefined);
     assert.equal(
-      spoofed.body.system?.some((s: any) => s.text?.startsWith("x-anthropic-billing-header:")),
+      nonClaudeCode.body.system?.some((s: any) => s.text?.startsWith("x-anthropic-billing-header:")),
       true
     );
-    assert.equal(spoofed.body.system?.some((s: any) => s.text === SYSTEM_IDENTITY), true);
+    assert.equal(nonClaudeCode.body.system?.some((s: any) => s.text === SYSTEM_IDENTITY), true);
 
     const toolRequest: UnifiedChatRequest = {
       model: "claude-sonnet-4-6",
@@ -805,7 +805,7 @@ async function testChainClaudeAuthPlusAnthropicMergesNotReplaces() {
       tool_choice: { type: "function", function: { name: "bash" } },
     } as UnifiedChatRequest;
     const toolContext: TransformerContext = {
-      req: { headers: { "user-agent": "spoofed-client/1.0" } },
+      req: { headers: { "user-agent": "non-claude-code-client/1.0" } },
     };
     const toolResult = await runProviderChain(toolRequest, provider, toolContext);
     assert.deepEqual(
@@ -849,10 +849,10 @@ async function testChainClaudeAuthPlusAnthropicMergesNotReplaces() {
 
     // request.system set by claude-auth survives buildAnthropicBody into
     // body.system in order, no duplicated role:"system" message.
-    assert.equal(spoofed.body.system[0].text.startsWith("x-anthropic-billing-header:"), true);
-    assert.equal(spoofed.body.system[1].text, SYSTEM_IDENTITY);
+    assert.equal(nonClaudeCode.body.system[0].text.startsWith("x-anthropic-billing-header:"), true);
+    assert.equal(nonClaudeCode.body.system[1].text, SYSTEM_IDENTITY);
     assert.equal(
-      spoofed.body.messages.some((m: any) => m.role === "system"),
+      nonClaudeCode.body.messages.some((m: any) => m.role === "system"),
       false
     );
   } finally {
@@ -899,41 +899,41 @@ async function testSingletonSafetyConcurrentRequests() {
       req: { headers: { "user-agent": "claude-cli/2.1.220" } },
     };
 
-    const spoofedRequest: UnifiedChatRequest = {
+    const nonClaudeCodeRequest: UnifiedChatRequest = {
       model: "claude-opus-5",
       max_tokens: 100,
-      messages: [{ role: "user", content: "spoofed request" }],
+      messages: [{ role: "user", content: "non-claude-code request" }],
     } as UnifiedChatRequest;
-    const spoofedContext: TransformerContext = {
-      req: { headers: { "user-agent": "spoofed-client/1.0" } },
+    const nonClaudeCodeContext: TransformerContext = {
+      req: { headers: { "user-agent": "non-claude-code-client/1.0" } },
     };
 
-    const [nativeResult, spoofedResult] = await Promise.all([
+    const [nativeResult, nonClaudeCodeResult] = await Promise.all([
       sharedTransformer.transformRequestIn(nativeRequest, {}, nativeContext),
-      sharedTransformer.transformRequestIn(spoofedRequest, {}, spoofedContext),
+      sharedTransformer.transformRequestIn(nonClaudeCodeRequest, {}, nonClaudeCodeContext),
     ]);
 
     // Exactly one of the two bodies carries the marker system blocks — the
-    // native-client body must never pick up the spoofed request's markers
+    // native-client body must never pick up the non-Claude-Code request's markers
     // (or vice versa) due to shared instance state.
     const nativeHasMarkers =
       Array.isArray(nativeRequest.system) &&
       nativeRequest.system.some((s: any) => s.text?.startsWith("x-anthropic-billing-header:"));
-    const spoofedHasMarkers =
-      Array.isArray(spoofedRequest.system) &&
-      spoofedRequest.system.some((s: any) => s.text?.startsWith("x-anthropic-billing-header:"));
+    const nonClaudeCodeHasMarkers =
+      Array.isArray(nonClaudeCodeRequest.system) &&
+      nonClaudeCodeRequest.system.some((s: any) => s.text?.startsWith("x-anthropic-billing-header:"));
     assert.equal(nativeHasMarkers, false);
-    assert.equal(spoofedHasMarkers, true);
+    assert.equal(nonClaudeCodeHasMarkers, true);
 
     // Model-derived betas must not cross-contaminate: native uses the
-    // client's own (absent) anthropic-beta header, spoofed derives from its
+    // client's own (absent) anthropic-beta header, the non-Claude-Code client derives from its
     // own model (claude-opus-5, which includes effort-2025-11-24).
     assert.equal(nativeResult.config.headers["anthropic-beta"], "oauth-2025-04-20");
-    assert.ok(spoofedResult.config.headers["anthropic-beta"].includes("effort-2025-11-24"));
+    assert.ok(nonClaudeCodeResult.config.headers["anthropic-beta"].includes("effort-2025-11-24"));
 
-    // Synthesized identity headers must appear only on the spoofed result.
+    // Synthesized identity headers must appear only on the non-Claude-Code result.
     assert.equal(nativeResult.config.headers["x-app"], undefined);
-    assert.equal(spoofedResult.config.headers["x-app"], "cli");
+    assert.equal(nonClaudeCodeResult.config.headers["x-app"], "cli");
   } finally {
     if (originalAuthFile === undefined) delete process.env.CCR_CLAUDE_AUTH_FILE;
     else process.env.CCR_CLAUDE_AUTH_FILE = originalAuthFile;

@@ -81,6 +81,15 @@ docker compose restart ccr
 - **Structured output** — Uses `responseConstraint` for reliable JSON tool calls
 - **Automatic stall recovery** — If the model stalls (whitespace-only output), the bridge retries with higher temperature
 
+## Session Management
+
+The bridge maintains persistent `LanguageModel` sessions — conversation history is carried forward naturally within each session, not rebuilt per turn.
+
+- **Multi-session support**: Requests are fingerprinted by a `User-Agent + IP` hash into separate sessions, allowing multiple concurrent Claude Code instances without context contamination. A built-in web dashboard (served on the bridge port) shows real-time stats for all sessions, including turn count, idle time, and context usage.
+- **Idle session eviction**: Sessions idle for more than 5 minutes are automatically destroyed to free resources. The `cli` session (dashboard default) is never evicted. Sessions can also be manually evicted via the dashboard's Evict button.
+- **Auto-compaction**: Triggers at 85% context usage, resetting the session while preserving the system prompt.
+- The bridge connects to Chrome over CDP with a 5-minute protocol timeout to handle slow model inference.
+
 ## Limitations
 
 - **Model quality** — Gemini Nano is a small on-device model, best suited for simple tasks and background work

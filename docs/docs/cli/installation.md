@@ -4,11 +4,11 @@ sidebar_position: 2
 
 # Installation
 
-Run Claude Code Router using Docker Compose.
+Run Claude Code Router with the published Docker image.
 
 ## Prerequisites
 
-- **Docker** and **Docker Compose**
+- **Docker**
 - An API key from your preferred LLM provider
 
 **Node.js is not required for the Docker install** — the image ships its own runtime (currently Node 22 LTS).
@@ -23,29 +23,33 @@ You only need Node.js locally to install the CLI from npm, run from source, or u
 
 The floor comes from `undici`, the HTTP client used for provider requests. `22.19.0` is a Node 22 **LTS** release; any newer Node 22 or 24 also works. Installing on an older runtime fails with an `EBADENGINE` warning and then errors at runtime.
 
-## Install with Docker Compose
+## Install with Docker
 
-Clone the repository and start the service using the provided Compose file:
+Run the published image, mounting a config directory:
 
 ```bash
-git clone https://github.com/oakimov/claude-code-router.git
-cd claude-code-router/packages/server
-docker compose up --build -d
+mkdir -p ~/.claude-code-router
+docker run -d --name ccr \
+  -p 3456:3456 \
+  -v ~/.claude-code-router:/root/.claude-code-router \
+  ghcr.io/oakimov/claude-code-router:latest
 ```
 
-The router will start on `http://localhost:3456`.
+The router will start on `http://localhost:3456`. Set `"HOST": "0.0.0.0"` in your `config.json` so the port mapping can reach the server.
 
 To view logs:
 
 ```bash
-docker compose logs -f ccr
+docker logs -f ccr
 ```
 
 To stop the service:
 
 ```bash
-docker compose down
+docker stop ccr && docker rm ccr
 ```
+
+> **Note**: Building from the repository instead? The [Server Deployment](/docs/server/deployment) guide covers the `docker-compose.yml` in `packages/server`, which builds the image locally from source.
 
 ## Next Steps
 

@@ -43,6 +43,8 @@ The page offers two methods:
 
 The token is validated against Qwen's API and saved to `~/.claude-code-router/qwen-auth.json`.
 
+The bookmarklet's redirect target is hardcoded into the JS because it runs in the Qwen page's context (with no knowledge of CCR's address). By default it points to `http://127.0.0.1:3456`. If your CCR server is on a different host or port, set the `QWEN_AUTH_REDIRECT` env var before starting the server, e.g. `QWEN_AUTH_REDIRECT=http://192.168.1.10:8080` — the bookmarklet will then redirect to that address.
+
 ### 3. Configure Provider
 
 Add the Qwen provider to your `~/.claude-code-router/config.json`:

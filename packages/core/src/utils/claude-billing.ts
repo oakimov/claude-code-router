@@ -168,9 +168,9 @@ export function applyClaudeSystemIdentity(system: TextContent[]): void {
  * first user message instead. Anthropic's OAuth billing validator appears to
  * inspect `system[]` content beyond the identity prefix and reject requests
  * whose system array carries a foreign harness prompt with an "out of extra
- * usage" 400 — the same technique used by third-party Claude Code OAuth
- * shims (e.g. opencode-claude-auth) to avoid that check. The relocated text
- * still reaches the model, just as part of the first user turn rather than
+ * usage" 400 — the same approach used by third-party Claude Code OAuth
+ * clients (e.g. opencode-claude-auth). The relocated text still reaches the
+ * model, just as part of the first user turn rather than
  * `system[]`.
  *
  * A no-op when there is no user message to attach the content to, so nothing

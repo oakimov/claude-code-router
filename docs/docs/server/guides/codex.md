@@ -151,6 +151,7 @@ PAT auth does not require the browser flow, but it still uses the same provider 
   - a real PAT starting with `at-` for PAT mode
 - The provider still uses the `codex` transformer in both modes
 - `ccr model get codex` works with either auth mode
+- Model discovery sends the current Codex CLI `client_version` because the ChatGPT backend can gate newly released Codex model slugs by client version. CCR defaults to the latest stable version known at release time; override it with `codex_client_version` on the provider or `CCR_CODEX_CLIENT_VERSION` when testing a newer Codex CLI rollout. Runtime Codex requests are handled by the core Codex transformer, which presents the Codex CLI request version and identity headers without depending on CCR's CLI package.
 
 ## Transformer Behavior
 

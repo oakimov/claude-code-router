@@ -8,18 +8,21 @@ Get up and running with Claude Code Router in 5 minutes.
 
 ## 1. Start the Router
 
-From the repository root, start the service:
+Run the published Docker image:
 
 ```bash
-cd packages/server
-docker compose up --build -d
+mkdir -p ~/.claude-code-router
+docker run -d --name ccr \
+  -p 3456:3456 \
+  -v ~/.claude-code-router:/root/.claude-code-router \
+  ghcr.io/oakimov/claude-code-router:latest
 ```
 
-The router will start on `http://localhost:3456`.
+The router will start on `http://localhost:3456`. Make sure your `config.json` sets `"HOST": "0.0.0.0"` so the port mapping can reach the server.
 
 ## 2. Configure the Router
 
-Before using Claude Code Router, you need to configure your LLM providers. Edit the configuration mounted into the container at `packages/server/ccr-config/config.json`:
+Before using Claude Code Router, you need to configure your LLM providers. Edit the configuration at `~/.claude-code-router/config.json` (mounted into the container):
 
 ```json5
 {
@@ -42,7 +45,7 @@ Before using Claude Code Router, you need to configure your LLM providers. Edit 
 After editing the config, restart the service:
 
 ```bash
-docker compose restart ccr
+docker restart ccr
 ```
 
 You can also use the Web UI at `http://localhost:3456/ui/` to configure providers visually.
@@ -64,7 +67,7 @@ Your requests will be routed through Claude Code Router to your configured provi
 If you modify the configuration file or make changes through the Web UI, restart the service:
 
 ```bash
-docker compose restart ccr
+docker restart ccr
 ```
 
 ## What's Next?

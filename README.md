@@ -45,20 +45,23 @@ This fork is based on [claude-code-router](https://github.com/musistudio/claude-
 #### Prerequisites
 
 Before you begin, ensure you have the following installed on your system:
-- **Docker & Docker Compose** (Recommended): The primary way to run the router. See [Docker Install Guide](https://docs.docker.com/get-docker/).
+- **Docker** (Recommended): The primary way to run the router via the published image. See [Docker Install Guide](https://docs.docker.com/get-docker/).
 - **Node.js** (Optional): Required to run from source, publish packages, or use the **Chrome On-Device** bridge. This fork requires **Node.js ≥ 22.19.0** (needed by `undici`). See [Node.js Download](https://nodejs.org/).
 - **Claude Code**: See the [official quickstart guide](https://code.claude.com/docs/en/quickstart) for installation instructions.
 
 #### Quick Start with Docker
 
-The fastest way to launch Claude Code Router is using Docker Compose:
+The fastest way to launch Claude Code Router is the published Docker image:
 
 ```shell
-cd packages/server
-docker compose up --build -d
+mkdir -p ~/.claude-code-router
+docker run -d --name ccr \
+  -p 3456:3456 \
+  -v ~/.claude-code-router:/root/.claude-code-router \
+  ghcr.io/oakimov/claude-code-router:latest
 ```
 
-The Compose setup builds the server and UI into the `ccr` container, exposes the proxy on `http://localhost:3456`, and mounts configuration from `packages/server/ccr-config` to `/root/.claude-code-router` inside the container.
+The image ships the server and UI, exposes the proxy on `http://localhost:3456`, and mounts `~/.claude-code-router` as the config directory (`/root/.claude-code-router` inside the container). Set `"HOST": "0.0.0.0"` in your `config.json` so the port mapping can reach the server. After changing the config, restart with `docker restart ccr`; view logs with `docker logs -f ccr`.
 
 ### 2. Configuration
 
@@ -102,124 +105,33 @@ Claude Code Router supports environment variable interpolation for secure API ke
 
 This allows you to keep sensitive API keys in environment variables instead of hardcoding them in configuration files. The interpolation works recursively through nested objects and arrays.
 
-Here is a comprehensive example:
+Here is a minimal configuration:
 
 ```json
 {
   "APIKEY": "your-secret-key",
-  "PROXY_URL": "http://127.0.0.1:7890",
-  "LOG": true,
-  "API_TIMEOUT_MS": 600000,
-  "NON_INTERACTIVE_MODE": false,
   "Providers": [
     {
       "name": "openrouter",
       "api_base_url": "https://openrouter.ai/api/v1/chat/completions",
-      "api_key": "sk-xxx",
-      "models": [
-        "google/gemini-2.5-pro-preview",
-        "anthropic/claude-sonnet-4",
-        "anthropic/claude-3.5-sonnet",
-        "anthropic/claude-3.7-sonnet:thinking"
-      ],
+      "api_key": "$OPENROUTER_API_KEY",
+      "models": ["anthropic/claude-sonnet-4"],
       "transformer": {
         "use": ["openrouter"]
       }
-    },
-    {
-      "name": "deepseek",
-      "api_base_url": "https://api.deepseek.com/chat/completions",
-      "api_key": "sk-xxx",
-      "models": ["deepseek-chat", "deepseek-reasoner"],
-      "transformer": {
-        "use": ["deepseek"],
-        "deepseek-chat": {
-          "use": ["tooluse"]
-        }
-      }
-    },
-    {
-      "name": "ollama",
-      "api_base_url": "http://localhost:11434/v1/chat/completions",
-      "api_key": "ollama",
-      "models": ["qwen2.5-coder:latest"]
-    },
-    {
-      "name": "gemini",
-      "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models/",
-      "api_key": "sk-xxx",
-      "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemma-4-31b-it"],
-      "transformer": {
-        "use": ["gemini"]
-      }
-    },
-    {
-      "name": "volcengine",
-      "api_base_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-      "api_key": "sk-xxx",
-      "models": ["deepseek-v3-250324", "deepseek-r1-250528"],
-      "transformer": {
-        "use": ["deepseek"]
-      }
-    },
-    {
-      "name": "modelscope",
-      "api_base_url": "https://api-inference.modelscope.cn/v1/chat/completions",
-      "api_key": "",
-      "models": ["Qwen/Qwen3-Coder-480B-A35B-Instruct", "Qwen/Qwen3-235B-A22B-Thinking-2507"],
-      "transformer": {
-        "use": [
-          [
-            "maxtoken",
-            {
-              "max_tokens": 65536
-            }
-          ],
-          "enhancetool"
-        ],
-        "Qwen/Qwen3-235B-A22B-Thinking-2507": {
-          "use": ["reasoning"]
-        }
-      }
-    },
-    {
-      "name": "dashscope",
-      "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-      "api_key": "",
-      "models": ["qwen3-coder-plus"],
-      "transformer": {
-        "use": [
-          [
-            "maxtoken",
-            {
-              "max_tokens": 65536
-            }
-          ],
-          "enhancetool"
-        ]
-      }
-    },
-    {
-      "name": "aihubmix",
-      "api_base_url": "https://aihubmix.com/v1/chat/completions",
-      "api_key": "sk-",
-      "models": [
-        "glm-4.5",
-        "claude-opus-4-20250514",
-        "gemini-2.5-pro"
-      ]
     }
   ],
   "Router": {
-    "default": "deepseek,deepseek-chat",
-    "background": "ollama,qwen2.5-coder:latest",
-    "think": "deepseek,deepseek-reasoner",
-    "longContext": "openrouter,google/gemini-2.5-pro-preview",
-    "longContextThreshold": 60000,
-    "webSearch": "gemini,gemini-2.5-flash"
+    "default": "openrouter,anthropic/claude-sonnet-4"
   }
 }
 ```
+
+> **See also**: The complete config reference, per-provider examples, and routing
+> options are in `docs/docs/server/config/basic.md`,
+> `docs/docs/server/config/providers.md`,
+> `docs/docs/server/config/transformers.md`, and
+> `docs/docs/server/config/routing.md`.
 
 #### Adding a New Provider
 
@@ -312,7 +224,7 @@ ccr ui
 
 This will open a web-based interface where you can easily view and edit your `config.json` file.
 
-![UI](/blog/images/ui.png)
+![UI](blog/images/ui.png)
 
 ### 5. CLI Model Management
 
@@ -323,24 +235,9 @@ ccr model
 ```
 ![](blog/images/models.gif)
 
-This command provides an interactive interface to:
+`ccr model` lets you view configured models, switch models per scenario, add models, and create providers with transformer configuration — all with validation and prompts.
 
-- View current configuration:
-- See all configured models (default, background, think, longContext, webSearch, image)
-- Switch models: Quickly change which model is used for each router type
-- Add new models: Add models to existing providers
-- Create new providers: Set up complete provider configurations including:
-   - Provider name and API endpoint
-   - API key
-   - Available models
-   - Transformer configuration with support for:
-     - Multiple transformers (openrouter, deepseek, gemini, etc.)
-     - Transformer options (e.g., maxtoken with custom limits)
-     - Provider-specific routing (e.g., OpenRouter provider preferences)
-
-The CLI tool validates all inputs and provides helpful prompts to guide you through the configuration process, making it easy to manage complex setups without editing JSON files manually.
-
-For non-interactive model discovery, you can also test provider access and list remote models directly:
+For non-interactive model discovery from any provider with a model-list endpoint:
 
 ```shell
 ccr model get claude
@@ -348,44 +245,11 @@ ccr model get gemini
 ccr model get openai
 ```
 
-This command:
-- Calls the provider's model-list endpoint using the configured API key
-- Prints the remote models returned by the provider
-- Prompts to append missing models and remove configured models that the API no longer returns
+`ccr model get <provider>` fetches remote models, then prompts to append missing ones and remove configured ones the API no longer returns. Built-in endpoint support exists for `anthropic`/`claude`, `gemini`, `openai`, `codex`, and `cursor`. Other providers can use `models_api_url` plus a `models_response_format` (`listPath`, `idPath`, `stripPrefix`) to parse custom JSON responses.
 
-Built-in endpoint support is included for `anthropic`/`claude`, `gemini`, `openai`, `codex`, and `cursor`. For Claude subscription providers using `claude-auth`, discovery reads `~/.claude-code-router/claude_auth.json` and sends the required Anthropic OAuth beta headers; the provider `api_key` is only a placeholder in that mode. For other providers, you can configure `models_api_url` and a custom `models_response_format` to handle different JSON response structures.
-
-For the `codex` provider, model discovery sends the current Codex CLI `client_version` because the ChatGPT backend can gate newly released Codex model slugs by client version. CCR defaults to the latest stable version known at release time; override it with `codex_client_version` on the provider or `CCR_CODEX_CLIENT_VERSION` when testing a newer Codex CLI rollout. Runtime Codex requests are handled separately by the core Codex transformer, which spoofs the Codex CLI request version and identity headers without depending on CCR's CLI package.
-
-The `models_response_format` object supports:
-- `listPath`: JSON path to the array of models (e.g., `"data"`, `"models"`, or `""` for root array)
-- `idPath`: Field name within each model object to use as ID (e.g., `"id"`, `"name"`, `"slug"`)
-- `stripPrefix`: Optional prefix to remove from model IDs (e.g., `"models/"`)
-
-Example:
-
-```json
-{
-  "name": "together.ai",
-  "api_base_url": "https://api.together.ai/v1/chat/completions",
-  "models_api_url": "https://api.together.ai/v1/models",
-  "api_key": "$TOGETHERAI_API_KEY",
-  "models": [],
-  "models_response_format": {
-    "listPath": "",
-    "idPath": "id"
-  }
-}
-```
-
-You can also override these settings via CLI flags for testing:
-```shell
-ccr model get my-provider --list-path data --id-path id --strip-prefix "v1/"
-```
-
-If the provider returns model changes, `ccr model get <provider>` can append missing entries and remove unavailable configured entries, each behind a separate confirmation prompt.
-
-> **Note**: After syncing models into `config.json`, restart the service with `ccr restart` so the updated provider list is picked up by the running server.
+> **See also**: `docs/docs/server/guides/model-discovery.md` and `docs/docs/cli/commands/model-get.md`.
+>
+> **Note**: After syncing models into `config.json`, restart the service with `ccr restart`.
 
 #### Antigravity Authentication
 
@@ -421,9 +285,7 @@ Example provider:
 }
 ```
 
-Why those Gemini options:
-- **`cachedContent: false`** — Antigravity has no Google `cachedContents` resource. The Gemini default is `true`; leaving it on causes 404s.
-- **`thoughtSignatureFallback: "skip"`** — explicit form of the default. When a tool call is replayed without a cached `thoughtSignature`, CCR stamps Google's `skip_thought_signature_validator` sentinel so the gateway does not 400. Only change this to `"none"` if your endpoint rejects that sentinel.
+`cachedContent: false` is required — Antigravity has no Google `cachedContents` resource, and leaving the Gemini default (`true`) causes 404s. The `thoughtSignatureFallback` option is covered in `docs/docs/server/config/transformers.md`.
 
 > **Note**: Keep the CCR server running during auth. Using Antigravity IDE OAuth client credentials from a non-IDE client may violate Google's terms.
 
@@ -431,252 +293,74 @@ Why those Gemini options:
 
 The Codex provider supports two authentication modes:
 
-- **OAuth** via `ccr codex-auth`
-- **PAT** via a literal `api_key: "at-..."` or an environment variable containing an `at-` token
+- **OAuth** via `ccr codex-auth` — browser flow handled by the CCR server callback on port `1455` (Docker maps `1455:3456`); tokens stored in `~/.claude-code-router/codex_auth.json` and auto-refreshed.
+- **PAT** via a literal `api_key: "at-..."` (or an env var containing an `at-` token) — skips `ccr codex-auth`.
 
-##### OAuth mode
+An `at-` value is always treated as a PAT and never silently falls back to OAuth; any other placeholder selects OAuth tokens.
 
-Before using Codex models with OAuth, authenticate with your OpenAI account:
-
-```shell
-ccr codex-auth
-```
-
-This command:
-1. Opens your browser to the OpenAI OAuth authorization page
-2. After you sign in, the OAuth callback is handled by the running CCR server
-3. Tokens are stored in `~/.claude-code-router/codex_auth.json`
-4. The CLI and server independently refresh tokens five minutes before expiry
-
-CCR derives the selected ChatGPT workspace and FedRAMP routing state from the
-OAuth ID token. Runtime requests and `ccr model get codex` both send the same
-Codex bearer, account, and routing headers. Refreshes use an atomic credential
-file and a cross-process lock so a separately running CLI and server cannot
-reuse the same rotating refresh token. A runtime OAuth 401 performs one guarded
-credential reload/refresh retry.
-
-> **Note**: The server must be running for `ccr codex-auth` to work, as it hosts the OAuth callback endpoint.
-
-**Running with Docker**:
-
-The OAuth callback uses port `1455`, which is mapped to the CCR server port in `docker-compose.yml` (`"1455:3456"`). When running in Docker:
-
-```shell
-docker exec -it claude-code-router ccr codex-auth
-```
-
-The CLI prints a URL to open in your host browser. After signing in, the browser redirects to `http://localhost:1455/auth/callback`, which Docker forwards to the container. Tokens persist across container restarts via the volume-mounted `./ccr-config` directory.
-
-##### PAT mode
-
-CCR treats a literal `api_key` starting with `at-` as a Codex Personal Access Token. It also resolves `$VAR`, `${VAR}`, and bare variable names such as `CODEX_PAT` when that environment variable contains an `at-` token. In PAT mode, you do **not** run `ccr codex-auth`.
-
-```json
-{
-  "name": "codex",
-  "api_base_url": "https://chatgpt.com/backend-api/codex",
-  "api_key": "$CODEX_PAT",
-  "models": ["gpt-5.4"],
-  "transformer": {
-    "use": ["codex"]
-  }
-}
-```
-
-```shell
-export CODEX_PAT="at-your-personal-access-token"
-```
-
-CCR resolves the PAT's account, user, plan, and FedRAMP metadata through
-OpenAI's `/whoami` endpoint before calling the Codex backend. Both runtime
-requests and `ccr model get codex` then send `Authorization`,
-`ChatGPT-Account-ID`, and `X-OpenAI-Fedramp` when required. Metadata requests
-are deduplicated and cached briefly by the server.
-
-Auth mode is explicit: an `at-` value is always treated as a PAT. An invalid or
-revoked PAT fails as PAT authentication and is never silently replaced with
-OAuth. Any non-PAT placeholder selects OAuth tokens from
-`~/.claude-code-router/codex_auth.json`.
-
-> **See also**: Full Codex setup and troubleshooting are documented in `docs/docs/server/guides/codex.md`.
+> **See also**: Full Codex setup, both auth modes, provider config, and troubleshooting are in `docs/docs/server/guides/codex.md`.
 
 #### Cursor Provider Authentication
 
-The Cursor provider uses the official `@cursor/sdk` (no browser OAuth CLI). Auth resolve order:
+The Cursor provider runs models in-process via the official `@cursor/sdk` (no browser OAuth CLI). Auth resolves from the provider `api_key` starting with `crsr_`, then `CURSOR_API_KEY`. Default **bridge** mode keeps Claude Code as the tool host; Cursor built-ins are denied in an isolated workspace. Discover models with `ccr model get cursor`.
 
-1. Provider `api_key` starting with `crsr_` (Cursor dashboard API key)
-2. Otherwise `CURSOR_API_KEY` from the environment
-
-Example provider:
-
-```json
-{
-  "name": "cursor",
-  "api_base_url": "https://cursor.com",
-  "api_key": "$CURSOR_API_KEY",
-  "models": ["composer-2"],
-  "transformer": {
-    "use": [
-      [
-        "cursor-sdk",
-        {
-          "cursorMode": "bridge"
-        }
-      ]
-    ]
-  }
-}
-```
-
-- **bridge** (default): Claude Code hosts tools; Cursor built-ins are denied in an isolated workspace under `~/.claude-code-router/cursor-sdk-workspaces/`
-- Cursor builds its harness prompt server-side from the SDK workspace root, so bridge mode grounds the model in the host environment instead: the project root and platform from the incoming `<env>` block are injected through the workspace `AGENTS.md`, the head and tail of the agent prompt, and the built-in denial message. Host tool calls whose arguments reference the isolated workspace are intercepted, answered with a correction rather than forwarded to Claude Code, and counted in the session metrics. Isolated workspaces are removed with their session and swept when orphaned.
-- Discover models with `ccr model get cursor` (lists via `Cursor.models.list`, not REST `/models`)
-- Docker Compose passes `CURSOR_API_KEY` into the container when set; local Cursor sandboxing is forced off in Docker
-- Cursor prompt caching is native to the held-open SDK agent session. CCR reports per-request token estimates to Claude Code and maps SDK cache-read deltas back as bounded Anthropic cache-read usage.
-- Cursor thinking is forwarded from both SDK stream `thinking` messages and token-level `Agent.send({ onDelta })` `thinking-delta` updates, then closed with a synthetic signature so Claude Code can render it as Anthropic extended thinking. Claude Code 2.1.89+ hides interactive thinking summaries by default; enable `"showThinkingSummaries": true` in the settings file passed to Claude Code to display them. This is a client rendering setting: CCR still transports the thinking block when it is disabled.
-- Cursor turns are coordinated per Claude conversation. Identical overlapping retries share one bounded response producer (and recent completed result), so only one consumer reads the Cursor iterator and only one `agent.send` is submitted. Stopping the last subscriber awaits bounded run/iterator retirement before re-entry, and replacement creation waits for the SDK agent's asynchronous disposal. Pure, exactly matched tool results resume a live parked run; a rejected result plus meaningful replacement text, an unmatched/dead run, or divergent transcript retires the old agent and replays the full conversation. Idle agents receive slim follow-ups only when the incoming transcript is exactly the committed host-visible transcript plus one supported user message; larger suffixes are fully replayed. CCR does not use `local.force` to bypass Cursor's active-run guard.
-
-> **See also**: Full Cursor setup is documented in `docs/docs/server/guides/cursor.md`.
+> **See also**: Full Cursor setup, bridge/plan/agent modes, and configuration are in `docs/docs/server/guides/cursor.md`.
 
 #### Claude Subscription Authentication
 
-The Claude subscription provider uses OAuth to authenticate with Anthropic's API using your Claude Pro or Max subscription. Before using Claude models this way, you must authenticate:
+Route Claude Code through your Claude Pro or Max subscription via OAuth:
 
 ```shell
 ccr claude-auth
 ```
 
-This command:
-1. Opens your browser to the Claude OAuth authorization page
-2. After you sign in, the OAuth callback is handled by the running CCR server on port `1455`
-3. Tokens are stored in `~/.claude-code-router/claude_auth.json`
-4. The `claude-auth` transformer automatically refreshes tokens when they expire
+The OAuth flow is handled by the CCR server callback on port `1455` (Docker maps `1455:3456`); tokens are stored in `~/.claude-code-router/claude_auth.json` and auto-refreshed. A Claude subscription provider requires the `claude-auth` + `Anthropic` transformer chain.
 
-> **Note**: The server must be running for `ccr claude-auth` to work, as it hosts the OAuth callback endpoint on port 1455.
-
-**Running with Docker**:
-
-The OAuth callback uses port `1455`, which is mapped to the CCR server port in `docker-compose.yml` (`"1455:3456"`). When running in Docker:
-
-```shell
-docker exec -it claude-code-router ccr claude-auth
-```
-
-The CLI prints a URL to open in your host browser. After signing in, the browser redirects to `http://localhost:1455/callback`, which Docker forwards to the container. Tokens persist across container restarts via the volume-mounted `./ccr-config` directory.
-
-A Claude subscription provider requires the `claude-auth` + `Anthropic` transformer chain:
-
-```json
-{
-  "name": "claude-subscription",
-  "api_base_url": "https://api.anthropic.com",
-  "api_key": "no-key",
-  "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
-  "transformer": {
-    "use": ["claude-auth", "Anthropic"]
-  }
-}
-```
-
-> **See also**: Full Claude subscription setup is documented in `docs/docs/server/guides/claude-auth.md`.
-
-**Custom Transformers:**
+> **See also**: Full setup, the transformer chain, client classification, and billing/identity details are in `docs/docs/server/guides/claude-auth.md`.
 
 #### Qwen Provider Authentication
 
-The Qwen provider uses a single JWT to authenticate with the Qwen Chat backend. Before using Qwen models, you must save a token to your local CCR config:
+Authenticate with Qwen Chat by saving a JWT from `chat.qwen.ai` localStorage:
 
 ```shell
 ccr qwen-auth
 ```
 
-This command:
-1. Prints a URL (`http://127.0.0.1:<port>/qwen/auth`) for the in-browser auth page
-2. The page offers two options:
-   - **Bookmarklet (recommended)**: drag the "Get Qwen Token" link to your bookmarks bar, then click it on the signed-in Qwen page. The token is sent back to CCR automatically.
-   - **Manual paste**: sign in at `chat.qwen.ai`, open dev tools (F12) → Console, run `copy(localStorage.getItem('token'))`, paste the JWT into the form and submit.
-3. The token is validated against `qwen.aikit.club/v1/validate` and saved to `~/.claude-code-router/qwen_auth.json` (mode 0600)
-4. The `qwen-auth` transformer automatically refreshes the token when it nears expiry (within 6 hours)
+The CCR server hosts an auth page at `/qwen/auth` offering a bookmarklet or manual paste. The token is validated, saved to `~/.claude-code-router/qwen_auth.json`, and auto-refreshed. The Qwen provider requires the `qwen-auth` + `reasoning` + `OpenAI` transformer chain.
 
-> **Note**: The server must be running for `ccr qwen-auth` to work, as it hosts the auth form at `/qwen/auth`. Unlike the Codex flow, no OAuth callback is required — the token is pasted directly into the form.
-
-**Running with Docker**:
-
-The Qwen auth page is served on the regular CCR port (no separate callback port). When running in Docker:
-
-```shell
-docker exec -it claude-code-router ccr qwen-auth
-```
-
-The CLI prints a URL to open in your host browser (`http://localhost:3456/qwen/auth`, which Docker forwards to the container). Tokens persist across container restarts via the volume-mounted `./ccr-config` directory.
-
-**Custom host/port for the bookmarklet**: The bookmarklet's redirect target is hardcoded into the JS because it runs in the Qwen page's context (with no knowledge of CCR's address). By default it points to `http://127.0.0.1:3456`. If your CCR server is on a different host or port, set the `QWEN_AUTH_REDIRECT` env var before starting the server, e.g. `QWEN_AUTH_REDIRECT=http://192.168.1.10:8080` — the bookmarklet will then redirect to that address.
+> **See also**: Full Qwen setup and provider config are in `docs/docs/server/guides/qwen.md`.
 
 #### Chrome On-Device Bridge
 
-The `chrome-on-device` transformer requires a bridge process running on the host to communicate with Chrome's Gemini Nano model:
+Use Chrome's built-in Gemini Nano (~4GB local model) with zero API cost via a host-side bridge:
 
 ```bash
-# Start the bridge (default: port 3457, CDP port 9222)
-ccr chrome-bridge
-
-# Custom ports
+ccr chrome-bridge            # default: port 3457, CDP 9222
 ccr chrome-bridge --port 3457 --cdp 9222
 ```
 
-The bridge:
-1. Checks if Chrome is running with remote debugging enabled (port 9222)
-2. If not, launches Chrome with the required flags (`--remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug-profile`)
-3. Connects to Chrome via Puppeteer/CDP with a 5-minute protocol timeout to handle slow model inference
-4. Loads a page that accesses the Prompt API (`window.LanguageModel`) and maintains a persistent `LanguageModel` session across all requests — conversation history is carried forward naturally within the session, not rebuilt per request
-5. Replaces Claude Code's system prompt with a minimal tool-focused one (5 core tools), using `responseConstraint` (JSON Schema) to force the model to emit structured JSON with `{text, tool_calls[]}` fields
-6. Exposes an OpenAI-compatible HTTP API on `0.0.0.0:3457`:
-   - `GET /v1/models` — returns available models with live context usage
-   - `GET /v1/models/{model_name}` — returns individual model info (display_name, max_input_tokens, capabilities)
-   - `POST /v1/chat/completions` — chat completions with streaming and non-streaming support
-   - `GET /health` — health check
+The bridge connects to Chrome's Prompt API over CDP, maintains persistent model sessions, and exposes an OpenAI-compatible API (`/v1/chat/completions`) on `127.0.0.1:3457`. It replaces Claude Code's system prompt with a minimal tool-focused one and uses `responseConstraint` (JSON Schema) to force structured `{text, tool_calls[]}` output.
 
-**Prerequisites**: Chrome flags must be enabled (see Chrome On-Device Provider Configuration section). The model (~4GB) must be downloaded.
+**Prerequisites**: enable `chrome://flags/#optimization-guide-on-device-model` and `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input`, restart Chrome, and let the ~4GB model download.
 
-> **Note for Docker**: The bridge runs on the Docker **host**, not inside the container. Set the provider host to `http://host.docker.internal:3457` in your `config.json`.
+> **Note for Docker**: The bridge runs on the Docker **host**, not inside the container — set the provider host to `http://host.docker.internal:3457`. Full setup, provider config, features, and limitations are in `docs/docs/server/guides/chrome-on-device.md`.
 
 ### 6. Presets Management
 
-Presets allow you to save, share, and reuse configurations easily. You can export your current configuration as a preset and install presets from files or URLs.
+Save, share, and reuse configurations:
 
 ```shell
-# Export current configuration as a preset
-ccr preset export my-preset
-
-# Export with metadata
+ccr preset export my-preset                    # export current config as a preset
 ccr preset export my-preset --description "My OpenAI config" --author "Your Name" --tags "openai,production"
-
-# Install a preset from local directory
-ccr preset install /path/to/preset
-
-# List all installed presets
+ccr preset install /path/to/preset             # install from a directory
 ccr preset list
-
-# Show preset information
 ccr preset info my-preset
-
-# Delete a preset
 ccr preset delete my-preset
 ```
 
-**Preset Features:**
-- **Export**: Save your current configuration as a preset directory (with manifest.json)
-- **Install**: Install presets from local directories
-- **Sensitive Data Handling**: API keys and other sensitive data are automatically sanitized during export (marked as `{{field}}` placeholders)
-- **Dynamic Configuration**: Presets can include input schemas for collecting required information during installation
-- **Version Control**: Each preset includes version metadata for tracking updates
+Presets store your configuration (plus metadata) as a directory with `manifest.json`. Sensitive fields are sanitized to `{{field}}` placeholders on export, and presets can include input schemas to collect required values (e.g. API keys) at install time.
 
-**Preset File Structure:**
-```
-~/.claude-code-router/presets/
-├── my-preset/
-│   └── manifest.json    # Contains configuration and metadata
-```
+> **See also**: `docs/docs/cli/commands/preset.md`.
 
 ### 7. Activate Command (Environment Variables Setup)
 
@@ -704,299 +388,24 @@ The `activate` command sets the following environment variables:
 
 > **Note**: Make sure the Claude Code Router service is running (`ccr start`) before using the activated environment variables. The environment variables are only valid for the current shell session. To make them persistent, you can add `eval "$(ccr activate)"` to your shell configuration file (e.g., `~/.zshrc` or `~/.bashrc`).
 
-#### Providers
+#### Providers and Transformers
 
-The `Providers` array is where you define the different model providers you want to use. Each provider object requires:
+The `Providers` array defines each provider: `name`, `api_base_url`, `api_key`, `models`, and an optional `transformer` object. The `transformer.use` list applies transformers globally (all models) or per model key, and some transformers accept options via a nested `[name, options]` array.
 
-- `name`: A unique name for the provider.
-- `api_base_url`: The full API endpoint for chat completions.
-- `api_key`: Your API key for the provider.
-- `models`: A list of model names available from this provider.
-- `transformer` (optional): Specifies transformers to process requests and responses.
-
-#### Transformers
-
-Transformers allow you to modify the request and response payloads to ensure compatibility with different provider APIs.
-
-- **Global Transformer**: Apply a transformer to all models from a provider. In this example, the `openrouter` transformer is applied to all models under the `openrouter` provider.
-  ```json
-  {
-    "name": "openrouter",
-    "api_base_url": "https://openrouter.ai/api/v1/chat/completions",
-    "api_key": "sk-xxx",
-    "models": [
-      "google/gemini-2.5-pro-preview",
-      "anthropic/claude-sonnet-4",
-      "anthropic/claude-3.5-sonnet"
-    ],
-    "transformer": { "use": ["openrouter"] }
-  }
-  ```
-- **Model-Specific Transformer**: Apply a transformer to a specific model. In this example, the `deepseek` transformer is applied to all models, and an additional `tooluse` transformer is applied only to the `deepseek-chat` model.
-
-  ```json
-  {
-    "name": "deepseek",
-    "api_base_url": "https://api.deepseek.com/chat/completions",
-    "api_key": "sk-xxx",
-    "models": ["deepseek-chat", "deepseek-reasoner"],
-    "transformer": {
-      "use": ["deepseek"],
-      "deepseek-chat": { "use": ["tooluse"] }
-    }
-  }
-  ```
-
-- **Passing Options to a Transformer**: Some transformers, like `maxtoken`, accept options. To pass options, use a nested array where the first element is the transformer name and the second is an options object.
-  ```json
-  {
-    "name": "siliconflow",
-    "api_base_url": "https://api.siliconflow.cn/v1/chat/completions",
-    "api_key": "sk-xxx",
-    "models": ["moonshotai/Kimi-K2-Instruct"],
-    "transformer": {
-      "use": [
-        [
-          "maxtoken",
-          {
-            "max_tokens": 16384
-          }
-        ]
-      ]
-    }
-  }
-  ```
+> **See also**: Provider schema and per-provider examples are in `docs/docs/server/config/providers.md`; the transformer reference and option passing are in `docs/docs/server/config/transformers.md`.
 
 **Available Built-in Transformers:**
 
-- `Anthropic`:If you use only the `Anthropic` transformer, it will preserve the original request and response parameters(you can use it to connect directly to an Anthropic endpoint).
-- `deepseek`: Adapts requests/responses for DeepSeek API.
-- `gemini`: Adapts requests/responses for Gemini API (also the dialect stage used with Antigravity; same options apply to `vertex-gemini`). Claude Code's effort setting (sent as `output_config.effort`) drives thinking depth: `thinkingLevel` for Gemini 3+ (`low`/`high` on Gemini 3 Pro, plus `medium` on later Pro minors, plus `minimal` on Flash/Lite) or `thinkingBudget` for Gemini 2.5 and Claude-via-Antigravity — never both (the API rejects that mix). Efforts outside a family's range round up (`medium` on Gemini 3 Pro, `xhigh`/`max` anywhere → `high`), and the configured model id is never rewritten (a tier-pinned `gemini-3-pro-low` keeps talking to `gemini-3-pro-low`). Pass options as `["gemini", { ... }]`:
-  - **`cachedContent`** (boolean, default `true`): whether CCR may use Google's separate **`cachedContents` HTTP resource** to store/reuse prompt prefixes on the public Gemini API. This is Gemini server-side context cache — **not** Anthropic `cache_control` and **not** Claude Code's local prompt cache. Leave `true` for normal Gemini; set **`false` for Antigravity** (and any gateway without `cachedContents`) or you get 404s.
-  - **`thoughtSignatureFallback`** (`"skip"` \| `"none"`, default `"skip"`): what to do when a replayed tool call has no cached Gemini `thoughtSignature` (Claude Code's Anthropic `tool_use` cannot carry that field, so CCR caches signatures by tool-call id and restores them; a miss otherwise 400s). `"skip"` means stamp Google's documented sentinel `skip_thought_signature_validator` on the **first** `functionCall` of the step — the value name refers to that sentinel, **not** “disable the fallback.” Leave `"skip"` for Gemini/Antigravity; set `"none"` only if the endpoint rejects the sentinel (some Vertex). Real cached signatures are always preferred; the sentinel is a last resort.
-- `mistral`: Adapts requests/responses for Mistral API.
-- `openrouter`: Adapts requests/responses for OpenRouter API. It can also accept a `provider` routing parameter to specify which underlying providers OpenRouter should use. For more details, refer to the [OpenRouter documentation](https://openrouter.ai/docs/features/provider-routing). See an example below:
-  ```json
-    "transformer": {
-      "use": ["openrouter"],
-      "moonshotai/kimi-k2": {
-        "use": [
-          [
-            "openrouter",
-            {
-              "provider": {
-                "only": ["moonshotai/fp8"]
-              }
-            }
-          ]
-        ]
-      }
-    }
-  ```
-- `groq`: Adapts requests/responses for groq API.
-- `maxtoken`: Sets a specific `max_tokens` value.
-- `tooluse`: Optimizes tool usage for certain models via `tool_choice`.
-- `gemini-cli` (experimental): Unofficial support for Gemini via Gemini CLI [gemini-cli.js](https://gist.github.com/musistudio/1c13a65f35916a7ab690649d3df8d1cd).
-- `reasoning`: Used to process the `reasoning_content` field.
-- `sampling`: Used to process sampling information fields such as `temperature`, `top_p`, `top_k`, and `repetition_penalty`.
-- `enhancetool`: Adds a layer of error tolerance to the tool call parameters returned by the LLM (this will cause the tool call information to no longer be streamed).
-- `cleancache`: Clears the `cache_control` field from requests.
-- `vertex-gemini`: Handles the Gemini API using Vertex authentication.
-- `chutes-glm` Unofficial support for GLM 4.5 model via Chutes [chutes-glm-transformer.js](https://gist.github.com/vitobotta/2be3f33722e05e8d4f9d2b0138b8c863).
-- `qwen-cli` (experimental): Unofficial support for qwen3-coder-plus model via Qwen CLI [qwen-cli.js](https://gist.github.com/musistudio/f5a67841ced39912fd99e42200d5ca8b).
-- `rovo-cli` (experimental): Unofficial support for gpt-5 via Atlassian Rovo Dev CLI [rovo-cli.js](https://gist.github.com/SaseQ/c2a20a38b11276537ec5332d1f7a5e53).
-- `codex`: Adapts requests/responses for the Codex (ChatGPT) backend API. Supports OAuth via `ccr codex-auth` or PAT auth when `api_key` starts with `at-`.
-- `claude-auth`: Authenticates requests to Anthropic's API using your Claude Pro or Max subscription OAuth token. Converts Unified format to Anthropic format and handles SSE response conversion. Use it together with `Anthropic` in the provider chain, and authenticate via `ccr claude-auth`.
-- `antigravity-auth`: OAuth + envelope middleware for Google's Antigravity gateway (`cloudcode-pa`). Chain **after** `gemini`. For Antigravity you must set `cachedContent: false` on the Gemini stage (no `cachedContents` resource there); keep `thoughtSignatureFallback: "skip"` unless the endpoint rejects Google's thought-signature sentinel. Authenticate with `ccr antigravity-auth`.
-- `chrome-on-device`: Routes requests to Chrome's on-device Gemini Nano model via the Prompt API. Uses `responseConstraint` for structured JSON output. Requires a bridge process running on the host (`ccr chrome-bridge`).
+- `Anthropic` — passes through to an Anthropic endpoint unchanged. `OpenAI` — registers the `/v1/chat/completions` route (the body is already in OpenAI shape).
+- Provider adapters: `deepseek`, `groq`, `mistral`, `openrouter`, `gemini` / `vertex-gemini`, `codex`, `claude-auth`, `antigravity-auth`, `qwen-auth`, `cursor-sdk`, `chrome-on-device`.
+- `maxtoken` — sets a specific `max_tokens`. `tooluse` — optimizes tool usage via `tool_choice`. `reasoning` — replays provider `reasoning_content` across turns. `sampling` — maps `temperature` / `top_p` / `top_k` / `repetition_penalty`. `enhancetool` — adds error tolerance to tool-call parameters (disables streaming of tool calls). `cleancache` — clears `cache_control`. `customparams` — injects custom request parameters.
+- Experimental gist/CLI integrations: `gemini-cli`, `chutes-glm`, `qwen-cli`, `rovo-cli`.
 
-**Chrome On-Device Provider Configuration:**
-
-The `chrome-on-device` transformer routes requests to Chrome's built-in Gemini Nano model. This is a ~4GB on-device model that runs locally with no API costs. The model is accessed through Chrome's Prompt API (`window.LanguageModel`) via a bridge process.
-
-**Prerequisites:**
-
-1. Google Chrome installed on your system (macOS, Windows, or Linux)
-2. Enable Chrome flags (one-time):
-   - `chrome://flags/#optimization-guide-on-device-model` → **Enabled**
-   - `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input` → **Enabled**
-3. Restart Chrome after enabling flags and wait for the model to download (~4GB)
-4. Start the bridge process on the host: `ccr chrome-bridge`
-
-**Provider Configuration:**
-
-```json
-{
-  "name": "chrome-nano",
-  "api_base_url": "http://127.0.0.1:3457",
-  "api_key": "placeholder",
-  "models": ["gemini-nano"],
-  "transformer": {
-    "use": ["chrome-on-device", "tooluse"]
-  }
-}
-```
-
-> **Note**: The `tooluse` transformer is required alongside `chrome-on-device` to enable the a la carte tool-calling system (including the `ExitTool` for plain text responses) and to inject the necessary system reminders that help the model transition between thinking and acting.
-
-**Starting the Bridge:**
-
-The bridge is a standalone HTTP server that runs on the host and bridges HTTP requests to Chrome's Prompt API via CDP (Chrome DevTools Protocol):
-
-```bash
-# Start the bridge (default: port 3457, CDP port 9222)
-ccr chrome-bridge
-
-# Custom ports
-ccr chrome-bridge --port 3457 --cdp 9222
-```
-
-The bridge automatically launches Chrome with the required flags if it's not already running (`--remote-debugging-port=9222 --user-data-dir=<temp_dir>`).
-
-> **Note for Docker users**: The bridge must run on the Docker **host** (not inside the container), since it needs direct access to Chrome via CDP. When CCR runs in Docker, set the provider host to `http://host.docker.internal:3457`.
-
-**How It Works:**
-
-1. The transformer replaces Claude Code's system prompt with a minimal tool-focused one listing 5 core tools (Bash, Read, Write, Edit, ExitTool)
-2. The bridge maintains persistent `LanguageModel` sessions — one per client fingerprint (`User-Agent + IP` hash). Conversation history is carried forward naturally within each session, not rebuilt per turn. It calls `session.promptStreaming()` with a `responseConstraint` (JSON Schema) that forces structured output: `{"tool_calls": [{"name": "...", "arguments": {...}}]}`. Text responses are handled by the model calling the `ExitTool`.
-3. The bridge transforms Claude Code's internal context blocks in user messages to conserve the limited context budget: `<system-reminder>` blocks containing tool calls or results are converted into structured `<tool_result>` tags, while other `<system-reminder>` blocks and `<command-*>` / `<local-command-*>` blocks for unsupported tools are stripped
-4. The bridge parses the structured JSON response into OpenAI-format SSE chunks (`chat.completion.chunk`) or a single non-streaming response (`chat.completion`)
-5. Tool calls are detected from the parsed JSON and converted to `tool_calls` in the response; `finish_reason` is set to `"tool_calls"` or `"stop"` accordingly
-6. Multi-turn tool use is supported — consecutive requests are processed within the same persistent session
-7. **Multi-session support**: Requests are fingerprinted by `User-Agent + IP` hash into separate sessions, allowing multiple concurrent Claude Code instances without context contamination. A built-in web dashboard (served on the bridge port) shows real-time stats for all sessions, including turn count, idle time, and context usage
-8. **Idle session eviction**: Sessions idle for more than 5 minutes are automatically destroyed to free resources. The `cli` session (dashboard default) is never evicted. Sessions can also be manually evicted via the dashboard's Evict button
-9. Auto-compaction triggers at 85% context usage, resetting the session while preserving the system prompt
-
-**Limitations:**
-
-- **Tool calling**: Uses `responseConstraint` (JSON Schema) for structured output rather than native function calling — this works reliably but depends on the model following the schema
-- **Multi-turn consistency**: The small on-device model may occasionally loop on the same tool call or respond with text instead of calling a needed tool. A retry mechanism with corrected prompts mitigates this
-- **No thinking/reasoning blocks**: The Prompt API doesn't separate thinking from visible output
-- **Context window**: Limited to 9216 tokens; auto-compaction engages at 85% usage. Old interactions are evicted on context overflow
-- **Output limit**: The model may stall on whitespace-heavy content (e.g., Python indentation). The bridge uses write-then-edit incremental file creation (3 lines per Write call) and whitespace stall detection with abort
-- **Cross-platform support**: Compatible with macOS, Windows, and Linux (requires Chrome installation and manual flag enablement)
-
-**Codex Provider Configuration:**
-
-The Codex transformer connects to the ChatGPT backend API, providing access to GPT-5.x models. It supports either OAuth authentication or a PAT in `api_key`.
-
-```json
-{
-  "name": "codex",
-  "api_base_url": "https://chatgpt.com/backend-api/codex",
-  "api_key": "oauth_dummy_key",
-  "models": ["gpt-5.4"],
-  "transformer": {
-    "use": ["codex"]
-  }
-}
-```
-
-> **OAuth mode**: Keep `api_key` as a placeholder and run `ccr codex-auth`. OAuth tokens are stored in `~/.claude-code-router/codex_auth.json`.
-
-```json
-{
-  "name": "codex",
-  "api_base_url": "https://chatgpt.com/backend-api/codex",
-  "api_key": "at-your-personal-access-token",
-  "models": ["gpt-5.4"],
-  "transformer": {
-    "use": ["codex"]
-  }
-}
-```
-
-> **PAT mode**: If `api_key` starts with `at-`, CCR uses it directly and skips `ccr codex-auth`.
-
-> **Note**: If `api_key` is not a PAT, CCR falls back to OAuth tokens from `~/.claude-code-router/codex_auth.json`.
-
-**Qwen Provider Configuration:**
-
-The Qwen provider uses the `qwen-auth` transformer (for the `Authorization: Bearer <jwt>` header and trailing `<details>` strip) paired with the existing `OpenAI` transformer (which registers the `POST /v1/chat/completions` endpoint).
-
-```json
-{
-  "name": "qwen",
-  "api_base_url": "https://qwen.aikit.club/v1/chat/completions",
-  "api_key": "qwen-placeholder",
-  "models": ["qwen3-max", "qwen3-coder-plus"],
-  "transformer": {
-    "use": ["qwen-auth", "reasoning", "OpenAI"]
-  }
-}
-```
-
-Three transformers are required in the chain:
-
-- `qwen-auth` — sets the `Authorization: Bearer <jwt>` header on every outbound request (loading/refreshing the JWT from `~/.claude-code-router/qwen_auth.json`) and strips the trailing `<details>...</details>` block Qwen injects into responses.
-- `reasoning` — maps Claude Code's unified `reasoning` field onto the request so the Qwen endpoint's `enable_thinking` and `thinking_budget` parameters are populated.
-- `OpenAI` — owns the `POST /v1/chat/completions` client route, validates inbound Chat requests, and applies OpenAI-compatible provider normalization. In this Qwen provider chain it remains last so the endpoint wire stage runs after the Qwen-specific middleware.
-
-> **Note**: The `api_key` field is a placeholder — actual authentication is handled via the JWT stored in `~/.claude-code-router/qwen_auth.json`. Run `ccr qwen-auth` to authenticate before using the Qwen provider.
-
-**Claude Subscription Provider Configuration:**
-
-The `claude-auth` transformer routes requests to Anthropic's API using your Claude Pro or Max subscription OAuth token instead of a static API key.
-
-```json
-{
-  "name": "claude-subscription",
-  "api_base_url": "https://api.anthropic.com",
-  "api_key": "no-key",
-  "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
-  "transformer": {
-    "use": ["claude-auth", "Anthropic"]
-  }
-}
-```
-
-Two transformers are required in the chain:
-
-- `claude-auth` — converts the request from Unified (OpenAI) format to Anthropic format, injects `Authorization: Bearer <token>` (loading/refreshing the token from `~/.claude-code-router/claude_auth.json`), and converts the Anthropic SSE response back to Unified format.
-- `Anthropic` — owns the `POST /v1/messages` client route and provides direct Unified ↔ Anthropic conversion for static-key Anthropic providers. When `claude-auth` is present, it delegates conversion to that OAuth transformer to avoid a double conversion.
-
-> **Note**: The `api_key` field is a placeholder — actual authentication is handled via OAuth tokens stored in `~/.claude-code-router/claude_auth.json`. Run `ccr claude-auth` to authenticate before using this provider. The transformer automatically sends Anthropic's `oauth-2025-04-20` beta so subscription OAuth Bearer tokens are accepted.
-
-**DeepSeek via OpenCode (Mandatory Reasoning Replay):**
-
-DeepSeek models require previous assistant reasoning content to be replayed in subsequent requests. When using DeepSeek models through providers like OpenCode, apply the `reasoning` transformer at the model level to handle this automatically:
-
-```json
-{
-  "name": "opencode",
-  "api_base_url": "https://opencode.ai/zen/go/v1/chat/completions",
-  "api_key": "$OPENCODE_API_KEY",
-  "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
-  "transformer": {
-    "use": ["OpenAI"],
-    "deepseek-v4-pro": {
-      "use": ["reasoning"]
-    },
-    "deepseek-v4-flash": {
-      "use": ["reasoning"]
-    }
-  }
-}
-```
-
-> **Note**: The `reasoning` transformer must be applied specifically to DeepSeek models (not provider-wide). It replays the assistant's reasoning output from previous turns as required by the DeepSeek API.
+> **See also**: The full transformer reference — including the `gemini` `cachedContent` / `thoughtSignatureFallback` options and the `openrouter` provider-routing parameter — is in `docs/docs/server/config/transformers.md`.
 
 **Custom Transformers:**
 
-You can also create your own transformers and load them via the `transformers` field in `config.json`.
-
-```json
-{
-  "transformers": [
-    {
-      "path": "/User/xxx/.claude-code-router/plugins/gemini-cli.js",
-      "options": {
-        "project": "xxx"
-      }
-    }
-  ]
-}
-```
+Load your own transformers via the `transformers` field in `config.json`, e.g. `{ "transformers": [{ "path": "/User/xxx/.claude-code-router/plugins/gemini-cli.js", "options": { "project": "xxx" } }] }`. See `docs/docs/server/config/transformers.md` for the full custom-transformer guide.
 
 #### Router
 
@@ -1016,42 +425,7 @@ Example: `/model openrouter,anthropic/claude-3.5-sonnet`
 
 #### Custom Router
 
-For more advanced routing logic, you can specify a custom router script via the `CUSTOM_ROUTER_PATH` in your `config.json`. This allows you to implement complex routing rules beyond the default scenarios.
-
-In your `config.json`:
-
-```json
-{
-  "CUSTOM_ROUTER_PATH": "/User/xxx/.claude-code-router/custom-router.js"
-}
-```
-
-The custom router file must be a JavaScript module that exports an `async` function. This function receives the request object and the config object as arguments and should return the provider and model name as a string (e.g., `"provider_name,model_name"`), or `null` to fall back to the default router.
-
-Here is an example of a `custom-router.js` based on `custom-router.example.js`:
-
-```javascript
-// /User/xxx/.claude-code-router/custom-router.js
-
-/**
- * A custom router function to determine which model to use based on the request.
- *
- * @param {object} req - The request object from Claude Code, containing the request body.
- * @param {object} config - The application's config object.
- * @returns {Promise<string|null>} - A promise that resolves to the "provider,model_name" string, or null to use the default router.
- */
-module.exports = async function router(req, config) {
-  const userMessage = req.body.messages.find((m) => m.role === "user")?.content;
-
-  if (userMessage && userMessage.includes("explain this code")) {
-    // Use a powerful model for code explanation
-    return "openrouter,anthropic/claude-3.5-sonnet";
-  }
-
-  // Fallback to the default router configuration
-  return null;
-};
-```
+For advanced routing logic, set `CUSTOM_ROUTER_PATH` in `config.json` to a JS module exporting an `async function(req, config)` that returns a `"provider,model"` string, or `null` to fall back to the default router. See `custom-router.example.js` and `docs/docs/server/advanced/custom-router.md`.
 
 ##### Subagent Routing
 
@@ -1090,10 +464,10 @@ See [the implementation plan and review](tasks/caching-plan.md) for the provider
 
 ## Status Line (Beta)
 To better monitor the status of claude-code-router at runtime, version v1.0.40 includes a built-in statusline tool, which you can enable in the UI.
-![statusline-config.png](/blog/images/statusline-config.png)
+![statusline-config.png](blog/images/statusline-config.png)
 
 The effect is as follows:
-![statusline](/blog/images/statusline.png)
+![statusline](blog/images/statusline.png)
 
 ## 🤖 GitHub Actions
 

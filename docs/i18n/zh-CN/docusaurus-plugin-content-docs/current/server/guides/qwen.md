@@ -43,6 +43,8 @@ http://localhost:3456/qwen/auth
 
 令牌会经过 Qwen API 验证并保存到 `~/.claude-code-router/qwen-auth.json`。
 
+书签工具的重定向目标被硬编码在 JS 中，因为它在 Qwen 页面的上下文中运行（不知道 CCR 的地址）。默认指向 `http://127.0.0.1:3456`。如果您的 CCR 服务器位于其他主机或端口，请在启动服务器前设置 `QWEN_AUTH_REDIRECT` 环境变量，例如 `QWEN_AUTH_REDIRECT=http://192.168.1.10:8080` — 书签工具随后会重定向到该地址。
+
 ### 3. 配置提供商
 
 将 Qwen 提供商添加到 `~/.claude-code-router/config.json`：

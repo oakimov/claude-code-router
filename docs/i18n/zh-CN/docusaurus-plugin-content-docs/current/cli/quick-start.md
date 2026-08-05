@@ -9,18 +9,21 @@ sidebar_position: 3
 
 ## 1. 启动路由器
 
-从仓库根目录启动服务：
+运行已发布的 Docker 镜像：
 
 ```bash
-cd packages/server
-docker compose up --build -d
+mkdir -p ~/.claude-code-router
+docker run -d --name ccr \
+  -p 3456:3456 \
+  -v ~/.claude-code-router:/root/.claude-code-router \
+  ghcr.io/oakimov/claude-code-router:latest
 ```
 
-路由器将在 `http://localhost:3456` 启动。
+路由器将在 `http://localhost:3456` 启动。请确保 `config.json` 中设置了 `"HOST": "0.0.0.0"`，以便端口映射能够访问服务器。
 
 ## 2. 配置路由器
 
-编辑挂载到容器中的配置文件 `packages/server/ccr-config/config.json`：
+编辑位于 `~/.claude-code-router/config.json` 的配置文件（已挂载到容器中）：
 
 ```json5
 {
@@ -43,7 +46,7 @@ docker compose up --build -d
 编辑完成后重启服务：
 
 ```bash
-docker compose restart ccr
+docker restart ccr
 ```
 
 您也可以访问 `http://localhost:3456/ui/` 通过 Web UI 可视化配置提供商。
@@ -65,7 +68,7 @@ claude
 修改配置文件或通过 Web UI 更改后，重启服务：
 
 ```bash
-docker compose restart ccr
+docker restart ccr
 ```
 
 ## 下一步

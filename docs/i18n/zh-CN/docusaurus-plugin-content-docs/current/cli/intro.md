@@ -25,10 +25,14 @@ title: 开始使用
 
 ### 安装
 
+运行已发布的 Docker 镜像：
+
 ```bash
-git clone https://github.com/oakimov/claude-code-router.git
-cd claude-code-router/packages/server
-docker compose up --build -d
+mkdir -p ~/.claude-code-router
+docker run -d --name ccr \
+  -p 3456:3456 \
+  -v ~/.claude-code-router:/root/.claude-code-router \
+  ghcr.io/oakimov/claude-code-router:latest
 ```
 
 ### 基本使用
@@ -44,10 +48,10 @@ claude
 ## 服务管理
 
 ```bash
-docker compose up --build -d    # 启动路由器
-docker compose down             # 停止路由器
-docker compose restart ccr      # 重启路由器
-docker compose logs -f ccr      # 查看日志
+docker start ccr      # 启动路由器
+docker stop ccr       # 停止路由器
+docker restart ccr    # 重启路由器
+docker logs -f ccr    # 查看日志
 ```
 
 ## Web UI
