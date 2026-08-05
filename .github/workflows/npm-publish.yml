@@ -61,6 +61,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Build first: workspace packages resolve their siblings (e.g.
+      # packages/cli -> @caeliq/ccr-shared/@caeliq/ccr-server) via their
+      # dist/index.d.ts, which only exists after a build. On a fresh checkout
+      # dist/ is absent, so typecheck cannot resolve them yet. The esbuild
+      # build does not typecheck, so this step still gates type errors.
+      - name: Build packages
+        run: pnpm build
+
       # Gate the publish on the same checks that must pass locally. Chrome
       # bridge tests stay opt-in (see OPT_IN_ONLY in scripts/run-tests.js).
       - name: Typecheck
@@ -71,9 +79,6 @@ jobs:
 
       - name: Test
         run: pnpm test
-
-      - name: Build packages
-        run: pnpm build
 
       - name: Show publish plan
         run: |
