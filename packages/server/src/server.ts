@@ -38,6 +38,7 @@ import { registerCodexAuthRoutes } from "./routes/codex-auth";
 import { registerQwenAuthRoutes } from "./routes/qwen-auth";
 import { registerClaudeAuthRoutes } from "./routes/claude-auth";
 import { registerAntigravityAuthRoutes } from "./routes/antigravity-auth";
+import { registerModelsRoutes } from "./routes/models";
 import {
   apiKeysMatch,
   clearUiSessionCookie,
@@ -237,6 +238,9 @@ export const createServer = async (config: any): Promise<any> => {
 
   // Antigravity OAuth: host 51121 → this server (compose 51121:3456)
   await registerAntigravityAuthRoutes(app);
+
+  // OpenAI-compatible model listing (GET, so not a routed client protocol)
+  await registerModelsRoutes(app, config);
 
   app.post("/v1/messages/count_tokens", rateLimitOptions, async (req: any, reply: any) => {
     const { messages, tools, system, model } = req.body;

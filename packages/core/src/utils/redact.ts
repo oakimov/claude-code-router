@@ -115,6 +115,7 @@ function sanitizeMultiline(value: string, maxLength: number): string {
 export function sanitizeErrorForLog(error: unknown): {
   message: string;
   code?: string;
+  type?: string;
   name?: string;
   statusCode?: number;
   stack?: string;
@@ -136,6 +137,7 @@ export function sanitizeErrorForLog(error: unknown): {
   return {
     message: sanitizeUpstreamErrorText(rawMessage) || "Unknown error",
     code: typeof err?.code === "string" ? err.code : undefined,
+    type: typeof err?.type === "string" ? err.type : undefined,
     name: typeof err?.name === "string" ? err.name : undefined,
     statusCode:
       typeof err?.statusCode === "number" ? err.statusCode : undefined,

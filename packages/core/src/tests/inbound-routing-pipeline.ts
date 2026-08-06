@@ -140,10 +140,12 @@ async function main() {
     assert.ok(unified.messages.some((m: any) => m.role === "system"));
     assert.ok(unified.messages.some((m: any) => m.role === "user"));
     assert.equal(unified.reasoning?.effort, "high");
-    assert.ok(
-      Array.isArray(unified.tools) &&
-        unified.tools.some((t: any) => t.type === "web_search")
+    assert.ok(Array.isArray(unified.tools));
+    const webSearch = unified.tools.find(
+      (t: any) => t.function?.name === "web_search"
     );
+    assert.ok(webSearch);
+    assert.equal(webSearch.type, "function");
   }
 
   // Protocol-aware bypass: same-protocol OpenAI yes; cross-protocol no

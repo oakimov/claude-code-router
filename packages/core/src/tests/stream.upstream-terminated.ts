@@ -43,13 +43,20 @@ async function midStreamTerminationIsClassified() {
 
   const out = createSSEStreamReader(upstream, passthrough, {
     logger: {
-      error(_msg: string, error: unknown) {
+      error(error: unknown) {
         logged = error;
       },
     },
   });
 
-  await assert.rejects(() => out.text());
+  let thrown: any;
+  await assert.rejects(
+    () => out.text(),
+    (error) => {
+      thrown = error;
+      return true;
+    }
+  );
 
   // A bare "terminated" is indistinguishable from a client abort downstream.
   // It must carry a provider-network code so fallback/retry can classify it.
@@ -65,8 +72,9 @@ async function midStreamTerminationIsClassified() {
     isFallbackEligibleError(logged),
     "terminated stream must be eligible for provider fallback"
   );
-  // The original error stays reachable for diagnostics.
-  assert.equal((logged as any)?.cause?.cause?.code, "UND_ERR_SOCKET");
+  // The thrown error retains the original cause; logs expose only redacted text.
+  assert.equal(thrown?.cause?.cause?.code, "UND_ERR_SOCKET");
+  assert.equal((logged as any)?.cause, "terminated");
 }
 
 async function clientCancelPropagatesUpstream() {
@@ -131,11 +139,41 @@ async function healthyStreamStillCompletes() {
   assert.match(body, /\[DONE\]/);
 }
 
+async function malformedLineLoggingIsBoundedAndRedacted() {
+  let logged: any;
+  const secret = `sk-${"a".repeat(32)}`;
+  const line = `data: {"authorization":"Bearer ${secret}","content":"${"x".repeat(500)}"}`;
+  const upstream = sseResponse((controller) => {
+    controller.enqueue(new TextEncoder().encode(`${line}\n\n`));
+    controller.close();
+  });
+
+  await createSSEStreamReader(
+    upstream,
+    () => {
+      throw new Error("malformed provider event");
+    },
+    {
+      logger: {
+        error(details: unknown) {
+          logged = details;
+        },
+      },
+    }
+  ).text();
+
+  assert.equal(typeof logged?.line, "string");
+  assert.ok(logged.line.length <= 240);
+  assert.ok(!logged.line.includes(secret));
+  assert.match(logged.line, /redacted/);
+}
+
 async function main() {
   await midStreamTerminationIsClassified();
   await clientCancelPropagatesUpstream();
   await cancelDoesNotEmitUnhandledRejection();
   await healthyStreamStillCompletes();
+  await malformedLineLoggingIsBoundedAndRedacted();
 
   console.log("stream.upstream-terminated: ok");
 }

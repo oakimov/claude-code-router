@@ -1,6 +1,25 @@
 import { SSEParserTransform, SSESerializerTransform } from "./sse";
 import { isClientAbortError, isProviderNetworkError } from "./retry";
 import { preserveUpstreamResponseHeaders } from "./headers";
+import { sanitizeErrorForLog, sanitizeUpstreamErrorText } from "./redact";
+
+// pino's logger.error(msg, ...args) only interpolates %-style placeholders in
+// msg; unconsumed extra args (like a raw Error) are silently dropped instead
+// of appended the way console.error would. Always pass the error as the
+// merging object so pino serializes it into the log record.
+function logStreamError(
+  logger: any,
+  message: string,
+  error: unknown,
+  extra?: Record<string, unknown>
+): void {
+  const details = { ...extra, ...sanitizeErrorForLog(error) };
+  if (logger?.error) {
+    logger.error(details, message);
+  } else {
+    console.error(message, details);
+  }
+}
 
 export interface StreamContext {
   controller: ReadableStreamDefaultController;
@@ -93,7 +112,9 @@ export function createSSEStreamReader(
             try {
               processLine(line, ctx);
             } catch (error) {
-              (options?.logger?.error ?? console.error)("Error processing line:", line, error);
+              logStreamError(options?.logger, "Error processing line", error, {
+                line: sanitizeUpstreamErrorText(line),
+              });
               controller.enqueue(encoder.encode(line + "\n"));
             }
           }
@@ -104,15 +125,12 @@ export function createSSEStreamReader(
         // still reach the consumer, or it hangs waiting for bytes.
         if (!cancelled) {
           const normalized = normalizeStreamError(error);
-          (options?.logger?.error ?? console.error)("Stream error:", normalized);
+          logStreamError(options?.logger, "Stream error", normalized);
           let handled = false;
           try {
             handled = options?.onError?.(normalized, ctx) === true;
           } catch (handlerError) {
-            (options?.logger?.error ?? console.error)(
-              "Stream error handler failed:",
-              handlerError
-            );
+            logStreamError(options?.logger, "Stream error handler failed", handlerError);
           }
           streamFailed = !handled;
           if (!handled) {
@@ -125,7 +143,7 @@ export function createSSEStreamReader(
         try {
           options?.onComplete?.(ctx);
         } catch (error) {
-          (options?.logger?.error ?? console.error)("Stream completion error:", error);
+          logStreamError(options?.logger, "Stream completion error", error);
           if (!streamFailed) {
             streamFailed = true;
             controller.error(error);

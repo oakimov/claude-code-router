@@ -128,13 +128,16 @@ export class OpenAIResponsesTransformer implements Transformer {
     context?: TransformerContext
   ): Promise<UnifiedChatRequest> {
     const callIdMap = createCallIdMap();
+    const customToolNames = new Set<string>();
     if (context) {
       (context as any).responsesCallIdMap = callIdMap;
+      (context as any).responsesCustomToolNames = customToolNames;
       if ((context as any).protocolContext) {
         (context as any).protocolContext.responsesCallIdMap = callIdMap;
+        (context as any).protocolContext.responsesCustomToolNames = customToolNames;
       }
     }
-    return responsesRequestToUnified(request, callIdMap);
+    return responsesRequestToUnified(request, callIdMap, customToolNames);
   }
 
   /**
@@ -153,6 +156,11 @@ export class OpenAIResponsesTransformer implements Transformer {
     const originalModel =
       (context as any)?.protocolContext?.originalModel ||
       (context as any)?.req?.protocolContext?.originalModel;
+    const customToolNames: Set<string> =
+      (context as any)?.responsesCustomToolNames ||
+      (context as any)?.protocolContext?.responsesCustomToolNames ||
+      (context as any)?.req?.protocolContext?.responsesCustomToolNames ||
+      new Set<string>();
 
     const contentType = response.headers.get("Content-Type") || "";
     if (contentType.includes("application/json")) {
@@ -168,6 +176,7 @@ export class OpenAIResponsesTransformer implements Transformer {
       const responsesBody = unifiedResponseToResponses(json, {
         originalModel,
         callIdMap,
+        customToolNames,
       });
       return new Response(JSON.stringify(responsesBody), {
         status: response.status,
@@ -180,6 +189,7 @@ export class OpenAIResponsesTransformer implements Transformer {
       return this.convertUnifiedStreamToResponses(response, {
         callIdMap,
         originalModel,
+        customToolNames,
       });
     }
 
@@ -188,13 +198,18 @@ export class OpenAIResponsesTransformer implements Transformer {
 
   private convertUnifiedStreamToResponses(
     response: Response,
-    options: { callIdMap: ResponsesCallIdMap; originalModel?: string }
+    options: {
+      callIdMap: ResponsesCallIdMap;
+      originalModel?: string;
+      customToolNames: Set<string>;
+    }
   ): Response {
     if (!response.body) return response;
 
     const state = createResponsesStreamState({
       model: options.originalModel,
       callIdMap: options.callIdMap,
+      customToolNames: options.customToolNames,
     });
 
     return createSSEStreamReader(
@@ -460,12 +475,16 @@ export class OpenAIResponsesTransformer implements Transformer {
     delete (request as any).messages;
 
     if (Array.isArray(request.tools)) {
-      const webSearch = request.tools.find(
-        (tool: any) => tool?.type === "web_search"
-      );
+      // Unified carries web_search as a function tool (Responses→Unified
+      // projects hosted tools onto functions). Re-emit the Responses hosted
+      // shape when talking to a Responses backend.
+      const isWebSearch = (tool: any) =>
+        tool?.type === "web_search" ||
+        tool?.function?.name === "web_search";
+      const webSearch = request.tools.find(isWebSearch);
 
       (request as any).tools = request.tools
-        .filter((tool: any) => tool?.type !== "web_search")
+        .filter((tool: any) => !isWebSearch(tool))
         .map((tool: any) => {
           if (tool.function.name === "WebSearch") {
             if (tool.function.parameters?.properties) {
@@ -499,7 +518,6 @@ export class OpenAIResponsesTransformer implements Transformer {
 
       if (webSearch) {
         (request as any).tools.push({
-          ...webSearch,
           type: "web_search",
         });
       }

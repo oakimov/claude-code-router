@@ -20,6 +20,7 @@ import { parseStatusLineData, StatusLineInput } from "./utils/statusline";
 import {handlePresetCommand} from "./utils/preset";
 import { handleInstallCommand } from "./utils/installCommand";
 import { runCodexAuth } from "./utils/codex-cli-auth";
+import { codexConfigCommand } from "./utils/codexConfig";
 import { runQwenAuth } from "./utils/qwen-cli-auth";
 import { runChromeBridge } from "./utils/chrome-device-bridge";
 import { runClaudeAuth } from "./utils/claude-auth-cli";
@@ -43,6 +44,7 @@ const KNOWN_COMMANDS = [
   "env",
   "ui",
   "codex-auth",
+  "codex-config",
   "qwen-auth",
   "claude-auth",
   "antigravity-auth",
@@ -71,6 +73,9 @@ Commands:
   activate      Output environment variables for shell integration
   ui            Open the web UI in browser
   codex-auth    Authenticate with Codex API via OAuth
+  codex-config  Publish CCR models to Codex (config.toml + model catalog)
+                Options: --providers <a,b>, --models <glob>, --base-url <url>,
+                         --codex-home <dir>, --dry-run, --force, --no-codex-probe
   qwen-auth     Authenticate with Qwen Chat (paste JWT from localStorage)
   claude-auth   Show Claude Code OAuth credential status and provider config
   antigravity-auth  Authenticate with Google Antigravity via OAuth
@@ -327,6 +332,9 @@ async function main() {
     }
     case "codex-auth":
       await runCodexAuth();
+      break;
+    case "codex-config":
+      await codexConfigCommand(process.argv.slice(3));
       break;
     case "qwen-auth":
       await runQwenAuth();

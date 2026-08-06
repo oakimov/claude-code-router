@@ -31,6 +31,7 @@ import { TransformerService } from "./services/transformer";
 import { TokenizerService } from "./services/tokenizer";
 import { router, calculateTokenCount, searchProjectBySession } from "./utils/router";
 import { sessionUsageCache } from "./utils/cache";
+import { matchClientProtocol } from "./routing/protocol-endpoints";
 
 // Extend FastifyRequest to include custom properties
 declare module "fastify" {
@@ -189,11 +190,16 @@ class Server {
 
       this.app.addHook("preHandler", (req, reply, done) => {
         const url = new URL(`http://127.0.0.1${req.url}`);
-        if (url.pathname.endsWith("/v1/messages") && req.body) {
+        const match = matchClientProtocol(req.method, url.pathname);
+        if (match && req.body) {
           const body = req.body as any;
-          req.log.info({ data: body, type: "request body" });
-          if (!body.stream) {
-            body.stream = false;
+          if (match.protocol === "anthropic_messages") {
+            // Preserve the existing Messages behavior without expanding
+            // full-body info logging to every newly supported protocol.
+            req.log.info({ data: body, type: "request body" });
+            if (!body.stream) {
+              body.stream = false;
+            }
           }
         }
         done();

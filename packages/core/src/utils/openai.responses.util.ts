@@ -50,7 +50,8 @@ export function mapCallId(
  */
 export function responsesRequestToUnified(
   body: any,
-  callIdMap: ResponsesCallIdMap = createCallIdMap()
+  callIdMap: ResponsesCallIdMap = createCallIdMap(),
+  customToolNames: Set<string> = new Set()
 ): UnifiedChatRequest {
   if (!body || typeof body !== "object") {
     throw createApiError("Invalid Responses body", 400, "invalid_body");
@@ -202,7 +203,7 @@ export function responsesRequestToUnified(
     );
   }
 
-  const tools = normalizeResponsesTools(body.tools);
+  const tools = normalizeResponsesTools(body.tools, customToolNames);
   const toolChoice = normalizeResponsesToolChoice(body.tool_choice);
 
   const reasoning =
@@ -269,6 +270,10 @@ function rejectUnsupportedResponsesState(body: any): void {
     );
   }
 
+  // Tool-type allowlisting lives in normalizeResponsesTools: every inbound
+  // Responses tool (function, custom, web_search, and other hosted types) is
+  // projected onto a Unified Chat Completions function tool. Reject only
+  // tools that lack a type string so conversion has something to key on.
   if (Array.isArray(body.tools)) {
     for (const tool of body.tools) {
       const type = tool?.type;
@@ -280,20 +285,32 @@ function rejectUnsupportedResponsesState(body: any): void {
           "invalid_request_error"
         );
       }
-      if (
-        type !== "function" &&
-        type !== "web_search" &&
-        type !== "web_search_preview"
-      ) {
-        throw createApiError(
-          `Hosted tool type '${type}' is not supported on cross-protocol routes`,
-          400,
-          "unsupported_hosted_tool",
-          "invalid_request_error"
-        );
-      }
     }
   }
+}
+
+/**
+ * Chat Completions (and DeepSeek) require one assistant message carrying every
+ * parallel tool_call. Responses emits consecutive function_call items, so merge
+ * into the trailing tool-only assistant when present.
+ */
+function appendAssistantToolCall(messages: any[], toolCall: any): void {
+  const last = messages[messages.length - 1];
+  if (
+    last &&
+    last.role === "assistant" &&
+    Array.isArray(last.tool_calls) &&
+    last.tool_calls.length > 0 &&
+    (last.content === null || last.content === undefined || last.content === "")
+  ) {
+    last.tool_calls.push(toolCall);
+    return;
+  }
+  messages.push({
+    role: "assistant",
+    content: null,
+    tool_calls: [toolCall],
+  });
 }
 
 function appendInputItem(
@@ -348,22 +365,79 @@ function appendInputItem(
         "invalid_request_error"
       );
     }
+    // Chat Completions (and DeepSeek) require one assistant message carrying
+    // every parallel tool_call; Responses emits them as consecutive items.
+    appendAssistantToolCall(messages, {
+      id: mapCallId(callIdMap, rawCallId) ?? rawCallId,
+      type: "function",
+      function: {
+        name: item.name,
+        arguments:
+          typeof item.arguments === "string"
+            ? item.arguments
+            : JSON.stringify(item.arguments ?? {}),
+      },
+    });
+    return;
+  }
+
+  if (item.type === "custom_tool_call_output") {
+    if (typeof item.call_id !== "string" || !item.call_id) {
+      throw createApiError(
+        "custom_tool_call_output requires call_id",
+        400,
+        "invalid_call_id",
+        "invalid_request_error"
+      );
+    }
     messages.push({
-      role: "assistant",
-      content: null,
-      tool_calls: [
-        {
-          id: mapCallId(callIdMap, rawCallId) ?? rawCallId,
-          type: "function",
-          function: {
-            name: item.name,
-            arguments:
-              typeof item.arguments === "string"
-                ? item.arguments
-                : JSON.stringify(item.arguments ?? {}),
-          },
-        },
-      ],
+      role: "tool",
+      tool_call_id: mapCallId(callIdMap, item.call_id) ?? item.call_id,
+      content:
+        typeof item.output === "string"
+          ? item.output
+          : JSON.stringify(item.output ?? ""),
+    });
+    return;
+  }
+
+  if (item.type === "custom_tool_call") {
+    const rawCallId = item.call_id || item.id;
+    if (typeof rawCallId !== "string" || !rawCallId) {
+      throw createApiError(
+        "custom_tool_call requires call_id",
+        400,
+        "invalid_call_id",
+        "invalid_request_error"
+      );
+    }
+    if (typeof item.name !== "string" || !item.name) {
+      throw createApiError(
+        "custom_tool_call requires name",
+        400,
+        "invalid_function_call",
+        "invalid_request_error"
+      );
+    }
+    if (typeof item.input !== "string") {
+      throw createApiError(
+        "custom_tool_call requires string input",
+        400,
+        "invalid_custom_tool_input",
+        "invalid_request_error"
+      );
+    }
+    // Mirror the synthetic single-string-param shape normalizeResponsesTools
+    // gave this tool on the way out, so replayed history round-trips.
+    appendAssistantToolCall(messages, {
+      id: mapCallId(callIdMap, rawCallId) ?? rawCallId,
+      type: "function",
+      function: {
+        name: item.name,
+        arguments: JSON.stringify({
+          [CUSTOM_TOOL_INPUT_KEY]: item.input,
+        }),
+      },
     });
     return;
   }
@@ -510,7 +584,29 @@ function flattenResponsesContent(content: unknown): any {
   return parts.length > 0 ? parts : "";
 }
 
-function normalizeResponsesTools(tools: any): UnifiedChatRequest["tools"] | undefined {
+/** Synthetic argument key used to carry a `custom` tool's freeform text
+ * through the Unified/Chat Completions function-call shape. */
+export const CUSTOM_TOOL_INPUT_KEY = "input";
+
+/** Undo the CUSTOM_TOOL_INPUT_KEY wrapping applied in normalizeResponsesTools.
+ * Falls back to the raw text so a malformed/empty call still round-trips
+ * instead of vanishing. */
+function unwrapCustomToolInput(rawArguments: string): string {
+  if (!rawArguments) return "";
+  try {
+    const parsed = JSON.parse(rawArguments);
+    const value = parsed?.[CUSTOM_TOOL_INPUT_KEY];
+    if (typeof value === "string") return value;
+  } catch {
+    // Fall through to the raw text below.
+  }
+  return rawArguments;
+}
+
+function normalizeResponsesTools(
+  tools: any,
+  customToolNames?: Set<string>
+): UnifiedChatRequest["tools"] | undefined {
   if (tools == null) return undefined;
   if (!Array.isArray(tools)) {
     throw createApiError(
@@ -520,38 +616,72 @@ function normalizeResponsesTools(tools: any): UnifiedChatRequest["tools"] | unde
       "invalid_request_error"
     );
   }
+  // Unified is OpenAI Chat Completions: only `function` tools are valid.
+  // Project every inbound Responses tool (function, custom/MCP, web_search,
+  // and any other hosted type) onto a function so Chat Completions backends
+  // never see Responses-only hosted-tool variants.
   return tools.map((t: any) => {
-    if (t?.type === "function") {
-      const name = t.name || t.function?.name;
-      if (typeof name !== "string" || !name) {
-        throw createApiError(
-          "Responses function tools require a name",
-          400,
-          "invalid_tool",
-          "invalid_request_error"
-        );
-      }
+    const type = typeof t?.type === "string" ? t.type : "";
+    // function / custom always need an explicit client name — do not fall
+    // back to the type string ("custom") or the tool is silently unusable.
+    let name: string | undefined = t?.name || t?.function?.name;
+    if (type === "web_search" || type === "web_search_preview") {
+      // Stable name so hasWebSearchTool / provider routing still match.
+      name = "web_search";
+    } else if (!name && type && type !== "function" && type !== "custom") {
+      // Other hosted tools (file_search, computer_use, …) use type as name.
+      name = type;
+    }
+    if (typeof name !== "string" || !name) {
+      throw createApiError(
+        "Responses function tools require a name",
+        400,
+        "invalid_tool",
+        "invalid_request_error"
+      );
+    }
+
+    if (type === "custom") {
+      // `custom` tools take unconstrained freeform text (no JSON schema —
+      // see CustomToolParam), unlike `function` tools. Chat Completions has
+      // no freeform-tool concept, so proxy it through a single required
+      // string parameter instead of an empty object schema: an empty schema
+      // gives the model no signal about what to put where, so it hallucinates
+      // JSON-shaped arguments the tool never asked for. The response side
+      // (unifiedChunkToResponsesEvents/unifiedResponseToResponses) unwraps
+      // this key and re-emits a genuine `custom_tool_call` item.
+      customToolNames?.add(name);
       return {
         type: "function" as const,
         function: {
           name,
           description: t.description || t.function?.description,
-          parameters:
-            t.parameters ||
-            t.function?.parameters ||
-            { type: "object", properties: {} },
+          parameters: {
+            type: "object",
+            properties: {
+              [CUSTOM_TOOL_INPUT_KEY]: {
+                type: "string",
+                description: "The freeform text/code input for this tool.",
+              },
+            },
+            required: [CUSTOM_TOOL_INPUT_KEY],
+          },
         },
       };
     }
-    if (t?.type === "web_search" || t?.type === "web_search_preview") {
-      return { ...t, type: "web_search" } as any;
-    }
-    throw createApiError(
-      `Unsupported Responses tool type '${t?.type || "unknown"}'`,
-      400,
-      "unsupported_hosted_tool",
-      "invalid_request_error"
-    );
+
+    return {
+      type: "function" as const,
+      function: {
+        name,
+        description: t.description || t.function?.description,
+        parameters:
+          t.parameters ||
+          t.schema ||
+          t.function?.parameters ||
+          { type: "object", properties: {} },
+      },
+    };
   });
 }
 
@@ -568,7 +698,12 @@ function normalizeResponsesToolChoice(toolChoice: any): any {
       "invalid_request_error"
     );
   }
-  if (toolChoice?.type === "function" && toolChoice?.name) {
+  if (
+    toolChoice?.name &&
+    (toolChoice?.type === "function" || toolChoice?.type === "custom")
+  ) {
+    // `custom` tools are projected onto function tools, so a forced choice on
+    // one resolves to the same function name.
     return {
       type: "function",
       function: { name: toolChoice.name },
@@ -596,6 +731,7 @@ export function unifiedResponseToResponses(
   options?: {
     originalModel?: string;
     callIdMap?: ResponsesCallIdMap;
+    customToolNames?: Set<string>;
   }
 ): any {
   const callIdMap = options?.callIdMap ?? createCallIdMap();
@@ -636,15 +772,26 @@ export function unifiedResponseToResponses(
       if (!tc?.function) continue;
       const callId =
         mapCallId(callIdMap, tc.id, "unified_to_client") ?? tc.id;
+      const rawArguments =
+        typeof tc.function.arguments === "string"
+          ? tc.function.arguments
+          : JSON.stringify(tc.function.arguments ?? {});
+      if (options?.customToolNames?.has(tc.function.name)) {
+        output.push({
+          type: "custom_tool_call",
+          id: callId,
+          call_id: callId,
+          name: tc.function.name,
+          input: unwrapCustomToolInput(rawArguments),
+        });
+        continue;
+      }
       output.push({
         type: "function_call",
         id: callId,
         call_id: callId,
         name: tc.function.name,
-        arguments:
-          typeof tc.function.arguments === "string"
-            ? tc.function.arguments
-            : JSON.stringify(tc.function.arguments ?? {}),
+        arguments: rawArguments,
         status: "completed",
       });
     }
@@ -679,6 +826,7 @@ export interface ResponsesStreamState {
       added: boolean;
       outputIndex: number;
       emittedArgumentsLength: number;
+      isCustom: boolean;
     }
   >;
   nextOutputIndex: number;
@@ -688,10 +836,15 @@ export interface ResponsesStreamState {
   finishReasonSeen: boolean;
   usage?: any;
   callIdMap: ResponsesCallIdMap;
+  customToolNames: Set<string>;
 }
 
 export function createResponsesStreamState(
-  options?: { model?: string; callIdMap?: ResponsesCallIdMap }
+  options?: {
+    model?: string;
+    callIdMap?: ResponsesCallIdMap;
+    customToolNames?: Set<string>;
+  }
 ): ResponsesStreamState {
   const id = `resp_${Date.now()}`;
   return {
@@ -707,6 +860,7 @@ export function createResponsesStreamState(
     sequenceNumber: 0,
     finishReasonSeen: false,
     callIdMap: options?.callIdMap ?? createCallIdMap(),
+    customToolNames: options?.customToolNames ?? new Set<string>(),
   };
 }
 
@@ -812,13 +966,15 @@ export function unifiedChunkToResponsesEvents(
             tc.id || `call_${state.responseId}_${index}`,
             "unified_to_client"
           ) || `call_${index}`;
+        const name = tc.function?.name || "";
         entry = {
           id: callId,
-          name: tc.function?.name || "",
+          name,
           arguments: "",
           added: false,
           outputIndex: state.nextOutputIndex++,
           emittedArgumentsLength: 0,
+          isCustom: state.customToolNames.has(name),
         };
         state.toolCalls.set(index, entry);
       }
@@ -826,7 +982,10 @@ export function unifiedChunkToResponsesEvents(
         entry.id =
           mapCallId(state.callIdMap, tc.id, "unified_to_client") || entry.id;
       }
-      if (tc.function?.name) entry.name = tc.function.name;
+      if (tc.function?.name) {
+        entry.name = tc.function.name;
+        entry.isCustom = state.customToolNames.has(entry.name);
+      }
       if (typeof tc.function?.arguments === "string") {
         entry.arguments += tc.function.arguments;
       }
@@ -836,14 +995,22 @@ export function unifiedChunkToResponsesEvents(
         events.push({
           type: "response.output_item.added",
           output_index: entry.outputIndex,
-          item: {
-            type: "function_call",
-            id: entry.id,
-            call_id: entry.id,
-            name: entry.name,
-            arguments: "",
-            status: "in_progress",
-          },
+          item: entry.isCustom
+            ? {
+                type: "custom_tool_call",
+                id: entry.id,
+                call_id: entry.id,
+                name: entry.name,
+                input: "",
+              }
+            : {
+                type: "function_call",
+                id: entry.id,
+                call_id: entry.id,
+                name: entry.name,
+                arguments: "",
+                status: "in_progress",
+              },
         });
       }
 
@@ -851,14 +1018,20 @@ export function unifiedChunkToResponsesEvents(
         entry.added &&
         entry.arguments.length > entry.emittedArgumentsLength
       ) {
-        const unreported = entry.arguments.slice(entry.emittedArgumentsLength);
+        // Function arguments arrive incrementally as JSON. For custom tools the
+        // client expects deltas of the unwrapped freeform input, not JSON
+        // fragments. Wait until finalization to emit the complete custom input;
+        // function tools keep their normal streaming deltas.
+        if (!entry.isCustom) {
+          const unreported = entry.arguments.slice(entry.emittedArgumentsLength);
+          events.push({
+            type: "response.function_call_arguments.delta",
+            item_id: entry.id,
+            output_index: entry.outputIndex,
+            delta: unreported,
+          });
+        }
         entry.emittedArgumentsLength = entry.arguments.length;
-        events.push({
-          type: "response.function_call_arguments.delta",
-          item_id: entry.id,
-          output_index: entry.outputIndex,
-          delta: unreported,
-        });
       }
     }
   }
@@ -924,6 +1097,33 @@ export function finalizeResponsesStream(
   }
 
   for (const entry of state.toolCalls.values()) {
+    if (entry.isCustom) {
+      const input = unwrapCustomToolInput(entry.arguments);
+      events.push({
+        type: "response.custom_tool_call_input.delta",
+        item_id: entry.id,
+        output_index: entry.outputIndex,
+        delta: input,
+      });
+      events.push({
+        type: "response.custom_tool_call_input.done",
+        item_id: entry.id,
+        output_index: entry.outputIndex,
+        input,
+      });
+      events.push({
+        type: "response.output_item.done",
+        output_index: entry.outputIndex,
+        item: {
+          type: "custom_tool_call",
+          id: entry.id,
+          call_id: entry.id,
+          name: entry.name,
+          input,
+        },
+      });
+      continue;
+    }
     events.push({
       type: "response.function_call_arguments.done",
       item_id: entry.id,
@@ -982,14 +1182,22 @@ function skeletonResponse(
   for (const entry of state.toolCalls.values()) {
     indexedOutput.push({
       index: entry.outputIndex,
-      item: {
-        type: "function_call",
-        id: entry.id,
-        call_id: entry.id,
-        name: entry.name,
-        arguments: entry.arguments,
-        status: status === "completed" ? "completed" : "in_progress",
-      },
+      item: entry.isCustom
+        ? {
+            type: "custom_tool_call",
+            id: entry.id,
+            call_id: entry.id,
+            name: entry.name,
+            input: unwrapCustomToolInput(entry.arguments),
+          }
+        : {
+            type: "function_call",
+            id: entry.id,
+            call_id: entry.id,
+            name: entry.name,
+            arguments: entry.arguments,
+            status: status === "completed" ? "completed" : "in_progress",
+          },
     });
   }
   const output = indexedOutput

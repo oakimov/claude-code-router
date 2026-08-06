@@ -286,6 +286,7 @@ ccr activate      # Output shell environment variables (for integration)
 ccr ui            # Open Web UI
 ccr statusline    # Integrated statusline (reads JSON from stdin)
 ccr codex-auth    # Authenticate with Codex API via OAuth
+ccr codex-config  # Publish CCR models to Codex (config.toml + model catalog)
 ccr claude-auth   # Authenticate with Claude Pro/Max subscription via OAuth
 ccr qwen-auth     # Authenticate with Qwen Chat (JWT from localStorage)
 ccr antigravity-auth  # Authenticate with Google Antigravity via OAuth

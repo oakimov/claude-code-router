@@ -163,5 +163,17 @@ export function detectClientProtocol(req: FastifyRequest) {
   if (match) {
     (req as any).protocolMatch = match;
     (req as any).clientProtocol = match.protocol;
+    return;
+  }
+
+  // The Models API is OpenAI-compatible but is intentionally not a routed LLM
+  // POST. Classify it only for auth/error envelopes and query-key rejection.
+  if (
+    req.method.toUpperCase() === "GET" &&
+    (pathname === "/models" ||
+      pathname === "/v1/models" ||
+      pathname.startsWith("/v1/models/"))
+  ) {
+    (req as any).clientProtocol = "openai_responses";
   }
 }

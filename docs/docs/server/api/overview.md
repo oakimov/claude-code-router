@@ -9,6 +9,7 @@ Claude Code Router Server provides a complete HTTP API with support for:
 - **Messages API**: Message interface compatible with Anthropic Claude API
 - **Chat Completions API**: OpenAI-compatible chat interface
 - **Responses API**: OpenAI-compatible typed input/output interface
+- **Models API**: OpenAI-compatible listing of routable models
 - **Configuration API**: Read and update server configuration
 - **Logs API**: View and manage service logs
 - **Tools API**: Calculate token counts
@@ -33,6 +34,8 @@ curl -H "x-api-key: your-api-key" http://localhost:3456/api/config
 | `/v1/messages/count_tokens` | POST | Count tokens in messages |
 | `/v1/chat/completions` | POST | OpenAI Chat Completions (alias: `/chat/completions`) |
 | `/v1/responses` | POST | OpenAI Responses (alias: `/responses`) |
+| `/v1/models` | GET | List routable models (alias: `/models`) |
+| `/v1/models/{id}` | GET | Single model info |
 
 ### Configuration Management
 
