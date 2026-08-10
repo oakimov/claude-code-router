@@ -25,7 +25,7 @@ minimumReleaseAgeExclude:
   - brace-expansion@1.1.13 || 1.1.16 || 2.0.3 || 2.1.2 || 5.0.8
   - node-forge@1.3.4 || 1.4.0
   - picomatch@2.3.2 || 4.0.4
-  - dompurify@3.3.2 || 3.3.4 || 3.4.0 || 3.4.6 || 3.4.7 || 3.4.8 || 3.4.9 || 3.4.11 || 3.4.12
+  - dompurify@3.4.13
   - lodash@4.17.23 || 4.17.24
   - vite@7.3.2 || 7.3.5
   - follow-redirects@1.15.12
@@ -41,7 +41,8 @@ minimumReleaseAgeExclude:
   - esbuild@0.28.1
   - launch-editor@2.14.1
   - http-proxy-middleware@2.0.10
-  - js-yaml@4.1.2 || 4.3.0
+  - js-yaml@4.3.1
+  - nanoid@3.3.17
   - websocket-driver@0.7.5
   - '@babel/core@7.29.1'
   - adm-zip@0.6.0
@@ -76,7 +77,13 @@ overrides:
   'copy-webpack-plugin@11>serialize-javascript': ^7.0.7
   'css-minimizer-webpack-plugin@5>serialize-javascript': ^7.0.7
   # Monaco 0.56.0 pins DOMPurify 3.4.8; keep the patched 3.4 line local to Monaco.
-  'monaco-editor@0.56.0>dompurify': ^3.4.12
+  'monaco-editor@0.56.0>dompurify': ^3.4.13
+  # Docusaurus only needs image-size/fromFile. Replace the archived vulnerable
+  # package with a local adapter backed by the maintained probe-image-size parser.
+  '@docusaurus/mdx-loader@3.10.2>image-size': link:packages/docusaurus-image-size
+  # PostCSS already permits the patched Nano ID release; keep an explicit
+  # floor so an existing lockfile cannot retain the vulnerable version.
+  'postcss@8.5.25>nanoid': ^3.3.17
   # serve-handler 6.1.7 is current and pins minimatch 3, whose brace-expansion
   # range cannot reach the patched major. Scope the compatibility bridge.
   'minimatch@3.1.5>brace-expansion': ^5.0.8

@@ -1,0 +1,20 @@
+{
+  "name": "@caeliq/docusaurus-image-size",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Docusaurus image-size/fromFile compatibility adapter",
+  "type": "commonjs",
+  "exports": {
+    "./fromFile": {
+      "types": "./fromFile.d.ts",
+      "default": "./fromFile.cjs"
+    }
+  },
+  "dependencies": {
+    "probe-image-size": "^7.3.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT"
+}

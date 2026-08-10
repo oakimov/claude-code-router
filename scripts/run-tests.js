@@ -24,7 +24,13 @@ const path = require('path');
 const repoRoot = path.resolve(__dirname, '..');
 
 // Packages that carry a src/tests directory, in execution order.
-const PACKAGES = ['core', 'shared', 'server', 'cli'];
+const PACKAGES = [
+  'core',
+  'shared',
+  'server',
+  'cli',
+  'docusaurus-image-size',
+];
 
 /**
  * Tests this runner cannot satisfy on its own. Each entry names the flag that
