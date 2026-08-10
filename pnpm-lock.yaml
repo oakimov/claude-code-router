@@ -234,6 +234,10 @@ importers:
       probe-image-size:
         specifier: ^7.3.0
         version: 7.3.0(supports-color@8.1.1)
+    devDependencies:
+      tsx:
+        specifier: ^4.23.1
+        version: 4.23.1
 
   packages/server:
     dependencies:
@@ -7761,6 +7765,7 @@ packages:
   tsx@4.23.1:
     resolution: {integrity: sha512-GQHnkIfxyx1wYCOS/wonik5MVRZU9hi1TEZmzGZSCJB1y9YgoZ8H6itNE/u4suE+yLmOzuE4E5S4TZ/ZX2wcWQ==}
     engines: {node: '>=18.0.0'}
+    hasBin: true
 
   tsyringe@4.10.0:
     resolution: {integrity: sha512-axr3IdNuVIxnaK5XGEUFTu3YmAQ6lllgrvqfEoR16g/HGnYY/6We4oWENtAnzK6/LpJ2ur9PAb80RBt7/U4ugw==}
