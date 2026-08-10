@@ -90,7 +90,8 @@ export function resolveThinkingDialect(model: string): ThinkingDialect {
  *
  * Rounds *up* when the exact level is missing so a request never silently loses
  * reasoning depth: `medium` on Gemini 3 Pro (low|high) becomes `high`, and
- * Claude's `xhigh`/`max` — which are not Gemini enum values — become `high`.
+ * Claude/CCR's `xhigh`/`max`/`ultra` — which are not Gemini enum values —
+ * become `high`.
  */
 export function translateThinkingLevel(
   effort: string,
@@ -101,7 +102,7 @@ export function translateThinkingLevel(
   if (!supported.length) return "high";
 
   // Efforts above Gemini's range collapse onto the family's ceiling.
-  if (requested === "xhigh" || requested === "max") {
+  if (requested === "xhigh" || requested === "max" || requested === "ultra") {
     return supported[supported.length - 1];
   }
 

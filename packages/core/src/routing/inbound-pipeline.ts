@@ -7,9 +7,16 @@ import {
   inspectClaudeCodeBillingSystemHeader,
   router,
 } from "@/utils/router";
-import { readFile } from "fs/promises";
+import {
+  applyThirdPartyAnthropicPolicy,
+  classifyAnthropicClient,
+  getAnthropicProviderMode,
+  inspectAnthropicClientFingerprint,
+  isNativeAnthropicClient,
+} from "@/utils/anthropic-client-policy";
 import {
   adaptClientRequest,
+  cloneProtocolBody,
   normalizeClientToUnified,
   shouldBypassTransformersProtocolAware,
 } from "./protocol-adapter";
@@ -19,20 +26,20 @@ import {
   ProtocolRouteMatch,
 } from "./protocol-endpoints";
 import { protocolErrorBody } from "./protocol-errors";
+import { stripOneMillionContextMarker } from "@/utils/claude-model-catalog";
+import { decodeClaudeModelAlias } from "@caeliq/ccr-shared";
 
 export interface PreparedInboundRequest {
   match: ProtocolRouteMatch;
   protocolContext: ClientProtocolContext;
   /** Original client wire body (preserved for Anthropic custom routers). */
   originalBody: any;
-  /**
-   * Client wire body after protocol adaptation and CCR-only cleanup
-   * (subagent tag stripped, REWRITE_SYSTEM_PROMPT applied). This — not
-   * originalBody — is what an exact-wire passthrough must send upstream.
-   */
+  /** Client wire body after protocol adaptation and CCR-only cleanup. */
   clientWireBody: any;
   /** Normalized Unified body used for routing and provider conversion. */
   unifiedBody: UnifiedChatRequest;
+  /** Unified projection before destination-specific Anthropic emulation. */
+  prePolicyUnifiedBody: UnifiedChatRequest;
   providerName: string;
   modelName: string;
 }
@@ -92,11 +99,29 @@ export async function prepareInboundRequest(
   );
 
   if (match.protocol === "anthropic_messages") {
+    context.anthropicClientKind = classifyAnthropicClient(
+      req.headers as Record<string, unknown>,
+      normalizationInput
+    );
+    req.log?.debug?.(
+      {
+        anthropicClientKind: context.anthropicClientKind,
+        anthropicClientSignals: inspectAnthropicClientFingerprint(
+          req.headers as Record<string, unknown>,
+          normalizationInput
+        ),
+      },
+      "classified Anthropic client"
+    );
     await prepareAnthropicNormalizationInput(
       normalizationInput,
-      context,
-      fastify.configService
+      context
     );
+  } else {
+    // OpenAI protocols have no native Anthropic wire identity. If routed to an
+    // in-scope Anthropic destination they must use the third-party emulation
+    // profile, never native pass-through.
+    context.anthropicClientKind = "other";
   }
 
   const transformerContext = {
@@ -112,6 +137,13 @@ export async function prepareInboundRequest(
     endpointTransformer,
     transformerContext
   );
+
+  unifiedBody.model = resolveConfiguredClaudeModelAlias(
+    unifiedBody.model,
+    (canonicalId) =>
+      fastify.providerService.resolveModelRoute(canonicalId) !== null,
+    match.protocol
+  ) || "";
 
   const routingReq = req as any;
   (req as any).protocolContext = context;
@@ -140,7 +172,13 @@ export async function prepareInboundRequest(
     typeof unifiedBody.model === "string"
       ? unifiedBody.model
       : context.originalModel;
-  unifiedBody.model = routedModel || "";
+  unifiedBody.model =
+    resolveConfiguredClaudeModelAlias(
+      routedModel,
+      (canonicalId) =>
+        fastify.providerService.resolveModelRoute(canonicalId) !== null,
+      match.protocol
+    ) || "";
   context.scenarioType = routingReq.scenarioType;
   context.originalModel =
     context.originalModel ??
@@ -152,6 +190,11 @@ export async function prepareInboundRequest(
   routingReq.protocolContext = context;
 
   const destination = resolveDestination(unifiedBody.model, match.protocol);
+  const normalizedContextModel = stripOneMillionContextMarker(
+    destination.modelName
+  );
+  destination.modelName = normalizedContextModel.modelId;
+  context.requestedOneMillion = normalizedContextModel.requestedOneMillion;
   const provider = fastify.providerService.getProvider(destination.providerName);
   if (!provider) {
     throwProtocolError(
@@ -165,6 +208,27 @@ export async function prepareInboundRequest(
   unifiedBody.model = destination.modelName;
   routingReq.provider = destination.providerName;
   routingReq.model = destination.modelName;
+  const prePolicyUnifiedBody = cloneProtocolBody(unifiedBody);
+  const providerMode = getAnthropicProviderMode(provider);
+  context.anthropicProviderMode = providerMode;
+  context.anthropicDestinationInScope =
+    providerMode !== "out_of_scope";
+  context.anthropicNativeWire =
+    match.protocol === "anthropic_messages" &&
+    context.anthropicDestinationInScope &&
+    isNativeAnthropicClient(context.anthropicClientKind || "other");
+
+  if (
+    context.anthropicDestinationInScope &&
+    context.anthropicClientKind === "other"
+  ) {
+    await applyThirdPartyAnthropicPolicy(
+      unifiedBody,
+      context,
+      fastify.configService
+    );
+  }
+
   context.stream =
     context.stream ||
     unifiedBody.stream === true ||
@@ -176,6 +240,7 @@ export async function prepareInboundRequest(
     originalBody,
     clientWireBody: normalizationInput,
     unifiedBody,
+    prePolicyUnifiedBody,
     providerName: destination.providerName,
     modelName: destination.modelName,
   };
@@ -183,26 +248,12 @@ export async function prepareInboundRequest(
 
 async function prepareAnthropicNormalizationInput(
   body: any,
-  context: ClientProtocolContext,
-  configService: any
+  context: ClientProtocolContext
 ): Promise<void> {
   const billing = inspectClaudeCodeBillingSystemHeader(body);
   context.claudeCodeSubagent = billing.isSubagent;
   context.taggedSubagentModel =
     extractAndRemoveClaudeCodeSubagentModelTag(body);
-  context.anthropicCacheMode = "preserve";
-  const rewritePrompt = configService.get("REWRITE_SYSTEM_PROMPT");
-  const system = body?.system;
-  if (
-    rewritePrompt &&
-    Array.isArray(system) &&
-    system.length > 1 &&
-    typeof system[1]?.text === "string" &&
-    system[1].text.includes("<env>")
-  ) {
-    const prompt = await readFile(rewritePrompt, "utf-8");
-    system[1].text = `${prompt}<env>${system[1].text.split("<env>").pop()}`;
-  }
 }
 
 export function resolveDestination(
@@ -240,6 +291,32 @@ export function resolveDestination(
     );
   }
   return { providerName, modelName };
+}
+
+/**
+ * Decode a discovery alias before scenario routing. Aliases are constrained to
+ * configured canonical routes; ordinary `provider,model` ids are unchanged.
+ */
+export function resolveConfiguredClaudeModelAlias(
+  model: string | undefined,
+  isConfigured: (canonicalId: string) => boolean,
+  protocol?: ClientProtocolContext["protocol"]
+): string | undefined {
+  if (typeof model !== "string") return model;
+  const decoded = decodeClaudeModelAlias(model);
+  if (!decoded) return model;
+
+  const canonicalId = stripOneMillionContextMarker(decoded).modelId;
+  if (!isConfigured(canonicalId)) {
+    throwProtocolError(
+      protocol,
+      `Encoded model alias resolves to an unconfigured model '${canonicalId}'.`,
+      404,
+      "model_not_found",
+      "invalid_request_error"
+    );
+  }
+  return decoded;
 }
 
 export function throwProtocolError(

@@ -14,6 +14,10 @@ import {
   getValidAccessToken,
   toCodexOAuthAuth,
 } from "../utils/codex-auth";
+import {
+  isReasoningDisabled,
+  normalizeReasoningEffort,
+} from "../utils/reasoning-effort";
 
 const PAT_METADATA_TTL_MS = 5 * 60 * 1000;
 const whoamiCache = new Map<
@@ -326,20 +330,29 @@ export class CodexTransformer implements Transformer {
 
     // Effort comes from the unified reasoning field (populated by anthropic.transformer
     // from the user's /effort setting via output_config.effort or request.effort).
-    const effort = (request as any).reasoning?.effort || provider?.reasoningEffort;
+    const reasoningDisabled = isReasoningDisabled(
+      request.reasoning,
+      request.thinking
+    );
+    const effort = reasoningDisabled
+      ? "none"
+      : normalizeReasoningEffort(request.reasoning?.effort) ||
+        normalizeReasoningEffort(provider?.reasoningEffort);
     if (effort) {
       const reasoning: Record<string, any> = { effort };
       const VALID_SUMMARIES = ["auto", "detailed", "none"];
       const summary = provider?.reasoningSummary;
-      if (summary && VALID_SUMMARIES.includes(summary)) {
-        if (summary !== "none") {
-          reasoning.summary = summary;
+      if (effort !== "none") {
+        if (summary && VALID_SUMMARIES.includes(summary)) {
+          if (summary !== "none") {
+            reasoning.summary = summary;
+          }
+        } else {
+          // Default to detailed reasoning summaries when effort is enabled so
+          // Claude Code reliably receives visible thinking unless the provider
+          // explicitly disables them with reasoningSummary: "none".
+          reasoning.summary = "detailed";
         }
-      } else {
-        // Default to detailed reasoning summaries when effort is enabled so
-        // Claude Code reliably receives visible thinking unless the provider
-        // explicitly disables them with reasoningSummary: "none".
-        reasoning.summary = "detailed";
       }
       (request as any).reasoning = reasoning;
     } else {

@@ -7,6 +7,7 @@ import { CLAUDE_PROJECTS_DIR, HOME_DIR } from "@caeliq/ccr-shared";
 import { LRUCache } from "lru-cache";
 import { ConfigService } from "../services/config";
 import { TokenizerService } from "../services/tokenizer";
+import { isReasoningDisabled } from "./reasoning-effort";
 
 // Types from @anthropic-ai/sdk
 interface Tool {
@@ -395,6 +396,7 @@ function hasWebSearchTool(tools: any[] | undefined): boolean {
 }
 
 function hasThinkSignal(body: any): boolean {
+  if (isReasoningDisabled(body?.reasoning, body?.thinking)) return false;
   if (body?.thinking) return true;
   const reasoning = body?.reasoning;
   if (reasoning && typeof reasoning === "object") {

@@ -8,6 +8,10 @@ import {
   validateOpenAIToolCalls,
   openAIContentCacheBreakpoint,
 } from "../utils/openai.util";
+import {
+  isReasoningDisabled,
+  normalizeReasoningEffort,
+} from "@/utils/reasoning-effort";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
 import {
   createCallIdMap,
@@ -339,11 +343,12 @@ export class OpenAIResponsesTransformer implements Transformer {
     delete (request as any).max_completion_tokens;
 
     if (request.reasoning) {
+      const effort = isReasoningDisabled(request.reasoning, request.thinking)
+        ? "none"
+        : normalizeReasoningEffort(request.reasoning.effort);
       request.reasoning = {
-        ...(request.reasoning.effort
-          ? { effort: request.reasoning.effort }
-          : {}),
-        ...((request.reasoning as any).summary
+        ...(effort ? { effort } : {}),
+        ...(effort !== "none" && (request.reasoning as any).summary
           ? { summary: (request.reasoning as any).summary }
           : {}),
       };

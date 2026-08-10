@@ -116,6 +116,29 @@ async function main() {
     assert.equal(result.scenarioType, "default");
   }
 
+  // `none` is an explicit opt-out and must not select the think route.
+  {
+    const result = await route({
+      model: "claude-sonnet",
+      messages: [],
+      reasoning: { effort: "none", enabled: false },
+    });
+    assert.equal(result.model, "d,m");
+    assert.equal(result.scenarioType, "default");
+  }
+
+  // An explicit disabled thinking block wins over any stale effort value.
+  {
+    const result = await route({
+      model: "claude-sonnet",
+      messages: [],
+      thinking: { type: "disabled" },
+      reasoning: { effort: "high", enabled: false },
+    });
+    assert.equal(result.model, "d,m");
+    assert.equal(result.scenarioType, "default");
+  }
+
   console.log("router-scenario-precedence: all tests passed");
 }
 

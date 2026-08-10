@@ -95,7 +95,18 @@ export interface UnifiedTool {
   };
 }
 
-export type ThinkLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export const THINK_LEVELS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+
+export type ThinkLevel = (typeof THINK_LEVELS)[number];
 
 // Unified request interface
 export interface UnifiedChatRequest {

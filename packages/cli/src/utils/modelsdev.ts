@@ -11,7 +11,16 @@ const DEFAULT_URL = "https://models.dev/api.json";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Effort tokens Codex understands. Anything else in the catalog is dropped. */
-const KNOWN_EFFORT = ["minimal", "low", "medium", "high", "xhigh", "max"];
+const KNOWN_EFFORT = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+];
 
 export interface ModelDevInfo {
   /** Original "<provider>/<id>" key. */
@@ -36,6 +45,30 @@ interface IndexRow {
   raw: any;
 }
 
+/**
+ * models.dev flattens base-model inheritance, so several providers can carry
+ * the same model id. Keep this in sync with the server-side discovery client:
+ * duplicate ids resolve to the native model-family provider, never to CCR's
+ * configured provider name or whichever row happens to advertise efforts.
+ */
+const NATIVE_PROVIDER_RULES: Array<{
+  pattern: RegExp;
+  provider: string;
+}> = [
+  { pattern: /^claude(?:-|$)/, provider: "anthropic" },
+  { pattern: /^(?:gpt|chatgpt|codex|o\d)(?:-|$)/, provider: "openai" },
+  {
+    pattern: /^(?:codestral|devstral|magistral|ministral|mistral|mixtral|pixtral)(?:-|$)/,
+    provider: "mistral",
+  },
+  { pattern: /^glm(?:-|$)/, provider: "zhipuai" },
+  { pattern: /^gemini(?:-|$)/, provider: "google" },
+  { pattern: /^deepseek(?:-|$)/, provider: "deepseek" },
+  { pattern: /^grok(?:-|$)/, provider: "xai" },
+  { pattern: /^command(?:-|$)/, provider: "cohere" },
+  { pattern: /^qwen(?:-|$)/, provider: "alibaba" },
+];
+
 export interface ModelsDevIndex {
   /** Lower-cased bare model id → rows that share it. */
   byBareId: Map<string, IndexRow[]>;
@@ -47,9 +80,9 @@ function isDisabled(): boolean {
   return value === "1" || value === "true" || value === "yes";
 }
 
-function bareId(key: string): string {
-  const slash = key.indexOf("/");
-  return slash === -1 ? key : key.slice(slash + 1);
+function normalizeModelName(value: string): string {
+  const slash = value.lastIndexOf("/");
+  return (slash === -1 ? value : value.slice(slash + 1)).trim().toLowerCase();
 }
 
 function parseEffortLevels(raw: any): string[] {
@@ -93,7 +126,9 @@ function positiveSafeInteger(value: unknown): number {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
 }
 
-function buildIndex(catalog: Record<string, any>): ModelsDevIndex {
+export function buildModelsDevIndex(
+  catalog: Record<string, any>
+): ModelsDevIndex {
   const byBareId = new Map<string, IndexRow[]>();
   let size = 0;
 
@@ -103,9 +138,12 @@ function buildIndex(catalog: Record<string, any>): ModelsDevIndex {
 
     for (const [modelId, raw] of Object.entries(models)) {
       const key = `${providerId}/${modelId}`;
-      const bare = bareId(key).toLowerCase();
+      const rawId =
+        typeof (raw as any)?.id === "string" ? (raw as any).id : modelId;
+      const bare = normalizeModelName(rawId);
+      if (!bare) continue;
       const rows = byBareId.get(bare) || [];
-      rows.push({ key, provider: providerId, raw });
+      rows.push({ key, provider: providerId.toLowerCase(), raw });
       byBareId.set(bare, rows);
       size += 1;
     }
@@ -136,7 +174,7 @@ export async function fetchModelsDevCatalog(): Promise<ModelsDevIndex | null> {
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}`);
     }
-    return buildIndex((await res.json()) as Record<string, any>);
+    return buildModelsDevIndex((await res.json()) as Record<string, any>);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(
@@ -146,19 +184,24 @@ export async function fetchModelsDevCatalog(): Promise<ModelsDevIndex | null> {
   }
 }
 
-/**
- * Pick the best row for a bare id. Prefers the row whose models.dev provider
- * matches the CCR provider name, then one that lists effort levels.
- */
-function pickRow(rows: IndexRow[], providerName: string): IndexRow {
-  const wanted = providerName.toLowerCase();
-  const exactProvider = rows.find((row) => row.provider.toLowerCase() === wanted);
-  if (exactProvider) return exactProvider;
+function nativeProviderFor(rows: IndexRow[], modelName: string): string | null {
+  if (rows.length === 1) return rows[0].provider;
 
-  const withEfforts = rows.find(
-    (row) => parseEffortLevels(row.raw?.reasoning_options).length > 0
-  );
-  return withEfforts || rows[0];
+  const identities = [
+    modelName,
+    ...rows.map((row) =>
+      typeof row.raw?.family === "string" ? row.raw.family.toLowerCase() : ""
+    ),
+  ].filter(Boolean);
+  for (const identity of identities) {
+    const rule = NATIVE_PROVIDER_RULES.find(({ pattern }) =>
+      pattern.test(identity)
+    );
+    if (rule && rows.some((row) => row.provider === rule.provider)) {
+      return rule.provider;
+    }
+  }
+  return null;
 }
 
 /**
@@ -167,24 +210,16 @@ function pickRow(rows: IndexRow[], providerName: string): IndexRow {
  */
 export function lookupModel(
   index: ModelsDevIndex | null,
-  providerName: string,
   modelId: string
 ): ModelDevInfo | null {
   if (!index || !modelId) return null;
 
-  const bare = bareId(modelId).toLowerCase();
+  const modelName = normalizeModelName(modelId);
+  const rows = index.byBareId.get(modelName);
+  if (!rows?.length) return null;
 
-  const exact = index.byBareId.get(bare);
-  if (exact && exact.length) return toInfo(pickRow(exact, providerName));
-
-  // models.dev carries dedicated "…-free" rows; only strip the suffix if the
-  // exact form missed.
-  if (bare.endsWith("-free")) {
-    const stripped = index.byBareId.get(bare.slice(0, -"-free".length));
-    if (stripped && stripped.length) {
-      return toInfo(pickRow(stripped, providerName));
-    }
-  }
-
-  return null;
+  const nativeProvider = nativeProviderFor(rows, modelName);
+  if (!nativeProvider) return null;
+  const nativeRow = rows.find((row) => row.provider === nativeProvider);
+  return nativeRow ? toInfo(nativeRow) : null;
 }

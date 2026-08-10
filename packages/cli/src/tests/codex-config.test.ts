@@ -143,7 +143,7 @@ function main(): void {
     assert.ok(entry.comp_hash);
   }
 
-  // Missing models.dev metadata falls back to conservative defaults.
+  // Missing models.dev metadata uses the explicit Codex fallback contract.
   {
     const model: CatalogModel = {
       providerName: "custom",
@@ -153,7 +153,7 @@ function main(): void {
     };
     const entry = buildCatalogEntry(model, 3, null);
     assert.equal(entry.display_name, "mystery-model");
-    assert.equal(entry.context_window, 128_000);
+    assert.equal(entry.context_window, 200_000);
     assert.equal(entry.shell_type, "shell_command");
     assert.deepEqual(
       entry.supported_reasoning_levels.map((l: any) => l.effort),

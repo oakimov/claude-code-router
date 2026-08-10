@@ -1,6 +1,7 @@
 import { UnifiedChatRequest } from "@/types/llm";
 import { createApiError } from "@/api/middleware";
 import { sanitizeResponsesCallId } from "@/utils/toolCallId";
+import { canonicalReasoning } from "@/utils/reasoning-effort";
 
 export interface ResponsesCallIdMap {
   /** Original client call_id → sanitized id (and reverse). */
@@ -209,8 +210,7 @@ export function responsesRequestToUnified(
   const reasoning =
     body.reasoning && typeof body.reasoning === "object"
       ? {
-          enabled: true,
-          effort: body.reasoning.effort,
+          ...canonicalReasoning(body.reasoning.effort, true),
           summary: body.reasoning.summary,
         }
       : undefined;

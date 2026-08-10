@@ -5,8 +5,10 @@
 import assert from "node:assert/strict";
 import {
   resolveDestination,
+  resolveConfiguredClaudeModelAlias,
   protocolAwareBypass,
 } from "../routing/inbound-pipeline";
+import { encodeClaudeModelAlias } from "@caeliq/ccr-shared";
 import { protocolErrorBody } from "../routing/protocol-errors";
 import {
   adaptClientRequest,
@@ -20,6 +22,7 @@ import {
   canonicalizeOutboundHeaders,
   mergeHeadersCaseInsensitive,
 } from "../utils/headers";
+import { stripOneMillionContextMarker } from "../utils/claude-model-catalog";
 
 function expectThrow(
   fn: () => unknown,
@@ -43,6 +46,57 @@ async function main() {
     const d = resolveDestination("openai,gpt-4o", "openai_chat_completions");
     assert.equal(d.providerName, "openai");
     assert.equal(d.modelName, "gpt-4o");
+  }
+
+  // Claude-safe discovery aliases become the same explicit route before
+  // scenario selection. Canonical ids remain valid without alias handling.
+  {
+    const canonical = "codex,gpt-5.6-sol";
+    const alias = encodeClaudeModelAlias(canonical);
+    const configured = (candidate: string) => candidate === canonical;
+    assert.equal(
+      resolveConfiguredClaudeModelAlias(alias, configured, "anthropic_messages"),
+      canonical
+    );
+    assert.equal(
+      resolveConfiguredClaudeModelAlias(
+        `${alias}[1m]`,
+        configured,
+        "anthropic_messages"
+      ),
+      `${canonical}[1m]`
+    );
+    assert.equal(
+      resolveConfiguredClaudeModelAlias(
+        canonical,
+        () => false,
+        "anthropic_messages"
+      ),
+      canonical
+    );
+    expectThrow(
+      () =>
+        resolveConfiguredClaudeModelAlias(
+          alias,
+          () => false,
+          "anthropic_messages"
+        ),
+      "model_not_found",
+      404
+    );
+  }
+
+  // Only a trailing gateway context marker is normalized. A marker embedded
+  // in a real provider model id remains part of that id.
+  {
+    assert.deepEqual(stripOneMillionContextMarker("gpt-5.6-sol[1m]"), {
+      modelId: "gpt-5.6-sol",
+      requestedOneMillion: true,
+    });
+    assert.deepEqual(stripOneMillionContextMarker("prefix[1m]-suffix"), {
+      modelId: "prefix[1m]-suffix",
+      requestedOneMillion: false,
+    });
   }
 
   // Bare model → 400 unresolved_model
@@ -225,6 +279,8 @@ async function main() {
       "x-app": "cli",
       "x-claude-code-session-id": "session-id",
       "x-client-request-id": "request-id",
+      "anthropic-client-platform": "desktop_app",
+      "anthropic-client-version": "1.26832.0",
     });
     assert.equal(headers.authorization, undefined);
     assert.equal(headers["x-api-key"], undefined);
@@ -237,6 +293,8 @@ async function main() {
     assert.equal(headers["x-app"], "cli");
     assert.equal(headers["x-claude-code-session-id"], "session-id");
     assert.equal(headers["x-client-request-id"], "request-id");
+    assert.equal(headers["anthropic-client-platform"], "desktop_app");
+    assert.equal(headers["anthropic-client-version"], "1.26832.0");
   }
 
   // Transformer headers compose without casing duplicates or auth leakage.

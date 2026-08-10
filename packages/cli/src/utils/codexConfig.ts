@@ -40,8 +40,8 @@ const PROVIDER_END = "# END ccr-provider-managed";
 const CODEX_PROVIDER_ID = "ccr";
 const CATALOG_PATH = join(HOME_DIR, "codex", "models.json");
 
-/** Used when models.dev has no context limit for a model. */
-const DEFAULT_CONTEXT_WINDOW = 128_000;
+/** Explicit Codex fallback for a model with no models.dev match. */
+const DEFAULT_CONTEXT_WINDOW = 200_000;
 /** Codex compacts before the hard limit; mirror its usual headroom. */
 const AUTO_COMPACT_RATIO = 0.8;
 const DEFAULT_REASONING_LEVELS = ["low", "medium", "high"];
@@ -179,6 +179,7 @@ export function selectModels(
 
 /** Descriptions mirror Codex's own catalog wording for known effort tokens. */
 const REASONING_DESCRIPTIONS: Record<string, string> = {
+  none: "Disables reasoning for the fastest responses",
   minimal: "Fastest responses with minimal reasoning",
   low: "Fast responses with lighter reasoning",
   medium: "Balances speed and reasoning depth for everyday tasks",
@@ -197,8 +198,9 @@ function pickDefaultEffort(levels: string[]): string {
 }
 
 /** Codex's schema wants reasoning levels as {effort, description} objects. */
-function toReasoningLevels(levels: string[]): Array<{ effort: string; description: string }> {
-  if (!levels.length) levels = DEFAULT_REASONING_LEVELS;
+function toReasoningLevels(
+  levels: string[]
+): Array<{ effort: string; description: string }> {
   return levels.map((effort) => ({
     effort,
     description: REASONING_DESCRIPTIONS[effort] || `Reasoning effort: ${effort}`,
@@ -237,9 +239,7 @@ export function buildCatalogEntry(
   const info = model.info;
   const context = info?.context || DEFAULT_CONTEXT_WINDOW;
 
-  const effortLevels = info?.effortLevels.length
-    ? info.effortLevels
-    : DEFAULT_REASONING_LEVELS;
+  const effortLevels = info ? info.effortLevels : DEFAULT_REASONING_LEVELS;
   const displayName = info?.name || model.modelName;
 
   const entry: Record<string, any> = {
@@ -278,6 +278,14 @@ export function buildCatalogEntry(
     // same backend version; v1 is the conservative choice.
     multi_agent_version: "v1",
   };
+
+  // A matched row is authoritative. Do not inherit or synthesize Codex
+  // effort options when models.dev declares none for that model. Codex's
+  // schema requires the supported list but permits the default to be absent.
+  if (info && effortLevels.length === 0) {
+    delete entry.default_reasoning_level;
+    entry.supported_reasoning_levels = [];
+  }
 
   // When cloning a real GPT-5 template, stop telling Codex the external model
   // is "based on GPT-5" — mirror codex-router's identity rewrite.
@@ -623,7 +631,7 @@ export async function codexConfigCommand(argv: string[]): Promise<void> {
 
   const index: ModelsDevIndex | null = await fetchModelsDevCatalog();
   for (const model of selected) {
-    model.info = lookupModel(index, model.providerName, model.modelName);
+    model.info = lookupModel(index, model.modelName);
   }
 
   const template = options.codexProbe ? captureCodexTemplate() : null;

@@ -8,8 +8,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import {
   ClaudeAuthTransformer,
+  buildSynthesizedIdentityHeaders,
   isClaudeCodeClient,
   resolveClaudeAuthBetas,
+  modelIdForRequestedOneMillionBeta,
   applyClaudeModelCapabilityAdjustments,
   __resetClaudeAuthTransformerStateForTests,
 } from "../transformer/claude-auth.transformer";
@@ -29,6 +31,7 @@ import {
   catalogEntryHasCapability,
 } from "../utils/claude-model-catalog";
 import { mergeHeadersCaseInsensitive, canonicalizeOutboundHeaders } from "../utils/headers";
+import { applyThirdPartyAnthropicPolicy } from "../utils/anthropic-client-policy";
 import { listClientRouteRegistrations } from "../routing/protocol-endpoints";
 import { TransformerContext } from "../types/transformer";
 import { UnifiedChatRequest } from "../types/llm";
@@ -79,7 +82,7 @@ function ensureHermeticAuthFileForTest(): void {
 // --- Classification -------------------------------------------------------
 
 function testIsClaudeCodeClient() {
-  assert.equal(isClaudeCodeClient("claude-cli/2.1.220 (external, cli)"), true);
+  assert.equal(isClaudeCodeClient("claude-cli/2.1.226 (external, cli)"), true);
   assert.equal(isClaudeCodeClient("opencode/0.x"), false);
   assert.equal(isClaudeCodeClient("cursor"), false);
   assert.equal(isClaudeCodeClient(undefined), false);
@@ -88,10 +91,10 @@ function testIsClaudeCodeClient() {
 // --- Billing suffix (pinned to live captures) ------------------------------
 
 function testSuffixVectorsPinned() {
-  assert.equal(computeVersionSuffix("say ok", "2.1.220"), "5bd");
+  assert.equal(computeVersionSuffix("say ok", "2.1.226"), "503");
   assert.equal(
-    computeVersionSuffix("completely different prompt here xyz", "2.1.220"),
-    "bd6"
+    computeVersionSuffix("completely different prompt here xyz", "2.1.226"),
+    "906"
   );
 }
 
@@ -99,8 +102,8 @@ function testCchShape() {
   resetState();
   const first = sessionCch();
   const second = sessionCch();
-  assert.match(first, /^[0-9a-f]{5}$/);
-  assert.equal(first, second, "cch must be stable within a process");
+  assert.equal(first, "00000");
+  assert.equal(second, "00000");
   resetState();
 }
 
@@ -120,7 +123,7 @@ function testFullSystemZeroStringEquality() {
   ];
   const suffix = computeVersionSuffix("say ok", CC_VERSION);
   const cch = sessionCch();
-  const expected = `x-anthropic-billing-header: cc_version=${CC_VERSION}.${suffix}; cc_entrypoint=cli; cch=${cch};`;
+  const expected = `x-anthropic-billing-header: cc_version=${CC_VERSION}.${suffix}; cc_entrypoint=unknown; cch=${cch};`;
   assert.equal(buildClaudeBillingHeaderValue(messages), expected);
   resetState();
 }
@@ -155,9 +158,8 @@ async function testInboundProtocolMatrixSynthesis() {
     const origins = ["anthropic_messages", "openai_chat_completions", "openai_responses"];
     const results: string[] = [];
 
-    // cch is intentionally process-cached (stable within a process, per
-    // claude-billing.ts), so it must NOT be reset between iterations here —
-    // only reset once up front so all three origins observe the same cch.
+    // The current first-party marker is stateless, so all three origins share
+    // the same literal cch value.
     resetState();
     for (const protocol of origins) {
       const transformer = new ClaudeAuthTransformer();
@@ -168,7 +170,10 @@ async function testInboundProtocolMatrixSynthesis() {
       } as UnifiedChatRequest;
       const context: TransformerContext = {
         req: { headers: { "user-agent": "some-third-party/1.0" } },
-        protocolContext: { protocol } as any,
+        protocolContext: {
+          protocol,
+          anthropicDestinationInScope: true,
+        } as any,
       };
       await transformer.transformRequestIn(request, {}, context);
       const billing = (request.system as any[])[0].text as string;
@@ -177,7 +182,7 @@ async function testInboundProtocolMatrixSynthesis() {
 
     assert.equal(results[0], results[1]);
     assert.equal(results[1], results[2]);
-    assert.match(results[0], /^x-anthropic-billing-header: cc_version=.*cc_entrypoint=cli; cch=[0-9a-f]{5};$/);
+    assert.match(results[0], /^x-anthropic-billing-header: cc_version=.*cc_entrypoint=unknown; cch=00000;$/);
   } finally {
     if (originalAuthFile === undefined) delete process.env.CCR_CLAUDE_AUTH_FILE;
     else process.env.CCR_CLAUDE_AUTH_FILE = originalAuthFile;
@@ -289,7 +294,7 @@ async function testForeignSystemContentNotRelocatedForClaudeCode() {
     messages: [{ role: "user", content: "hi" }],
   } as UnifiedChatRequest;
   const context: TransformerContext = {
-    req: { headers: { "user-agent": "claude-cli/2.1.220" } },
+    req: { headers: { "user-agent": "claude-cli/2.1.226" } },
   };
 
   await transformer.transformRequestIn(request, {}, context);
@@ -303,38 +308,43 @@ async function testForeignSystemContentNotRelocatedForClaudeCode() {
 // --- Betas: exact expected lists --------------------------------------------
 
 function testExactBetaLists() {
-  const originalEnvBeta = process.env.ANTHROPIC_BETA_FLAGS;
-  delete process.env.ANTHROPIC_BETA_FLAGS;
+  const originalEnvBeta = process.env.ANTHROPIC_BETAS;
+  delete process.env.ANTHROPIC_BETAS;
   try {
     assert.equal(
       resolveClaudeAuthBetas("claude-opus-5"),
-      "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,fallback-credit-2026-06-01"
+      "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07"
     );
     assert.equal(
       resolveClaudeAuthBetas("claude-opus-5[1m]"),
-      "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,fallback-credit-2026-06-01"
+      "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07"
     );
     assert.equal(
       resolveClaudeAuthBetas("claude-sonnet-4-5"),
-      "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20"
+      "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
     );
     assert.equal(
       resolveClaudeAuthBetas("claude-haiku-4-5"),
-      "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20"
+      "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
     );
 
-    // ANTHROPIC_BETA_FLAGS override replaces the list wholesale.
-    process.env.ANTHROPIC_BETA_FLAGS = "custom-beta-2099-01-01";
-    assert.equal(resolveClaudeAuthBetas("claude-opus-5"), "custom-beta-2099-01-01");
-    delete process.env.ANTHROPIC_BETA_FLAGS;
+    // The current CLI appends ANTHROPIC_BETAS to its model-derived list.
+    process.env.ANTHROPIC_BETAS = "custom-beta-2099-01-01, prompt-caching-scope-2026-01-05";
+    const withCustomBeta = resolveClaudeAuthBetas("claude-opus-5");
+    assert.ok(withCustomBeta.endsWith(",custom-beta-2099-01-01"));
+    assert.equal(
+      withCustomBeta.split(",").filter((beta) => beta === "prompt-caching-scope-2026-01-05").length,
+      1
+    );
+    delete process.env.ANTHROPIC_BETAS;
 
-    // Effort denylist: models without the "effort" capability never emit
-    // effort-2025-11-24, even though other betas are present.
-    assert.ok(!resolveClaudeAuthBetas("claude-sonnet-4-5").includes("effort-2025-11-24"));
-    assert.ok(resolveClaudeAuthBetas("claude-opus-5").includes("effort-2025-11-24"));
+    // Effort is request-driven in the current CLI; when explicitly requested,
+    // only models advertising the capability receive its beta.
+    assert.ok(!resolveClaudeAuthBetas("claude-sonnet-4-5", { includeEffort: true }).includes("effort-2025-11-24"));
+    assert.ok(resolveClaudeAuthBetas("claude-opus-5", { includeEffort: true }).includes("effort-2025-11-24"));
   } finally {
-    if (originalEnvBeta === undefined) delete process.env.ANTHROPIC_BETA_FLAGS;
-    else process.env.ANTHROPIC_BETA_FLAGS = originalEnvBeta;
+    if (originalEnvBeta === undefined) delete process.env.ANTHROPIC_BETAS;
+    else process.env.ANTHROPIC_BETAS = originalEnvBeta;
   }
 }
 
@@ -347,6 +357,14 @@ function testUsageParityOneMillionSuffix() {
   // the wire model id has the marker stripped elsewhere (AnthropicTransformer
   // strips it post-build); resolveClaudeAuthBetas itself never throws.
   assert.doesNotThrow(() => resolveClaudeAuthBetas("claude-opus-5[1m]"));
+  assert.equal(
+    modelIdForRequestedOneMillionBeta("claude-sonnet-4-6", true),
+    "claude-sonnet-4-6[1m]"
+  );
+  assert.equal(
+    modelIdForRequestedOneMillionBeta("claude-sonnet-5", true),
+    "claude-sonnet-5"
+  );
 }
 
 async function testNoPreflightCountTokensCall() {
@@ -380,7 +398,7 @@ async function testNoPreflightCountTokensCall() {
       messages: [{ role: "user", content: "hello" }],
     } as UnifiedChatRequest;
     await transformer.transformRequestIn(request, {}, {
-      req: { headers: { "user-agent": "claude-cli/2.1.220" } },
+      req: { headers: { "user-agent": "claude-cli/2.1.226" } },
     });
     assert.equal(
       calledUrls.some((url) => url.includes("count_tokens")),
@@ -429,7 +447,7 @@ async function testNoLocalContextRejection() {
     let result: any;
     try {
       result = await transformer.transformRequestIn(request, {}, {
-        req: { headers: { "user-agent": "claude-cli/2.1.220" } },
+        req: { headers: { "user-agent": "claude-cli/2.1.226" } },
       });
     } catch (err) {
       thrown = err;
@@ -547,7 +565,7 @@ async function testSynthesizedHeadersPresenceByClient() {
       messages: [{ role: "user", content: "hi" }],
     } as UnifiedChatRequest;
     const ccResult = await ccTransformer.transformRequestIn(ccRequest, {}, {
-      req: { headers: { "user-agent": "claude-cli/2.1.220" } },
+      req: { headers: { "user-agent": "claude-cli/2.1.226" } },
     });
     for (const name of [
       "x-app",
@@ -569,6 +587,27 @@ async function testSynthesizedHeadersPresenceByClient() {
     else process.env.CCR_CLAUDE_DEVICE_FILE = originalDeviceFile;
     rmSync(dir, { recursive: true, force: true });
     resetState();
+  }
+}
+
+function testSynthesizedCustomHeaderSafety() {
+  const original = process.env.ANTHROPIC_CUSTOM_HEADERS;
+  process.env.ANTHROPIC_CUSTOM_HEADERS =
+    "x-client-app: custom-client\n" +
+    "x-future-header: preserved\n" +
+    "Authorization: attacker-token\n" +
+    "x-api-key: attacker-key\n" +
+    "anthropic-beta: attacker-beta";
+  try {
+    const headers = buildSynthesizedIdentityHeaders();
+    assert.equal(headers["x-client-app"], "custom-client");
+    assert.equal(headers["x-future-header"], "preserved");
+    assert.equal(headers.Authorization, undefined);
+    assert.equal(headers["x-api-key"], undefined);
+    assert.equal(headers["anthropic-beta"], undefined);
+  } finally {
+    if (original === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+    else process.env.ANTHROPIC_CUSTOM_HEADERS = original;
   }
 }
 
@@ -623,7 +662,7 @@ async function testAuthRecoveryContract() {
       messages: [{ role: "user", content: "hi" }],
     } as UnifiedChatRequest;
     const result = await transformer.transformRequestIn(request, {}, {
-      req: { headers: { "user-agent": "claude-cli/2.1.220" } },
+      req: { headers: { "user-agent": "claude-cli/2.1.226" } },
     });
     writeAuth({
       access_token: "token-b",
@@ -691,7 +730,7 @@ function testCatalogDrivenGating() {
     const betas = resolveClaudeAuthBetas(modelId);
 
     assert.equal(
-      betas.includes("effort-2025-11-24"),
+      resolveClaudeAuthBetas(modelId, { includeEffort: true }).includes("effort-2025-11-24"),
       catalogEntryHasCapability(entry, "effort"),
       `effort-2025-11-24 mismatch for ${modelId}`
     );
@@ -802,11 +841,28 @@ async function testChainClaudeAuthPlusAnthropicMergesNotReplaces() {
     } as UnifiedChatRequest;
     const nonClaudeCodeContext: TransformerContext = {
       req: { headers: { "user-agent": "non-claude-code-client/1.0" } },
+      protocolContext: {
+        anthropicClientKind: "other",
+        anthropicProviderMode: "claude_oauth",
+        anthropicDestinationInScope: true,
+      } as any,
     };
+    await applyThirdPartyAnthropicPolicy(
+      nonClaudeCodeRequest,
+      nonClaudeCodeContext.protocolContext as any,
+      { get: () => undefined }
+    );
     const nonClaudeCode = await runProviderChain(nonClaudeCodeRequest, provider, nonClaudeCodeContext);
     const nonClaudeCodeOutbound = canonicalizeOutboundHeaders(nonClaudeCode.config.headers, provider.apiKey);
     assert.equal(nonClaudeCodeOutbound.Authorization, "Bearer hermetic-subscription-token");
     assert.equal(nonClaudeCodeOutbound["x-api-key"], undefined);
+    assert.equal(
+      nonClaudeCode.body.betas,
+      undefined,
+      "SDK-only betas must not leak into the Anthropic JSON body"
+    );
+    assert.ok(nonClaudeCodeOutbound["anthropic-beta"].includes("claude-code-20250219"));
+    assert.ok(nonClaudeCodeOutbound["anthropic-beta"].includes("oauth-2025-04-20"));
     assert.equal(
       nonClaudeCode.body.system?.some((s: any) => s.text?.startsWith("x-anthropic-billing-header:")),
       true
@@ -869,7 +925,7 @@ async function testChainClaudeAuthPlusAnthropicMergesNotReplaces() {
       messages: [{ role: "user", content: "hi" }],
     } as UnifiedChatRequest;
     const ccContext: TransformerContext = {
-      req: { headers: { "user-agent": "claude-cli/2.1.220" } },
+      req: { headers: { "user-agent": "claude-cli/2.1.226" } },
     };
     const cc = await runProviderChain(ccRequest, provider, ccContext);
     const ccOutbound = canonicalizeOutboundHeaders(cc.config.headers, provider.apiKey);
@@ -929,7 +985,7 @@ async function testSingletonSafetyConcurrentRequests() {
       messages: [{ role: "user", content: "native request" }],
     } as UnifiedChatRequest;
     const nativeContext: TransformerContext = {
-      req: { headers: { "user-agent": "claude-cli/2.1.220" } },
+      req: { headers: { "user-agent": "claude-cli/2.1.226" } },
     };
 
     const nonClaudeCodeRequest: UnifiedChatRequest = {
@@ -960,9 +1016,9 @@ async function testSingletonSafetyConcurrentRequests() {
 
     // Model-derived betas must not cross-contaminate: native uses the
     // client's own (absent) anthropic-beta header, the non-Claude-Code client derives from its
-    // own model (claude-opus-5, which includes effort-2025-11-24).
+    // own model (claude-opus-5).
     assert.equal(nativeResult.config.headers["anthropic-beta"], "oauth-2025-04-20");
-    assert.ok(nonClaudeCodeResult.config.headers["anthropic-beta"].includes("effort-2025-11-24"));
+    assert.ok(nonClaudeCodeResult.config.headers["anthropic-beta"].includes("oauth-2025-04-20"));
 
     // Synthesized identity headers must appear only on the non-Claude-Code result.
     assert.equal(nativeResult.config.headers["x-app"], undefined);
@@ -1005,6 +1061,7 @@ async function main() {
   testNoCompactionTriggerInvented();
   await testOverageHeaderPreservedThroughConversion();
   await testSynthesizedHeadersPresenceByClient();
+  testSynthesizedCustomHeaderSafety();
   await testToolNamesSurviveUnprefixed();
   await testAuthRecoveryContract();
   testCatalogDrivenGating();

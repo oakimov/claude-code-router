@@ -1,5 +1,6 @@
 /**
- * Claude Code's bundled model capability catalog (extracted from v2.1.220).
+ * Claude Code's bundled model capability catalog, revalidated against the
+ * installed v2.1.226 CLI decompilation.
  *
  * Every model-dependent decision in the claude-auth impersonation path (beta
  * flags, effort support, thinking shape, max_tokens ceiling) is driven by
@@ -206,7 +207,7 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
 };
 
 /** The literal wire marker CCR/Claude Code use to request a model's 1M-token context window. */
-const ONE_MILLION_CONTEXT_MARKER = /\[1m\]/gi;
+const ONE_MILLION_CONTEXT_MARKER = /\[1m\]$/i;
 
 /** Strip the "[1m]" wire marker, reporting whether it was present. */
 export function stripOneMillionContextMarker(modelId: string | undefined): {
@@ -215,7 +216,6 @@ export function stripOneMillionContextMarker(modelId: string | undefined): {
 } {
   const raw = modelId || "";
   const requestedOneMillion = ONE_MILLION_CONTEXT_MARKER.test(raw);
-  ONE_MILLION_CONTEXT_MARKER.lastIndex = 0;
   return { modelId: raw.replace(ONE_MILLION_CONTEXT_MARKER, ""), requestedOneMillion };
 }
 

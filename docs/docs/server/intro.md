@@ -66,7 +66,7 @@ interface UnifiedChatRequest {
   tools?: UnifiedTool[];
   tool_choice?: any;
   reasoning?: {
-    effort?: ThinkLevel;  // "none" | "low" | "medium" | "high" | "xhigh" | "max"
+    effort?: ThinkLevel;  // "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
     max_tokens?: number;
     enabled?: boolean;
   };
@@ -147,6 +147,33 @@ The current version of `@caeliq/llms` is `1.0.58`. It's published as an independ
 - JSON5 format configuration file
 - Environment variable interpolation
 - Hot configuration reload (requires service restart)
+
+### 5. Gateway Model Discovery
+
+`GET /v1/models` and its `/models` alias list every configured model. The default
+`MODEL_ID_OUTPUT: "literal"` emits CCR's canonical `provider,model` identifier;
+`"masked"` emits reversible `claude-<hex>` aliases for ids that Claude clients
+would otherwise filter. Inbound accepts both forms in either mode. The server independently fetches the
+[models.dev](https://models.dev) catalog and adds metadata when the model name is
+known:
+
+- `display_name` and `description`
+- `context_window`, `max_input_tokens`, and `max_output_tokens`
+- `effort_levels`
+- `anthropic_family_tier` and `supports_1m` for Claude Desktop's gateway picker
+
+CCR's provider prefix is used only for routing. Metadata matching uses the model
+name after the comma, and duplicate models.dev entries are resolved to the
+model's native provider instead of the configured CCR provider or an arbitrary
+reseller. Direct Anthropic models retain their Anthropic family. Other models
+map to `haiku` without reasoning support, `sonnet` with reasoning and a context
+window up to 300K tokens, and `opus` above 300K; `gpt-5.6-sol` maps to `fable`.
+
+The server keeps its own one-hour in-memory catalog cache and retains the last
+good value when refresh fails. A cold models.dev failure is non-fatal and falls
+back to the base routing entries. `CCR_MODELSDEV_URL`,
+`CCR_MODELSDEV_TIMEOUT`, and `CCR_MODELSDEV_DISABLE` apply independently in the
+server process; the CLI does not provide or populate this runtime cache.
 
 ## Use Cases
 

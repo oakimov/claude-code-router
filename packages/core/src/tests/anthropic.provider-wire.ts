@@ -357,14 +357,13 @@ async function testAnthropicSourcePreservesExactCacheAndFields() {
   });
 }
 
-async function testCrossProtocolAnthropicAddsAutomaticCaching() {
+async function testAnthropicBodyBuilderDoesNotInventCaching() {
   const body = AnthropicTransformer.buildAnthropicBody(makeUnified(), logger, {
     protocolContext: {
       protocol: "openai_chat_completions",
-      anthropicCacheMode: "automatic",
     },
   } as any);
-  assert.deepEqual(body.cache_control, { type: "ephemeral" });
+  assert.equal(body.cache_control, undefined);
 }
 
 async function testExactAuthPreservesBodyAndNormalizesUrl() {
@@ -385,7 +384,6 @@ async function testExactAuthPreservesBodyAndNormalizesUrl() {
     {
       protocolContext: {
         protocol: "anthropic_messages",
-        anthropicCacheMode: "preserve",
       },
     } as any
   );
@@ -476,7 +474,7 @@ async function main() {
   await testThinkingPreserved();
   await testMultipleSystemMessagesAndToolContent();
   await testAnthropicSourcePreservesExactCacheAndFields();
-  await testCrossProtocolAnthropicAddsAutomaticCaching();
+  await testAnthropicBodyBuilderDoesNotInventCaching();
   await testExactAuthPreservesBodyAndNormalizesUrl();
   await testClaudeAuthChainOwnsAuthNotWireBuild();
   await testTopLevelSystemPlusResidualSystemMessagesMerge();

@@ -73,12 +73,14 @@ function transformToolChoice(toolChoice: UnifiedChatRequest["tool_choice"]): any
 
 /**
  * Helper to transform reasoning parameter to Mistral's reasoning_effort format.
- * Mistral only supports "low" | "medium" | "high", so higher Claude effort
- * levels (xhigh, max) are mapped to "high".
+ * Mistral only supports "low" | "medium" | "high", so out-of-range effort
+ * levels are clamped to the nearest boundary.
  */
 function transformReasoning(reasoning: any): string | undefined {
   const effort = reasoning.effort?.toLowerCase();
   if (!effort || effort === "none") return undefined;
+
+  if (effort === "minimal") return "low";
 
   if (effort === "low" || effort === "medium" || effort === "high") {
     return effort;

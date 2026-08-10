@@ -122,12 +122,19 @@ interface UnifiedChatRequest {
   tools?: UnifiedTool[];
   tool_choice?: any;
   reasoning?: {
-    effort?: ThinkLevel;  // "none" | "low" | "medium" | "high" | "xhigh" | "max"
+    effort?: ThinkLevel;  // "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
     max_tokens?: number;
     enabled?: boolean;
   };
 }
 ```
+
+CCR normalizes effort across all three inbound APIs. Chat Completions
+`reasoning_effort`, Responses `reasoning.effort`, and Anthropic
+`output_config.effort` become the unified `reasoning.effort` field. `none`
+sets `reasoning.enabled` to `false`. On output, OpenAI-compatible protocols
+retain their native value; Anthropic maps `minimal` to `low` and `ultra` to
+`max`, while `none` becomes `thinking: { type: "disabled" }` with no effort.
 
 #### UnifiedMessage
 

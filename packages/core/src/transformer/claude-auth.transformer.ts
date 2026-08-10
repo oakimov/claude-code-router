@@ -15,11 +15,16 @@ import {
   prefixClaudeToolNames,
   relocateForeignSystemContent,
   unprefixClaudeToolNames,
-  CC_ENTRYPOINT,
+  CC_USER_AGENT_ENTRYPOINT,
   CC_VERSION,
   normalizeSystemToArray,
 } from "../utils/claude-billing";
 import { createSSEStreamReader, StreamContext } from "../utils/stream";
+import { buildAnthropicMessagesUrl } from "@/utils/anthropic-url";
+import {
+  AnthropicClientKind,
+  readHeaderValue as readPolicyHeaderValue,
+} from "../utils/anthropic-client-policy";
 import {
   ClaudeModelCatalogEntry,
   catalogEntryHasCapability,
@@ -97,22 +102,35 @@ export function resolveClaudeAuthAnthropicBeta(input: {
 
 /**
  * Build outbound anthropic-beta for the non-Claude-Code (full synthesis)
- * branch, mirroring Claude Code's own model-driven beta selection. Never
- * derived from model-name prefix matching — always from the capability
- * catalog. `ANTHROPIC_BETA_FLAGS` replaces the list wholesale.
+ * branch, mirroring Claude Code's current model-driven beta selection. Model
+ * capabilities come from the catalog; the CLI's one family-level exception
+ * (the ordinary Haiku profile omits the Claude Code beta) is retained from the
+ * decompiled `cui()` branch. Current CLI `ANTHROPIC_BETAS` values are appended
+ * to the profile; OAuth callers still add their required OAuth beta at the auth
+ * boundary.
  */
 export function resolveClaudeAuthBetas(
   modelId: string | undefined,
-  opts?: { envBeta?: string }
+  opts?: {
+    envBeta?: string;
+    includeOAuthBeta?: boolean;
+    includeToolSearch?: boolean;
+    includeEffort?: boolean;
+    includeFallbackCredit?: boolean;
+  }
 ): string {
-  const envBeta = opts?.envBeta ?? process.env.ANTHROPIC_BETA_FLAGS;
-  if (envBeta?.trim()) return envBeta.trim();
-
   const { requestedOneMillion } = stripOneMillionContextMarker(modelId);
   const entry = lookupClaudeModelCatalogEntry(modelId);
   const cap = (capability: string) => catalogEntryHasCapability(entry, capability);
 
-  const betas: string[] = ["claude-code-20250219", "oauth-2025-04-20"];
+  const normalizedModel = stripOneMillionContextMarker(modelId).modelId.toLowerCase();
+  // Claude Code's current beta catalog omits the attribution beta for Haiku
+  // unless an agentic query explicitly re-adds it. The emulation path has no
+  // agent-query marker, so follow the ordinary request profile.
+  const betas: string[] = normalizedModel.includes("haiku")
+    ? []
+    : ["claude-code-20250219"];
+  if (opts?.includeOAuthBeta !== false) betas.push("oauth-2025-04-20");
   if (requestedOneMillion) betas.push("context-1m-2025-08-07");
   if (catalogEntrySupportsThinking(entry)) {
     betas.push("interleaved-thinking-2025-05-14", "thinking-token-count-2026-05-13");
@@ -120,11 +138,32 @@ export function resolveClaudeAuthBetas(
   if (cap("context_management")) betas.push("context-management-2025-06-27");
   betas.push("prompt-caching-scope-2026-01-05");
   if (cap("mid_conv_system")) betas.push("mid-conversation-system-2026-04-07");
-  betas.push("advanced-tool-use-2025-11-20");
-  if (cap("effort")) betas.push("effort-2025-11-24");
-  if (cap("fast_mode")) betas.push("fallback-credit-2026-06-01");
+  if (opts?.includeToolSearch) betas.push("advanced-tool-use-2025-11-20");
+  if (opts?.includeEffort && cap("effort")) betas.push("effort-2025-11-24");
+  if (opts?.includeFallbackCredit) betas.push("fallback-credit-2026-06-01");
+
+  const configuredBetas = opts?.envBeta ?? process.env.ANTHROPIC_BETAS;
+  for (const beta of configuredBetas?.split(",") || []) {
+    const normalized = beta.trim();
+    if (normalized && !betas.includes(normalized)) betas.push(normalized);
+  }
 
   return betas.join(",");
+}
+
+/**
+ * Recreate the SDK's context marker only for models whose 1M window is a beta.
+ * Native-1M models still accept the gateway picker suffix, but must not receive
+ * the legacy context beta upstream.
+ */
+export function modelIdForRequestedOneMillionBeta(
+  modelId: string | undefined,
+  requestedOneMillion: boolean | undefined
+): string | undefined {
+  if (!modelId || !requestedOneMillion) return modelId;
+  const bareModelId = stripOneMillionContextMarker(modelId).modelId;
+  const entry = lookupClaudeModelCatalogEntry(bareModelId);
+  return entry?.nativeOneMillion ? bareModelId : `${bareModelId}[1m]`;
 }
 
 /**
@@ -203,15 +242,60 @@ function claudeAuthSessionId(): string {
   return cachedSessionId;
 }
 
+const SYNTHESIZED_CUSTOM_HEADER_DENYLIST = new Set([
+  "authorization",
+  "x-api-key",
+  "anthropic-beta",
+  "cookie",
+  "set-cookie",
+  "host",
+  "content-length",
+  "content-encoding",
+  "connection",
+  "transfer-encoding",
+  "upgrade",
+  "te",
+  "trailer",
+]);
+
+/** Parse the current CLI's newline-delimited custom application headers. */
+function readSynthesizedCustomHeaders(): HeaderRecord {
+  const custom: HeaderRecord = {};
+  for (const line of (process.env.ANTHROPIC_CUSTOM_HEADERS || "").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const separator = line.indexOf(":");
+    if (separator < 0) continue;
+    const name = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1).trim();
+    if (!name || !value || SYNTHESIZED_CUSTOM_HEADER_DENYLIST.has(name.toLowerCase())) {
+      continue;
+    }
+    custom[name] = value;
+  }
+  return custom;
+}
+
 /** Test-only reset hook so session-id state doesn't leak across test cases. */
 export function __resetClaudeAuthTransformerStateForTests(): void {
   cachedSessionId = undefined;
 }
 
 /** Synthesized Claude Code identity headers for the non-Claude-Code branch. */
-function buildSynthesizedIdentityHeaders(): HeaderRecord {
+export function buildSynthesizedIdentityHeaders(): HeaderRecord {
+  const userAgentSuffix = [
+    CC_USER_AGENT_ENTRYPOINT,
+    process.env.CLAUDE_AGENT_SDK_VERSION
+      ? `agent-sdk/${process.env.CLAUDE_AGENT_SDK_VERSION}`
+      : undefined,
+    process.env.CLAUDE_AGENT_SDK_CLIENT_APP
+      ? `client-app/${process.env.CLAUDE_AGENT_SDK_CLIENT_APP}`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join(", ");
   const userAgent =
-    process.env.ANTHROPIC_USER_AGENT || `claude-cli/${CC_VERSION} (external, ${CC_ENTRYPOINT})`;
+    process.env.ANTHROPIC_USER_AGENT ||
+    `claude-cli/${CC_VERSION} (external, ${userAgentSuffix})`;
   return {
     "User-Agent": userAgent,
     "x-app": "cli",
@@ -226,6 +310,32 @@ function buildSynthesizedIdentityHeaders(): HeaderRecord {
     "x-stainless-runtime": "node",
     "x-stainless-runtime-version": process.version,
     "x-stainless-timeout": "600",
+    ...(process.env.CLAUDE_CODE_CONTAINER_ID
+      ? { "x-claude-remote-container-id": process.env.CLAUDE_CODE_CONTAINER_ID }
+      : {}),
+    ...(process.env.CLAUDE_CODE_REMOTE_SESSION_ID
+      ? { "x-claude-remote-session-id": process.env.CLAUDE_CODE_REMOTE_SESSION_ID }
+      : {}),
+    ...(process.env.CLAUDE_AGENT_SDK_CLIENT_APP
+      ? { "x-client-app": process.env.CLAUDE_AGENT_SDK_CLIENT_APP }
+      : {}),
+    ...(process.env.CLAUDE_CODE_ADDITIONAL_PROTECTION &&
+    !["0", "false", "no", "off"].includes(
+      process.env.CLAUDE_CODE_ADDITIONAL_PROTECTION.trim().toLowerCase()
+    )
+      ? { "x-anthropic-additional-protection": "true" }
+      : {}),
+    ...readSynthesizedCustomHeaders(),
+  };
+}
+
+export function buildSynthesizedUserMetadata(): Record<string, string> {
+  return {
+    user_id: JSON.stringify({
+      device_id: loadOrCreateDeviceId(),
+      account_uuid: "",
+      session_id: claudeAuthSessionId(),
+    }),
   };
 }
 
@@ -242,9 +352,23 @@ export class ClaudeAuthTransformer implements Transformer {
 
     const clientHeaders = context?.req?.headers as Record<string, unknown> | undefined || {};
     const clientUserAgent = readHeaderValue(clientHeaders, "user-agent");
-    const isClaudeCode = isClaudeCodeClient(clientUserAgent);
+    const clientKind: AnthropicClientKind =
+      context?.protocolContext?.anthropicClientKind ||
+      (isClaudeCodeClient(clientUserAgent) ? "claude_code" : "other");
+    const isClaudeCode = clientKind === "claude_code";
+    // The route pipeline always supplies destination scope. Direct legacy
+    // transformer callers have no destination context, so retain their
+    // historical behavior for compatibility; routed non-Anthropic requests
+    // explicitly fail this predicate and receive no Claude system synthesis.
+    const mayApplyLegacyPolicy =
+      !context?.protocolContext ||
+      context.protocolContext.anthropicDestinationInScope === true;
 
-    if (!isClaudeCode) {
+    if (
+      clientKind === "other" &&
+      mayApplyLegacyPolicy &&
+      !context?.protocolContext?.anthropicPolicyApplied
+    ) {
       // Non-Claude-Code branch runs on the Unified body, before
       // AnthropicTransformer builds the wire body, so system[] ends up as
       // the single source of truth (buildAnthropicBody prefers
@@ -274,14 +398,28 @@ export class ClaudeAuthTransformer implements Transformer {
           context.protocolContext.claudeAuthToolNameMap = toolNameMap;
         }
       }
+    } else if (clientKind === "other") {
+      const toolNameMap = context?.protocolContext?.claudeAuthToolNameMap;
+      if (toolNameMap && context) context.claudeAuthToolNameMap = toolNameMap;
     }
 
     const clientBeta = isClaudeCode
       ? readHeaderValue(clientHeaders, "anthropic-beta")
       : undefined;
+    // Claude Code passes `betas` to the Anthropic SDK, whose Messages resource
+    // removes that SDK-only option from the JSON body and serializes it as the
+    // `anthropic-beta` header. CCR builds the raw HTTP request itself, so the
+    // synthesized profile must reproduce the resulting wire shape directly.
     const anthropicBeta = isClaudeCode
       ? resolveClaudeAuthAnthropicBeta({ clientBeta })
-      : resolveClaudeAuthBetas(request.model);
+      : resolveClaudeAuthAnthropicBeta({
+          clientBeta: resolveClaudeAuthBetas(
+            modelIdForRequestedOneMillionBeta(
+              request.model,
+              context?.protocolContext?.requestedOneMillion
+            )
+          ),
+        });
 
     const headers: HeaderRecord = {
       Authorization: `Bearer ${creds.access_token}`,
@@ -318,14 +456,9 @@ export class ClaudeAuthTransformer implements Transformer {
       if (context) {
         context.claudeAuthPostBuildHook = (anthropicBody: Record<string, any>) => {
           applyClaudeModelCapabilityAdjustments(anthropicBody, catalogEntry);
-          const deviceId = loadOrCreateDeviceId();
           anthropicBody.metadata = {
             ...(anthropicBody.metadata || {}),
-            user_id: JSON.stringify({
-              device_id: deviceId,
-              account_uuid: "",
-              session_id: claudeAuthSessionId(),
-            }),
+            ...buildSynthesizedUserMetadata(),
           };
         };
       }
@@ -335,6 +468,33 @@ export class ClaudeAuthTransformer implements Transformer {
       body: request,
       config: {
         headers,
+        __authRecovery: () => this.recoverUnauthorizedAuth(creds.access_token),
+      },
+    };
+  }
+
+  /**
+   * Auth-only path used by native Desktop/CLI raw-wire requests. It keeps the
+   * original body and application headers untouched while still replacing the
+   * caller credential with CCR's OAuth token.
+   */
+  async auth(
+    request: any,
+    provider: any,
+    context?: TransformerContext
+  ): Promise<any> {
+    const creds = await getValidAccessToken();
+    const clientHeaders =
+      (context?.req?.headers as Record<string, unknown> | undefined) || {};
+    const clientBeta = readPolicyHeaderValue(clientHeaders, "anthropic-beta");
+    return {
+      body: request,
+      config: {
+        url: buildAnthropicMessagesUrl(provider?.baseUrl),
+        headers: {
+          Authorization: `Bearer ${creds.access_token}`,
+          "anthropic-beta": resolveClaudeAuthAnthropicBeta({ clientBeta }),
+        },
         __authRecovery: () => this.recoverUnauthorizedAuth(creds.access_token),
       },
     };

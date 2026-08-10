@@ -1,4 +1,8 @@
 import type { RouterScenarioType } from "@/utils/router";
+import type {
+  AnthropicClientKind,
+  AnthropicProviderMode,
+} from "@/utils/anthropic-client-policy";
 
 /**
  * Inbound client protocols supported by CCR's gateway lifecycle.
@@ -23,12 +27,23 @@ export interface ClientProtocolContext {
   /** Alias path that matched, if different from canonical */
   matchedPath: string;
   originalModel?: string;
+  /** Client selected the gateway's trailing `[1m]` context variant. */
+  requestedOneMillion?: boolean;
   stream: boolean;
   scenarioType?: RouterScenarioType;
   /** Source-only Anthropic semantics retained before destination routing. */
   anthropicSource?: AnthropicSourceRequestFields;
-  /** Keep explicit source cache directives or add provider-native automatic caching. */
-  anthropicCacheMode?: "preserve" | "automatic";
+  /** Client fingerprint captured before Anthropic normalization. */
+  anthropicClientKind?: AnthropicClientKind;
+  /** In-scope Anthropic destination/auth variant selected after routing. */
+  anthropicProviderMode?: AnthropicProviderMode;
+  anthropicDestinationInScope?: boolean;
+  /** Native Desktop/CLI requests must bypass body and response conversion. */
+  anthropicNativeWire?: boolean;
+  /** Third-party emulation has already modified the Unified projection. */
+  anthropicPolicyApplied?: boolean;
+  anthropicSystemTransformed?: boolean;
+  claudeAuthToolNameMap?: Map<string, string>;
   /** Claude Code routing metadata extracted without mutating the source billing block. */
   claudeCodeSubagent?: boolean;
   taggedSubagentModel?: string;

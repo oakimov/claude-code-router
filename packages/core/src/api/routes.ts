@@ -31,6 +31,7 @@ import {
   toClientAbortError,
 } from "@/utils/retry";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
+import { applyOpenAIChatReasoning } from "../utils/reasoning-effort";
 import { sendWithUnauthorizedAuthRecovery } from "@/utils/auth-recovery";
 import {
   canonicalizeOutboundHeaders,
@@ -52,6 +53,11 @@ import {
   protocolAwareBypass,
   PreparedInboundRequest,
 } from "@/routing/inbound-pipeline";
+import {
+  applyThirdPartyAnthropicPolicy,
+  getAnthropicProviderMode,
+  isNativeAnthropicClient,
+} from "@/utils/anthropic-client-policy";
 
 function isManualExactProtocolPassthrough(
   provider: any,
@@ -65,6 +71,13 @@ function isManualExactProtocolPassthrough(
         (providerTransformer: Transformer) =>
           providerTransformer?.name === endpointTransformer.name
       )
+  );
+}
+
+function isThirdPartyInScopeAnthropic(protocolContext: any): boolean {
+  return Boolean(
+    protocolContext?.anthropicDestinationInScope === true &&
+      protocolContext?.anthropicClientKind === "other"
   );
 }
 
@@ -129,23 +142,28 @@ async function handleTransformerEndpoint(
   (req as any)._preparedInbound = prepared;
 
   try {
-    // Same-protocol passthrough must send the adapted client wire body
-    // (with the routed model name), not the Unified projection. It uses
-    // clientWireBody rather than originalBody so CCR-only cleanup — subagent
-    // tag removal and REWRITE_SYSTEM_PROMPT — still reaches the upstream.
+    // Native Anthropic clients use the original wire body; legacy exact
+    // protocol passthrough uses the adapted wire body. Both receive only the
+    // routed model substitution. Third-party Anthropic emulation and all
+    // cross-protocol routes use the Unified projection.
     const willBypass = protocolAwareBypass(
       provider,
       transformer,
       prepared.protocolContext,
       prepared.modelName
-    );
-    const preserveManualWire = isManualExactProtocolPassthrough(
-      provider,
-      transformer,
-      prepared.protocolContext
-    );
-    const exactWireSource = prepared.clientWireBody ?? prepared.originalBody;
-    const pipelineBody = willBypass || preserveManualWire
+    ) && !isThirdPartyInScopeAnthropic(prepared.protocolContext);
+    const preserveManualWire =
+      !isThirdPartyInScopeAnthropic(prepared.protocolContext) &&
+      isManualExactProtocolPassthrough(
+        provider,
+        transformer,
+        prepared.protocolContext
+      );
+    const exactWireSource = prepared.protocolContext.anthropicNativeWire
+      ? prepared.originalBody
+      : prepared.clientWireBody ?? prepared.originalBody;
+    const pipelineBody = prepared.protocolContext.anthropicNativeWire ||
+      willBypass || preserveManualWire
       ? {
           ...(typeof exactWireSource === "object" && exactWireSource
             ? cloneProtocolBody(exactWireSource)
@@ -302,24 +320,6 @@ async function handleFallback(
       const [fallbackProvider, ...fallbackModelName] = fallbackModel.split(",");
       const fallbackModelOnly = fallbackModelName.join(",");
 
-      const unifiedBody = {
-        ...cloneProtocolBody(
-          prepared?.unifiedBody || (req as any).unifiedBody || req.body
-        ),
-        model: fallbackModelOnly,
-      };
-
-      const newReq = {
-        ...req,
-        provider: fallbackProvider,
-        model: fallbackModelOnly,
-        body: prepared?.originalBody ?? req.body,
-        unifiedBody,
-        protocolContext: prepared?.protocolContext,
-        clientProtocol: prepared?.protocolContext?.protocol,
-        scenarioType,
-      };
-
       const provider = fastify.providerService.getProvider(fallbackProvider);
       if (!provider) {
         req.log.warn(
@@ -328,19 +328,76 @@ async function handleFallback(
         continue;
       }
 
+      const fallbackAnthropicMode = getAnthropicProviderMode(provider);
+      const fallbackProtocolContext = prepared?.protocolContext
+        ? {
+            ...prepared.protocolContext,
+            anthropicProviderMode: fallbackAnthropicMode,
+            anthropicDestinationInScope:
+              fallbackAnthropicMode !== "out_of_scope",
+            anthropicNativeWire: Boolean(
+              prepared.protocolContext.protocol === "anthropic_messages" &&
+                fallbackAnthropicMode !== "out_of_scope" &&
+                isNativeAnthropicClient(
+                  prepared.protocolContext.anthropicClientKind || "other"
+                )
+            ),
+            anthropicPolicyApplied: false,
+            anthropicSystemTransformed: false,
+            claudeAuthToolNameMap: new Map(),
+          }
+        : prepared?.protocolContext;
+
+      const unifiedBody = {
+        ...cloneProtocolBody(
+          prepared?.prePolicyUnifiedBody ||
+            prepared?.unifiedBody ||
+            (req as any).unifiedBody ||
+            req.body
+        ),
+        model: fallbackModelOnly,
+      };
+
+      if (
+        fallbackProtocolContext?.anthropicDestinationInScope &&
+        fallbackProtocolContext.anthropicClientKind === "other"
+      ) {
+        await applyThirdPartyAnthropicPolicy(
+          unifiedBody,
+          fallbackProtocolContext,
+          fastify.configService
+        );
+      }
+
+      const newReq = {
+        ...req,
+        provider: fallbackProvider,
+        model: fallbackModelOnly,
+        body: prepared?.originalBody ?? req.body,
+        unifiedBody,
+        protocolContext: fallbackProtocolContext,
+        clientProtocol: fallbackProtocolContext?.protocol,
+        scenarioType,
+      };
+
       const willBypass = protocolAwareBypass(
         provider,
         transformer,
-        prepared?.protocolContext,
+        fallbackProtocolContext,
         fallbackModelOnly
-      );
-      const preserveManualWire = isManualExactProtocolPassthrough(
-        provider,
-        transformer,
-        prepared?.protocolContext
-      );
-      const exactWireSource = prepared?.clientWireBody ?? prepared?.originalBody;
-      const pipelineBody = willBypass || preserveManualWire
+      ) && !isThirdPartyInScopeAnthropic(fallbackProtocolContext);
+      const preserveManualWire =
+        !isThirdPartyInScopeAnthropic(fallbackProtocolContext) &&
+        isManualExactProtocolPassthrough(
+          provider,
+          transformer,
+          fallbackProtocolContext
+        );
+      const exactWireSource = fallbackProtocolContext?.anthropicNativeWire
+        ? prepared?.originalBody
+        : prepared?.clientWireBody ?? prepared?.originalBody;
+      const pipelineBody = fallbackProtocolContext?.anthropicNativeWire ||
+        willBypass || preserveManualWire
         ? {
             ...(typeof exactWireSource === "object" && exactWireSource
               ? cloneProtocolBody(exactWireSource)
@@ -359,7 +416,7 @@ async function handleFallback(
           provider,
           signal: clientSignal,
           clientProtocol: prepared?.protocolContext?.protocol,
-          protocolContext: prepared?.protocolContext,
+          protocolContext: fallbackProtocolContext,
           skipClientNormalization: true,
         }
       );
@@ -374,7 +431,7 @@ async function handleFallback(
         {
           req: newReq,
           signal: clientSignal,
-          protocolContext: prepared?.protocolContext,
+          protocolContext: fallbackProtocolContext,
         }
       );
 
@@ -387,7 +444,7 @@ async function handleFallback(
         {
           req: newReq,
           signal: clientSignal,
-          protocolContext: prepared?.protocolContext,
+          protocolContext: fallbackProtocolContext,
         }
       );
 
@@ -398,7 +455,7 @@ async function handleFallback(
         reply,
         prepared?.originalBody ?? req.body,
         clientSignal,
-        prepared?.protocolContext?.stream
+        fallbackProtocolContext?.stream
       );
     } catch (fallbackError: any) {
       if (isClientAbortError(fallbackError)) {
@@ -477,20 +534,29 @@ async function processRequestTransformers(
   let requestBody = body;
   let config: any = {};
 
-  const bypass = protocolAwareBypass(
+  const protocolBypass = protocolAwareBypass(
     provider,
     transformer,
     context?.protocolContext,
     body?.model
   );
-  const manualExactPassthrough = isManualExactProtocolPassthrough(
-    provider,
-    transformer,
+  const bypass = Boolean(
+    context?.protocolContext?.anthropicNativeWire === true ||
+      (protocolBypass && !isThirdPartyInScopeAnthropic(context?.protocolContext))
+  );
+  const thirdPartyAnthropic = isThirdPartyInScopeAnthropic(
     context?.protocolContext
   );
+  const manualExactPassthrough =
+    !thirdPartyAnthropic &&
+    isManualExactProtocolPassthrough(
+      provider,
+      transformer,
+      context?.protocolContext
+    );
   const skipBodyConversion =
     bypass ||
-    provider.transformer?.passthrough ||
+    (!thirdPartyAnthropic && provider.transformer?.passthrough) ||
     context?.skipClientNormalization === true;
 
   if (bypass) {
@@ -605,6 +671,7 @@ async function processRequestTransformers(
     !provider.transformer?.use?.length &&
     Array.isArray(requestBody?.messages)
   ) {
+    requestBody = applyOpenAIChatReasoning(requestBody);
     requestBody = applyProviderNativeChatCaching(
       requestBody,
       provider,
@@ -635,8 +702,16 @@ async function sendRequestToProvider(
   }
 
   // Handle authentication in passthrough mode
-  if ((bypass || provider.transformer?.passthrough) && typeof transformer.auth === "function") {
-    const auth = await transformer.auth(requestBody, provider, context);
+  const authTransformer =
+    provider.transformer?.use?.find(
+      (providerTransformer: Transformer) =>
+        typeof providerTransformer?.auth === "function"
+    ) || transformer;
+  if (
+    (bypass || provider.transformer?.passthrough) &&
+    typeof authTransformer.auth === "function"
+  ) {
+    const auth = await authTransformer.auth(requestBody, provider, context);
     if (auth.body) {
       requestBody = auth.body;
       let headers = config.headers || {};
@@ -833,22 +908,28 @@ async function processResponseTransformers(
   context: any
 ) {
   let finalResponse = response;
+  const thirdPartyAnthropic = isThirdPartyInScopeAnthropic(
+    context?.protocolContext
+  );
   // Raw provider bytes may reach the client only for an exact-protocol bypass,
   // including the legacy multi-transformer passthrough mode when its chain
   // explicitly contains the endpoint owner.
   const skipBodyConversion =
     bypass ||
+    (!thirdPartyAnthropic &&
+      isManualExactProtocolPassthrough(
+        provider,
+        transformer,
+        context?.protocolContext
+      )) ||
+    (provider.transformer?.passthrough && !context?.protocolContext);
+  const manualExactPassthrough =
+    !thirdPartyAnthropic &&
     isManualExactProtocolPassthrough(
       provider,
       transformer,
       context?.protocolContext
-    ) ||
-    (provider.transformer?.passthrough && !context?.protocolContext);
-  const manualExactPassthrough = isManualExactProtocolPassthrough(
-    provider,
-    transformer,
-    context?.protocolContext
-  );
+    );
 
   // Response transformers get the provider too: the request-side context
   // already carries it, and provider identity is what scopes per-provider state

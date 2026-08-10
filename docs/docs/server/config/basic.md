@@ -98,6 +98,22 @@ Example:
 export NO_PROXY="api.anthropic.com,.internal,10.0.0.0/8,localhost"
 ```
 
+### Models API ID output
+
+`MODEL_ID_OUTPUT` controls only the IDs returned by `GET /v1/models`, `/models`,
+and `GET /v1/models/{id}`:
+
+```json
+{
+  "MODEL_ID_OUTPUT": "masked"
+}
+```
+
+- `"literal"` (default): emit canonical `provider,model` IDs.
+- `"masked"`: emit otherwise-filtered IDs as reversible `claude-<lowercase UTF-8 hex>` aliases.
+
+Inbound requests always accept both canonical and masked IDs regardless of this setting.
+
 ## Complete Example
 
 ```json

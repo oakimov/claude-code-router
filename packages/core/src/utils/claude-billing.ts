@@ -1,11 +1,17 @@
-import { createHash, randomBytes } from "crypto";
+import { createHash } from "crypto";
 import { TextContent, UnifiedChatRequest, UnifiedMessage } from "@/types/llm";
 import { CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX } from "./router";
 
 /** Salt used in Claude Code's `cc_version` suffix hash (`RYn()`). */
 export const BILLING_SALT = "59cf53e54c78";
-export const CC_VERSION = process.env.ANTHROPIC_CLI_VERSION || "2.1.220";
-export const CC_ENTRYPOINT = process.env.CLAUDE_CODE_ENTRYPOINT || "cli";
+// Frozen current Claude Code reference used by third-party emulation. Update
+// intentionally with a new golden profile when the CLI reference changes.
+export const CC_VERSION = process.env.ANTHROPIC_CLI_VERSION || "2.1.226";
+// Claude Code uses different fallbacks for the HTTP user agent and billing
+// attribution marker in the current 2.1.226 build.
+export const CC_ENTRYPOINT = process.env.CLAUDE_CODE_ENTRYPOINT ?? "unknown";
+export const CC_USER_AGENT_ENTRYPOINT =
+  process.env.CLAUDE_CODE_ENTRYPOINT ?? "cli";
 export const SYSTEM_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude.";
 
@@ -35,18 +41,17 @@ export function computeVersionSuffix(text: string, version: string): string {
     .slice(0, 3);
 }
 
-let cachedSessionCch: string | undefined;
-
-/** 5 lowercase hex chars, cached per process — not a content hash. */
+/**
+ * Current first-party Anthropic requests use the literal cch marker. Older
+ * captures showed a random session value; the current 2.1.226 decompilation
+ * gates this field to first-party/Vertex and emits `00000`.
+ */
 export function sessionCch(): string {
-  if (!cachedSessionCch) {
-    cachedSessionCch = randomBytes(3).toString("hex").slice(0, 5);
-  }
-  return cachedSessionCch;
+  return "00000";
 }
 
 export function __resetClaudeBillingStateForTests(): void {
-  cachedSessionCch = undefined;
+  // Kept as a test compatibility hook; the current marker is stateless.
 }
 
 export function buildClaudeBillingHeaderValue(
@@ -54,6 +59,13 @@ export function buildClaudeBillingHeaderValue(
   version: string = CC_VERSION,
   entrypoint: string = CC_ENTRYPOINT
 ): string {
+  const attributionSetting = process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
+    ?.trim()
+    .toLowerCase();
+  if (["0", "false", "no", "off"].includes(attributionSetting || "")) {
+    return "";
+  }
+
   const suffix = computeVersionSuffix(
     extractFirstUserMessageText(messages),
     version
@@ -126,16 +138,21 @@ export function applyClaudeBillingSystemBlock(
       system.splice(i, 1);
     }
   }
-  system.unshift({ type: "text", text: buildClaudeBillingHeaderValue(messages) });
+  const billing = buildClaudeBillingHeaderValue(messages);
+  if (billing) system.unshift({ type: "text", text: billing });
 }
 
 /**
- * Insert SYSTEM_IDENTITY as its own entry at system[1]. Any remaining
- * caller system content is left in place here — relocateForeignSystemContent
- * (called separately, afterwards) is what moves it out of system[].
+ * Insert SYSTEM_IDENTITY after the billing block (normally system[1], or
+ * system[0] when attribution is disabled). Any remaining caller system
+ * content is left in place here — relocateForeignSystemContent (called
+ * separately, afterwards) is what moves it out of system[].
  */
 export function applyClaudeSystemIdentity(system: TextContent[]): void {
-  const candidateIndex = 1;
+  const billingIndex = system.findIndex((block) =>
+    block.text.startsWith(CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX)
+  );
+  const candidateIndex = billingIndex >= 0 ? billingIndex + 1 : 0;
   const candidate = system[candidateIndex];
 
   if (candidate?.text === SYSTEM_IDENTITY) return;
@@ -164,8 +181,8 @@ export function applyClaudeSystemIdentity(system: TextContent[]): void {
 }
 
 /**
- * Move everything in `system[]` past the identity block (index 1) into the
- * first user message instead. Anthropic's OAuth billing validator appears to
+ * Move everything in `system[]` past the identity block into the first user
+ * message instead. Anthropic's OAuth billing validator appears to
  * inspect `system[]` content beyond the identity prefix and reject requests
  * whose system array carries a foreign harness prompt with an "out of extra
  * usage" 400 — the same approach used by third-party Claude Code OAuth
@@ -181,12 +198,17 @@ export function relocateForeignSystemContent(
   system: TextContent[],
   messages: UnifiedMessage[] | undefined
 ): void {
-  if (system.length <= 2 || !Array.isArray(messages)) return;
+  const identityIndex = system.findIndex(
+    (block) => block.text === SYSTEM_IDENTITY
+  );
+  if (identityIndex < 0 || system.length <= identityIndex + 1 || !Array.isArray(messages)) {
+    return;
+  }
 
   const firstUser = messages.find((msg) => msg.role === "user");
   if (!firstUser) return;
 
-  const foreign = system.splice(2);
+  const foreign = system.splice(identityIndex + 1);
   const text = foreign
     .map((block) => block.text)
     .filter((t) => t.length > 0)

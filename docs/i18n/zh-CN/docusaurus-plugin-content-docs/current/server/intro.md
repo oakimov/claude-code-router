@@ -61,7 +61,7 @@ interface UnifiedChatRequest {
   tools?: UnifiedTool[];
   tool_choice?: any;
   reasoning?: {
-    effort?: ThinkLevel;  // "none" | "low" | "medium" | "high" | "xhigh" | "max"
+    effort?: ThinkLevel;  // "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
     max_tokens?: number;
     enabled?: boolean;
   };

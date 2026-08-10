@@ -2,6 +2,11 @@ import { Transformer, TransformerContext } from "@/types/transformer";
 import { UnifiedChatRequest } from "@/types/llm";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
 import { createApiError } from "@/api/middleware";
+import {
+  applyOpenAIChatReasoning,
+  canonicalReasoning,
+  normalizeReasoningEffort,
+} from "@/utils/reasoning-effort";
 
 /**
  * Server-side route handler for the OpenAI Chat Completions API.
@@ -51,6 +56,8 @@ export class OpenAITransformer implements Transformer {
     provider: any,
     context: any
   ): Promise<UnifiedChatRequest> {
+    request = structuredClone(request);
+    applyOpenAIChatReasoning(request);
     return applyProviderNativeChatCaching(request, provider, context);
   }
 
@@ -304,7 +311,20 @@ function validateAndNormalizeChatRequest(body: any): UnifiedChatRequest {
   if (body.parallel_tool_calls !== undefined) {
     unified.parallel_tool_calls = body.parallel_tool_calls;
   }
-  if (body.reasoning !== undefined) unified.reasoning = body.reasoning;
+  const chatEffort = normalizeReasoningEffort(
+    body.reasoning_effort ?? body.reasoning?.effort
+  );
+  if (body.reasoning !== undefined || chatEffort) {
+    unified.reasoning = {
+      ...(body.reasoning && typeof body.reasoning === "object"
+        ? body.reasoning
+        : {}),
+      ...(canonicalReasoning(
+        chatEffort,
+        body.reasoning?.enabled
+      ) || {}),
+    };
+  }
   if (body.thinking !== undefined) unified.thinking = body.thinking;
 
   return unified;

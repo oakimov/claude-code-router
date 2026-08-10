@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { LLMProvider, UnifiedChatRequest, UnifiedMessage } from "@/types/llm";
 import { TransformerContext } from "@/types/transformer";
+import { isReasoningDisabled } from "./reasoning-effort";
 
 type ToolCallLike = NonNullable<UnifiedMessage["tool_calls"]>[number];
 
@@ -278,6 +279,13 @@ export function isDeepSeekThinkingRequest(
     model.includes("deepseek") ||
     providerName.includes("deepseek") ||
     providerBaseUrl.includes("deepseek");
+
+  if (
+    request.enable_thinking === false ||
+    isReasoningDisabled(request.reasoning, request.thinking)
+  ) {
+    return false;
+  }
 
   const thinkingEnabled =
     request.enable_thinking === true ||

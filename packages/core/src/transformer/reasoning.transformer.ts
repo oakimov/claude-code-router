@@ -9,6 +9,7 @@ import {
   prepareReasoningReplay,
   recordReasoningResponseMessage,
 } from "../utils/deepseek.util";
+import { isReasoningDisabled } from "../utils/reasoning-effort";
 export class ReasoningTransformer implements Transformer {
   static TransformerName = "reasoning";
   enable: any;
@@ -23,6 +24,14 @@ export class ReasoningTransformer implements Transformer {
     context?: any
   ): Promise<UnifiedChatRequest> {
     if (!this.enable) {
+      request.thinking = {
+        type: "disabled",
+        budget_tokens: -1,
+      };
+      request.enable_thinking = false;
+      return request;
+    }
+    if (isReasoningDisabled(request.reasoning, request.thinking)) {
       request.thinking = {
         type: "disabled",
         budget_tokens: -1,

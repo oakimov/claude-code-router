@@ -129,31 +129,41 @@ export function cloneProtocolBody<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-const PASSTHROUGH_HEADER_ALLOWLIST = new Set([
-  "accept",
-  "content-type",
-  "idempotency-key",
-  "anthropic-beta",
-  "anthropic-dangerous-direct-browser-access",
-  "anthropic-version",
-  "openai-beta",
-  "openai-organization",
-  "openai-project",
-  "user-agent",
-  "x-app",
-  "x-claude-code-session-id",
-  "x-client-request-id",
+const PASSTHROUGH_HEADER_DENYLIST = new Set([
+  "authorization",
+  "proxy-authorization",
+  "x-api-key",
+  "cookie",
+  "set-cookie",
+  "host",
+  "content-length",
+  "content-encoding",
+  "accept-encoding",
+  "connection",
+  "keep-alive",
+  "transfer-encoding",
+  "upgrade",
+  "te",
+  "trailer",
+  "expect",
+  "via",
+  "proxy-authenticate",
+  "proxy-authentication-info",
+  "x-auth-token",
+  "openai-secret",
+  "x-claude-desktop-no-iap-inject",
 ]);
 
-const PASSTHROUGH_HEADER_PREFIX_ALLOWLIST = [
-  "x-stainless-",
+const PASSTHROUGH_HEADER_DENY_PREFIXES = [
+  "proxy-",
+  "x-forwarded-",
+  "x-real-ip",
 ];
 
 /**
- * Preserve only known protocol/version and SDK metadata headers for exact-wire
- * passthrough. An allowlist prevents an arbitrary client header from becoming
- * an upstream credential or tenant-routing secret. Provider authentication is
- * generated independently.
+ * Preserve all end-to-end application headers for a native client. Only
+ * credentials, cookies, CCR/proxy routing metadata and hop-by-hop transport
+ * headers are removed; provider authentication is generated independently.
  */
 export function sanitizePassthroughHeaders(
   headers: Headers | Record<string, unknown> | undefined
@@ -168,13 +178,13 @@ export function sanitizePassthroughHeaders(
 
   for (const [rawName, rawValue] of entries) {
     const name = rawName.toLowerCase();
-    const allowed =
-      PASSTHROUGH_HEADER_ALLOWLIST.has(name) ||
-      PASSTHROUGH_HEADER_PREFIX_ALLOWLIST.some((prefix) =>
-        name.startsWith(prefix)
-      );
-    if (!allowed) continue;
-    const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+    if (
+      PASSTHROUGH_HEADER_DENYLIST.has(name) ||
+      PASSTHROUGH_HEADER_DENY_PREFIXES.some((prefix) => name.startsWith(prefix))
+    ) continue;
+    const value = Array.isArray(rawValue)
+      ? rawValue.filter((item) => item != null).map(String).join(", ")
+      : rawValue;
     if (typeof value === "string" && value) {
       safe[name] = value;
     }

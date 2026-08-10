@@ -14,21 +14,31 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { createApiError } from "@/api/middleware";
 import { formatBase64 } from "@/utils/image";
-import { applyRawAnthropicPromptCaching } from "@/utils/cacheControl";
 import { sanitizeToolCallId } from "@/utils/toolCallId";
 import { buildAnthropicRequestRuntime } from "@/types/turn-intent";
+import {
+  unprefixClaudeToolNames,
+} from "@/utils/claude-billing";
+import { createSSEStreamReader } from "@/utils/stream";
 import { transformResponseOut as anthropicWireToUnifiedResponse } from "../utils/vertex-claude.util";
-import { stripOneMillionContextMarker } from "@/utils/claude-model-catalog";
-
-function buildAnthropicMessagesUrl(baseUrl: string | undefined): string {
-  const url = new URL(baseUrl || "https://api.anthropic.com");
-  const path = url.pathname.replace(/\/$/, "");
-  if (!path.endsWith("/v1/messages")) {
-    url.pathname = `${path}/v1/messages`.replace(/\/+/g, "/");
-  }
-  url.searchParams.set("beta", "true");
-  return url.toString();
-}
+import {
+  lookupClaudeModelCatalogEntry,
+  stripOneMillionContextMarker,
+} from "@/utils/claude-model-catalog";
+import {
+  applyClaudeModelCapabilityAdjustments,
+  buildSynthesizedIdentityHeaders,
+  buildSynthesizedUserMetadata,
+  modelIdForRequestedOneMillionBeta,
+  resolveClaudeAuthBetas,
+} from "./claude-auth.transformer";
+import { buildAnthropicMessagesUrl } from "@/utils/anthropic-url";
+import {
+  canonicalReasoning,
+  isReasoningDisabled,
+  normalizeReasoningEffort,
+  toAnthropicReasoningEffort,
+} from "@/utils/reasoning-effort";
 
 function toAnthropicCacheUsage(usage: any): Record<string, number> {
   const cached = usage?.prompt_tokens_details?.cached_tokens || 0;
@@ -46,6 +56,22 @@ function toAnthropicCacheUsage(usage: any): Record<string, number> {
     cache_creation_input_tokens: written,
     cache_read_input_tokens: cached,
   };
+}
+
+function normalizeAnthropicOutputConfig(
+  value: Record<string, any> | undefined,
+  reasoningDisabled: boolean
+): Record<string, any> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const outputConfig = structuredClone(value);
+  if (outputConfig.effort !== undefined) {
+    const effort = reasoningDisabled
+      ? undefined
+      : toAnthropicReasoningEffort(outputConfig.effort);
+    if (effort) outputConfig.effort = effort;
+    else delete outputConfig.effort;
+  }
+  return Object.keys(outputConfig).length ? outputConfig : undefined;
 }
 
 export class AnthropicTransformer implements Transformer {
@@ -74,10 +100,7 @@ export class AnthropicTransformer implements Transformer {
     }
 
     return {
-      body:
-        context?.protocolContext?.anthropicCacheMode === "preserve"
-          ? request
-          : applyRawAnthropicPromptCaching(request),
+      body: request,
       config: {
         url: buildAnthropicMessagesUrl(provider.baseUrl),
         headers,
@@ -104,6 +127,25 @@ export class AnthropicTransformer implements Transformer {
 
     anthropicBody.model = stripOneMillionContextMarker(anthropicBody.model).modelId;
 
+    const protocolContext = _context?.protocolContext;
+    const isThirdPartyAnthropic =
+      protocolContext?.anthropicDestinationInScope === true &&
+      protocolContext.anthropicClientKind === "other" &&
+      protocolContext.anthropicPolicyApplied === true;
+    const isApiKeyAnthropic =
+      isThirdPartyAnthropic && protocolContext?.anthropicProviderMode === "api_key";
+
+    if (isApiKeyAnthropic) {
+      applyClaudeModelCapabilityAdjustments(
+        anthropicBody,
+        lookupClaudeModelCatalogEntry(anthropicBody.model)
+      );
+      anthropicBody.metadata = {
+        ...(anthropicBody.metadata || {}),
+        ...buildSynthesizedUserMetadata(),
+      };
+    }
+
     // claude-auth's non-Claude-Code branch stashes catalog-driven capability
     // clamping and synthesized identity metadata here, to run immediately
     // after the body this stage owns building. See TransformerContext.
@@ -115,6 +157,20 @@ export class AnthropicTransformer implements Transformer {
       "Content-Type": "application/json",
       "anthropic-version": "2023-06-01",
     };
+
+    if (isApiKeyAnthropic) {
+      Object.assign(headers, buildSynthesizedIdentityHeaders(), {
+        "anthropic-beta": resolveClaudeAuthBetas(
+          modelIdForRequestedOneMillionBeta(
+            anthropicBody.model,
+            protocolContext?.requestedOneMillion
+          ),
+          {
+            includeOAuthBeta: false,
+          }
+        ),
+      });
+    }
 
     // claude-auth owns OAuth bearer auth when it shares this provider's
     // chain; this stage must never introduce or clobber it with a static key.
@@ -149,7 +205,52 @@ export class AnthropicTransformer implements Transformer {
     response: Response,
     _context?: TransformerContext
   ): Promise<Response> {
-    return anthropicWireToUnifiedResponse(response, this.name, this.logger);
+    const converted = await anthropicWireToUnifiedResponse(
+      response,
+      this.name,
+      this.logger
+    );
+    const nameMap = _context?.protocolContext?.claudeAuthToolNameMap as
+      | Map<string, string>
+      | undefined;
+    if (!nameMap?.size || !converted.ok) return converted;
+
+    const contentType = converted.headers.get("Content-Type") || "";
+    if (contentType.includes("application/json")) {
+      const body = await converted.json();
+      unprefixClaudeToolNames(body, nameMap);
+      return new Response(JSON.stringify(body), {
+        status: converted.status,
+        statusText: converted.statusText,
+        headers: converted.headers,
+      });
+    }
+    if (contentType.includes("text/event-stream") && converted.body) {
+      return createSSEStreamReader(
+        converted,
+        (line, streamContext) => {
+          if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") {
+            streamContext.controller.enqueue(
+              streamContext.encoder.encode(line + "\n")
+            );
+            return;
+          }
+          try {
+            const payload = JSON.parse(line.slice(6));
+            unprefixClaudeToolNames(payload, nameMap);
+            streamContext.controller.enqueue(
+              streamContext.encoder.encode(`data: ${JSON.stringify(payload)}\n\n`)
+            );
+          } catch {
+            streamContext.controller.enqueue(
+              streamContext.encoder.encode(line + "\n")
+            );
+          }
+        },
+        { logger: this.logger }
+      );
+    }
+    return converted;
   }
 
   async transformRequestOut(
@@ -318,16 +419,22 @@ export class AnthropicTransformer implements Transformer {
         ? { cache_control: (request as any).cache_control }
         : {}),
     };
-    if (request.thinking) {
+    const effort = normalizeReasoningEffort(
+      request.output_config?.effort ?? request.effort
+    );
+    if (request.thinking || effort) {
+      const thinkingEnabled = request.thinking
+        ? request.thinking.type === "enabled" ||
+          request.thinking.type === "adaptive"
+        : true;
       result.reasoning = {
         // Claude Code sends effort in output_config (observed: `thinking:
         // {type:"adaptive"}` + `output_config: {effort:"high"}` and no budget).
-        effort: request.output_config?.effort || request.effort,
-        enabled: request.thinking.type === "enabled" || request.thinking.type === "adaptive",
+        ...canonicalReasoning(effort, thinkingEnabled),
         // Clients that do send an explicit budget keep control of it; backends
         // on a token-budget dialect (Gemini 2.5, Claude via Antigravity) prefer
         // this over an effort-derived budget.
-        ...(typeof request.thinking.budget_tokens === "number"
+        ...(typeof request.thinking?.budget_tokens === "number"
           ? { max_tokens: request.thinking.budget_tokens }
           : {}),
       };
@@ -338,7 +445,6 @@ export class AnthropicTransformer implements Transformer {
     // serialize implementation fields from the Unified request.
     const protocolContext = context?.protocolContext;
     if (protocolContext?.protocol === "anthropic_messages") {
-      protocolContext.anthropicCacheMode = "preserve";
       protocolContext.anthropicSource = {
         ...(request.metadata
           ? { metadata: JSON.parse(JSON.stringify(request.metadata)) }
@@ -628,21 +734,34 @@ export class AnthropicTransformer implements Transformer {
     if (request.tool_choice !== "none" && tool_choice) body.tool_choice = tool_choice;
 
     const source = context?.protocolContext?.anthropicSource;
+    const reasoningDisabled = isReasoningDisabled(
+      request.reasoning,
+      request.thinking
+    );
     // Prefer exact source Anthropic fields when this request originated as
     // Messages. Legacy direct callers can still use the temporary request fields.
-    if (source?.thinking) {
+    if (reasoningDisabled) {
+      body.thinking = { type: "disabled" };
+    } else if (source?.thinking) {
       body.thinking = source.thinking;
     } else if (request.anthropic_thinking) {
       body.thinking = request.anthropic_thinking;
     } else if (request.reasoning?.enabled || request.reasoning?.effort) {
       body.thinking = { type: "adaptive" };
     }
-    if (source?.outputConfig) {
-      body.output_config = source.outputConfig;
-    } else if (request.anthropic_output_config) {
-      body.output_config = request.anthropic_output_config;
-    } else if (request.reasoning?.effort) {
-      body.output_config = { effort: request.reasoning.effort };
+    const outputConfigSource = source?.outputConfig
+      ? source.outputConfig
+      : request.anthropic_output_config
+        ? request.anthropic_output_config
+        : request.reasoning?.effort
+          ? { effort: request.reasoning.effort }
+          : undefined;
+    const outputConfig = normalizeAnthropicOutputConfig(
+      outputConfigSource,
+      reasoningDisabled
+    );
+    if (outputConfig) {
+      body.output_config = outputConfig;
     }
     if (source?.metadata) {
       body.metadata = source.metadata;
@@ -659,9 +778,7 @@ export class AnthropicTransformer implements Transformer {
       body.cache_control = (request as any).cache_control;
     }
 
-    return context?.protocolContext?.anthropicCacheMode === "preserve"
-      ? body
-      : applyRawAnthropicPromptCaching(body);
+    return body;
   }
 
   private convertAnthropicToolsToUnified(tools: any[]): UnifiedTool[] {

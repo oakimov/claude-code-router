@@ -12,7 +12,19 @@ CCR exposes an OpenAI-compatible model listing so SDK clients and tools can disc
 
 ## Model IDs
 
-Ids use CCR's native `provider,model` wire format, so a listed id can be sent straight back to `/v1/responses`, `/v1/chat/completions`, or `/v1/messages` without translation.
+`MODEL_ID_OUTPUT` controls the representation returned by the API:
+
+- `"literal"` (default) emits CCR's native `provider,model` IDs.
+- `"masked"` emits IDs that do not begin with `claude` or `anthropic` as
+  `claude-<lowercase UTF-8 hex>` so Claude clients do not filter them out.
+
+Both forms can be sent to `/v1/responses`, `/v1/chat/completions`, or
+`/v1/messages` in either mode. For example, these resolve identically:
+
+```text
+codex,gpt-5.6-sol
+claude-636f6465782c6770742d352e362d736f6c
+```
 
 ```bash
 curl -H "x-api-key: your-router-api-key" http://localhost:3456/v1/models
@@ -46,6 +58,8 @@ URL-encode the id when it contains `/`. For example,
 `openrouter,anthropic%2Fclaude-3.5-sonnet` in the path.
 
 An unknown id returns `404` with an OpenAI-shaped error (`code: "model_not_found"`).
+Single-model lookup accepts either representation and returns the ID format selected by
+`MODEL_ID_OUTPUT`.
 
 ## Behavior
 

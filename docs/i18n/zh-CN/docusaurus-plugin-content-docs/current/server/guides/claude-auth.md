@@ -83,14 +83,17 @@ CLI 会打印一个可在宿主机浏览器中打开的 URL。登录后，浏览
 
 ### 客户端分类
 
-`claude-auth` 只依据一个判断来决定如何构建出站请求：入站的 `User-Agent` 是否以 `claude-cli/` 开头（`claude-auth.transformer.ts` 中的 `isClaudeCodeClient()`）。据此分为两条分支：
+CCR 会在归一化之前根据完整指纹分类 Anthropic Messages 请求：
 
-- **真实的 Claude Code 客户端** —— 请求本身已经具备真实 Claude Code 流量的形态。`claude-auth` 会原样转发客户端自己的身份请求头、system 块和 `anthropic-beta` 值（只合并 OAuth 所需的 beta），因为重新推导这些值反而有偏离 Claude Code 真实发送内容的风险。
-- **其他任意客户端**（OpenAI SDK、Anthropic SDK、自定义工具、Cursor 等）—— 请求不具备 Claude Code 的形态，因此 `claude-auth` 会合成 Claude Code 对等请求会发送的账单块、系统身份、身份请求头和 `anthropic-beta` 值，使 Anthropic 无论 CCR 背后代理的是哪个客户端，都能看到同样形态的流量。
+- **Claude Desktop** —— 识别两种原生传输：其一是 `anthropic-desktop-topbar: 1` 加 Anthropic JS SDK 请求头的 top-bar 形态；其二是当前 3P Agent SDK 形态，即完整的原生 CLI 请求头/请求体指纹，并且 UA 同时包含 `claude-desktop` 或 `claude-desktop-3p` 入口点以及 `agent-sdk/<version>`。Desktop 3P 自带固定版本的 Claude Code 与 Agent SDK，CCR 会保留这些版本，而不会替换为模拟配置版本。
+- **Claude Code CLI** —— 要求 `claude-cli/<version>` UA、`x-app: cli`、session/Stainless 请求头和原生账单/身份 system 块，且不包含 Desktop Agent SDK 入口点。仅有 UA 不足以通过分类。
+- **其他客户端** —— 包括不完整或未知指纹以及所有 OpenAI Chat/Responses 请求。只有该分支在路由到范围内的 Anthropic 提供商时才会生成固定的 Claude Code 模拟形态。
+
+原生 Desktop 与 CLI 都使用 Anthropic 原始请求体/响应透传。CCR 只替换路由后的模型、上游 URL、提供商凭据和传输层管理的请求头。
 
 ### 出站请求头
 
-| 请求头 | 真实 Claude Code 客户端 | 其他客户端 |
+| 请求头 | 原生 Desktop/CLI | 其他客户端 |
 |---|---|---|
 | `Authorization` | `Bearer <access_token>`，来自 `claude_auth.json`；过期时自动刷新 | 相同 |
 | `Content-Type` | `application/json`（由 `Anthropic` 设置） | 相同 |
@@ -107,30 +110,32 @@ CLI 会打印一个可在宿主机浏览器中打开的 URL。登录后，浏览
 
 #### `anthropic-beta` 请求头逻辑
 
-`oauth-2025-04-20` 始终包含 —— Anthropic 要求订阅 OAuth Bearer 认证使用该 beta。
+`oauth-2025-04-20` 仅在订阅 OAuth Bearer 认证分支包含 —— Anthropic 要求该认证使用此 beta。
 
-**真实 Claude Code 客户端**：客户端自身的 `anthropic-beta` token 原样保留，若其中不含 `oauth-2025-04-20` 则追加（大小写不敏感去重）。不增删任何其他 token。
+**原生 Desktop/CLI**：客户端自身的 `anthropic-beta` token 原样保留；OAuth 配置会确保追加必需的 `oauth-2025-04-20`（大小写不敏感去重），API Key 配置不会生成 OAuth beta。不增删任何其他 token。
 
 **其他客户端**：该值依据[模型能力目录](#模型能力目录)构建，模拟 Claude Code 对该模型实际发送的内容：
 
-- `claude-code-20250219` 与 `oauth-2025-04-20` —— 始终包含
+- `claude-code-20250219` —— 普通非 Haiku 配置；当前 CLI 的普通 Haiku 请求会省略它
+- `oauth-2025-04-20` —— 仅 OAuth 配置
 - `context-1m-2025-08-07` —— 仅当请求的模型 id 携带 `[1m]` 后缀时（见 [1M 上下文](#1m-上下文)）
 - `interleaved-thinking-2025-05-14`、`thinking-token-count-2026-05-13` —— 仅当目录标记该模型支持扩展思考
 - `context-management-2025-06-27` —— 仅当模型具备 `context_management` 能力
 - `prompt-caching-scope-2026-01-05` —— 始终包含
 - `mid-conversation-system-2026-04-07` —— 仅当模型具备 `mid_conv_system` 能力
-- `advanced-tool-use-2025-11-20` —— 始终包含
-- `effort-2025-11-24` —— 仅当模型具备 `effort` 能力（这是一份显式的按模型排除名单，而非按名称前缀匹配 —— 例如 `claude-sonnet-4-5`、`claude-haiku-4-5` 被排除，但 `claude-sonnet-4-6` 包含在内）
-- `fallback-credit-2026-06-01` —— 仅当模型具备 `fast_mode` 能力
+- `advanced-tool-use-2025-11-20` —— 仅显式工具搜索请求；普通模拟配置不会无条件添加
+- `effort-2025-11-24` 与 `fallback-credit-2026-06-01` —— 由请求/功能开关决定；模拟配置不会无条件添加
 
-设置 `ANTHROPIC_BETA_FLAGS` 会整体替换该合成列表（而非合并）。两个分支的 URL 都会附加 `?beta=true`。以上均无需手动配置 —— 全部自动生效。
+设置 `ANTHROPIC_BETAS` 会将逗号分隔的自定义 beta 追加到合成列表；OAuth 仍会确保必需的 `oauth-2025-04-20`。两个分支的 URL 都会附加 `?beta=true`。以上均无需手动配置 —— 全部自动生效。
+
+Beta token 只会通过 `anthropic-beta` HTTP 请求头发送。CCR 不会在 Messages JSON 请求体中加入 `betas` 字段；该名称是 Anthropic SDK 的选项，SDK 会在发送请求前将其移除。
 
 ### 账单与身份 system 块
 
-对于**其他客户端**，`claude-auth` 还会在 Anthropic `system` 数组最前面（调用方自带的 system 文本之前）插入两个条目，与 Claude Code 自身发送的内容一致：
+对于**其他客户端**路由到范围内的 Anthropic 配置时，CCR 会在 Anthropic `system` 数组最前面（调用方自带的 system 文本之前）插入两个条目，与 Claude Code 自身发送的内容一致：
 
-1. 账单标记文本块：`x-anthropic-billing-header: cc_version=${CC_VERSION}.${suffix}; cc_entrypoint=${CC_ENTRYPOINT}; cch=${sessionCch};` —— 尽管名字里带 "header"，它实际是以 `system[0]` 文本形式传输，**不是** HTTP 请求头。`suffix` 是依据第一条用户消息文本与 CLI 版本推导出的 3 位十六进制摘要；`cch` 是每个进程仅生成一次的随机 5 位十六进制值（并非依据请求内容推导）。二者均不带 `cache_control`。
-2. 身份文本块：`You are Claude Code, Anthropic's official CLI for Claude.`（`system[1]`），若调用方自己的第一条 system 条目以该字符串开头（但不完全相同），会保留其原有的 `cache_control`。
+1. 账单标记文本块：对于一方 Anthropic 配置为 `x-anthropic-billing-header: cc_version=${CC_VERSION}.${suffix}; cc_entrypoint=unknown; cch=00000;` —— 尽管名字里带 "header"，它实际是以 `system[0]` 文本形式传输，**不是** HTTP 请求头。`suffix` 是依据第一条用户消息文本与 CLI 版本推导出的 3 位十六进制摘要。当前 `2.1.226` 配置不再使用旧版随机 `cch` 行为。二者均不带 `cache_control`。
+2. 身份文本块：`You are Claude Code, Anthropic's official CLI for Claude.`（`system[1]`）。模拟路径会将选定的缓存配置应用到这个可缓存块；调用方自带的 `cache_control` 不会覆盖固定的版本配置。
 
 对于**真实的 Claude Code 客户端**，其自身的 system 块 —— 包括自带的账单标记和身份字符串 —— 会被原样转发；`claude-auth` 不会触碰、移除或重新排列它们。
 
@@ -142,9 +147,9 @@ CLI 会打印一个可在宿主机浏览器中打开的 URL。登录后，浏览
 
 Claude Code 只有在请求的模型 id 携带 `[1m]` 标记时，才会从 wire `model` 字段中剥离该标记并添加 `context-1m-2025-08-07` beta；原生支持 1M 的模型无需该 beta 即可获得更大的窗口。CCR 对两条客户端分支都遵循相同的规则 —— 该标记永远不会被用来拒绝、降级或改路由请求。
 
-### Prompt 缓存：精确透传 vs 归一化
+### Prompt 缓存：原生透传 vs 模拟
 
-当请求通过同协议、同目标的路径（Anthropic 精确透传）到达 `Anthropic` 时，调用方自身的 `cache_control` 位置会按原样保留 —— `context.protocolContext.anthropicCacheMode === "preserve"` 会跳过自动缓存重写。跨协议投影的请求（例如某个 OpenAI 形态的请求被路由到 Anthropic 目标）则会运行 `applyRawAnthropicPromptCaching` 来插入合理的缓存断点，因为源协议本身不带 `cache_control` 概念。这只影响缓存标记的*位置*，与上文的客户端分类/请求头逻辑无关。
+原生 Claude Desktop 和 Claude Code CLI 请求会完整保留客户端自己的缓存标记；CCR 不会添加、删除或重排它们。当前 Desktop 3P 对话通过 Desktop 内置的 Agent SDK 运行，因此可以像 Claude Code 一样在 system 和 message 内容上生成缓存断点；实测请求使用 5 分钟 ephemeral 缓存。没有标记的原生请求仍不会由 CCR 自动添加标记。只有“其他客户端”在目标为范围内的 Anthropic 配置时才会生成缓存字段：账单块不加缓存标记，可缓存的 system 块使用固定的 2.1.226 配置，并在消息尾部设置最终断点。其他目标以及其他客户端协议都不会套用 Claude Code 的 system 或缓存改写。
 
 ### 认证恢复
 
@@ -164,10 +169,11 @@ CCR 的目标是让请求**与真实 Claude Code 流量无法区分**，而不�
 
 | 变量 | 作用 |
 |---|---|
-| `ANTHROPIC_CLI_VERSION` | 覆盖账单标记与合成 `User-Agent` 中使用的 `CC_VERSION`（默认 `2.1.220`） |
-| `CLAUDE_CODE_ENTRYPOINT` | 覆盖账单标记与合成 `User-Agent` 中的 `cc_entrypoint` 值（默认 `cli`） |
-| `ANTHROPIC_USER_AGENT` | 直接覆盖合成的 `User-Agent` 请求头（仅作用于非 Claude Code 分支；真实 Claude Code 客户端自身的 `User-Agent` 始终原样转发） |
-| `ANTHROPIC_BETA_FLAGS` | 整体替换合成的 `anthropic-beta` 值（仅作用于非 Claude Code 分支） |
+| `ANTHROPIC_CLI_VERSION` | 覆盖账单标记与合成 `User-Agent` 中使用的 `CC_VERSION`（默认 `2.1.226`） |
+| `CLAUDE_CODE_ENTRYPOINT` | 覆盖账单标记与合成 `User-Agent` 中的 `cc_entrypoint` 值（账单默认 `unknown`，User-Agent 默认 `cli`） |
+| `ANTHROPIC_USER_AGENT` | 直接覆盖合成的 `User-Agent` 请求头（仅作用于其他客户端分支；原生 Desktop/CLI 自身的 `User-Agent` 始终原样转发） |
+| `ANTHROPIC_CUSTOM_HEADERS` | 向合成 CLI 配置添加按行分隔的自定义应用请求头；凭据和传输层请求头会被忽略 |
+| `ANTHROPIC_BETAS` | 将逗号分隔的自定义 beta 追加到合成的 `anthropic-beta` 值（仅作用于非 Claude Code 分支） |
 
 这些行为均无需任何 `claudeAuth.*` 配置项 —— 全部根据请求自动推导。
 

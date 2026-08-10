@@ -13,6 +13,7 @@ import { ConfigService } from "../services/config";
 import { ProviderService } from "../services/provider";
 import { TokenizerService } from "../services/tokenizer";
 import { TransformerService } from "../services/transformer";
+import { encodeClaudeModelAlias } from "@caeliq/ccr-shared";
 
 const logger = {
   debug() {},
@@ -145,10 +146,9 @@ function chatResponse(content = "ok"): Response {
   );
 }
 
-// REWRITE_SYSTEM_PROMPT must mutate the canonical dispatched body (the
-// normalized clone used for provider conversion), not just req.body — Step 0
-// fixed a regression where routing mutations only touched the mutable
-// original and disagreed with what was actually sent upstream.
+// REWRITE_SYSTEM_PROMPT is permitted only on the third-party Anthropic path.
+// The rewritten foreign system content is relocated into the first user turn
+// by the Claude Code emulation policy.
 async function testRewriteSystemPromptAffectsCanonicalBody() {
   const promptDir = mkdtempSync(join(tmpdir(), "ccr-rewrite-prompt-"));
   const promptFile = join(promptDir, "prompt.txt");
@@ -219,7 +219,10 @@ async function testRewriteSystemPromptAffectsCanonicalBody() {
         model: "anthropic,claude",
         max_tokens: 32,
         system: [
-          { type: "text", text: "billing" },
+          {
+            type: "text",
+            text: "x-anthropic-billing-header: cc_version=2.1.226.abc;",
+          },
           { type: "text", text: "original prefix<env>original env body</env>" },
         ],
         messages: [{ role: "user", content: "hi" }],
@@ -229,7 +232,11 @@ async function testRewriteSystemPromptAffectsCanonicalBody() {
     const upstream = captured.at(-1)!;
     assert.equal(
       upstream.body.system[1].text,
-      "REWRITTEN PROMPT<env>original env body</env>"
+      "You are Claude Code, Anthropic's official CLI for Claude."
+    );
+    assert.equal(
+      upstream.body.messages[0].content[0].text,
+      "REWRITTEN PROMPT<env>original env body</env>\n\nhi"
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -369,6 +376,56 @@ async function main() {
       assert.equal(upstream.headers.get("openai-beta"), "responses=v1");
     }
 
+    // Models advertised by gateway discovery as 1M-capable round-trip through
+    // non-Anthropic providers: the picker suffix is CCR metadata, never part
+    // of the upstream model id.
+    {
+      const result = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        payload: {
+          model: "generic,gpt[1m]",
+          messages: [{ role: "user", content: "hello" }],
+        },
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      const upstream = captured.at(-1)!;
+      assert.equal(upstream.body.model, "gpt");
+    }
+
+    // Claude-filter-safe aliases are decoded before routing and accept the
+    // Desktop-generated [1m] suffix. The canonical route reaches the provider.
+    {
+      const alias = encodeClaudeModelAlias("generic,gpt");
+      const result = await app.inject({
+        method: "POST",
+        url: "/v1/messages",
+        payload: {
+          model: `${alias}[1m]`,
+          max_tokens: 64,
+          messages: [{ role: "user", content: "hello" }],
+        },
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      const upstream = captured.at(-1)!;
+      assert.equal(upstream.url, "https://generic.invalid/v1/chat/completions");
+      assert.equal(upstream.body.model, "gpt");
+
+      const before = captured.length;
+      const missing = await app.inject({
+        method: "POST",
+        url: "/v1/messages",
+        payload: {
+          model: encodeClaudeModelAlias("missing,model"),
+          max_tokens: 64,
+          messages: [{ role: "user", content: "hello" }],
+        },
+      });
+      assert.equal(missing.statusCode, 404, missing.body);
+      assert.equal(missing.json().error.code, "model_not_found");
+      assert.equal(captured.length, before);
+    }
+
     // Existing manual passthrough chains keep exact Anthropic-only fields while
     // still allowing adjacent provider middleware to run.
     {
@@ -412,6 +469,7 @@ async function main() {
           "anthropic-beta": "claude-code-20250219,fine-grained-tool-streaming-2025-05-14",
           "anthropic-dangerous-direct-browser-access": "true",
           "x-stainless-lang": "js",
+          "x-stainless-package-version": "0.94.0",
           "x-stainless-retry-count": "0",
           "x-claude-code-session-id": "session-abc",
           "x-client-request-id": "req-abc",
@@ -430,7 +488,7 @@ async function main() {
             },
             {
               type: "text",
-              text: "You are Claude Code.",
+              text: "You are Claude Code, Anthropic's official CLI for Claude.",
               cache_control: { type: "ephemeral" },
             },
           ],
@@ -521,6 +579,137 @@ async function main() {
       assert.equal(result.json().type, "message");
     }
 
+    // Native Claude Desktop → Anthropic exact path. Desktop's SDK fingerprint
+    // is distinct from Claude Code, but it receives the same raw-wire promise:
+    // opaque fields, system shape, cache placement and application headers are
+    // preserved while only the routed model and provider credential change.
+    {
+      const desktopBody = {
+        model: "anthropic,claude",
+        max_tokens: 256,
+        system: [{ type: "text", text: "Desktop system" }],
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "hello" }],
+          },
+        ],
+        custom_desktop_field: { keep: true },
+      };
+      const result = await app.inject({
+        method: "POST",
+        url: "/v1/messages",
+        headers: {
+          "user-agent": "Anthropic/JS 0.94.0",
+          "anthropic-desktop-topbar": "1",
+          "x-desktop-custom-header": "keep-me",
+          authorization: "Bearer desktop-client-secret",
+          "x-api-key": "desktop-client-secret",
+        },
+        payload: desktopBody,
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      const upstream = captured.at(-1)!;
+      assert.deepEqual(upstream.body, {
+        ...desktopBody,
+        model: "claude",
+      });
+      assert.equal(
+        upstream.headers.get("x-desktop-custom-header"),
+        "keep-me"
+      );
+      assert.equal(upstream.headers.get("x-api-key"), "anthropic-provider-key");
+      assert.equal(upstream.headers.get("authorization"), null);
+      assert.equal(result.json().type, "message");
+    }
+
+    // Current Desktop 3P uses its bundled Agent SDK/CLI transport. The
+    // Desktop entrypoint in that otherwise CLI-shaped fingerprint must still
+    // select Desktop raw passthrough; all application headers and native cache
+    // markers survive while CCR replaces only auth and adds the OAuth beta.
+    {
+      const desktopBody = {
+        model: "subscription,claude",
+        max_tokens: 128,
+        system: [
+          {
+            type: "text",
+            text: "x-anthropic-billing-header: cc_version=2.1.222.abc;",
+          },
+          {
+            type: "text",
+            text: "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "hello",
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+          },
+        ],
+        desktop_opaque_field: { keep: true },
+      };
+      const result = await app.inject({
+        method: "POST",
+        url: "/v1/messages",
+        headers: {
+          "user-agent":
+            "claude-cli/2.1.222 (external, claude-desktop-3p, agent-sdk/0.3.222)",
+          "x-app": "cli",
+          "x-claude-code-session-id": "desktop-agent-session",
+          "x-stainless-package-version": "0.94.0",
+          "x-stainless-runtime": "node",
+          "anthropic-client-platform": "desktop_app",
+          "anthropic-client-version": "1.26832.0",
+          "x-desktop-custom-header": "keep-agent-header",
+          "anthropic-beta": "desktop-agent-beta",
+          authorization: "Bearer desktop-client-secret",
+        },
+        payload: desktopBody,
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      const upstream = captured.at(-1)!;
+      assert.deepEqual(upstream.body, { ...desktopBody, model: "claude" });
+      assert.equal(
+        upstream.headers.get("authorization"),
+        "Bearer hermetic-subscription-token"
+      );
+      assert.equal(upstream.headers.get("x-api-key"), null);
+      assert.equal(
+        upstream.headers.get("anthropic-beta"),
+        "desktop-agent-beta,oauth-2025-04-20"
+      );
+      assert.equal(
+        upstream.headers.get("user-agent"),
+        "claude-cli/2.1.222 (external, claude-desktop-3p, agent-sdk/0.3.222)"
+      );
+      assert.equal(upstream.headers.get("x-app"), "cli");
+      assert.equal(
+        upstream.headers.get("x-claude-code-session-id"),
+        "desktop-agent-session"
+      );
+      assert.equal(upstream.headers.get("x-stainless-runtime"), "node");
+      assert.equal(
+        upstream.headers.get("anthropic-client-platform"),
+        "desktop_app"
+      );
+      assert.equal(
+        upstream.headers.get("anthropic-client-version"),
+        "1.26832.0"
+      );
+      assert.equal(
+        upstream.headers.get("x-desktop-custom-header"),
+        "keep-agent-header"
+      );
+    }
+
     // CCR-only markers are stripped from the exact-wire body. The subagent tag
     // both selects the destination and must never reach the upstream.
     {
@@ -548,7 +737,10 @@ async function main() {
         !wire.includes("CCR-SUBAGENT-MODEL"),
         `subagent tag leaked upstream: ${wire}`
       );
-      assert.equal(upstream.body.messages[0].content, "analyze this");
+      assert.equal(upstream.body.messages[0].content[0].text, "analyze this");
+      assert.deepEqual(upstream.body.messages[0].content[0].cache_control, {
+        type: "ephemeral",
+      });
     }
 
     // Normalized Anthropic (Claude Code client) → subscription (claude-auth)
@@ -565,6 +757,9 @@ async function main() {
         headers: {
           authorization: "Bearer ccr-client-secret",
           "user-agent": "claude-cli/2.0.14 (external, cli)",
+          "x-app": "cli",
+          "x-claude-code-session-id": "session-subscription",
+          "x-stainless-package-version": "0.94.0",
         },
         payload: {
           model: "subscription,claude",
@@ -580,7 +775,7 @@ async function main() {
             },
             {
               type: "text",
-              text: "You are Claude Code.",
+              text: "You are Claude Code, Anthropic's official CLI for Claude.",
               cache_control: { type: "ephemeral" },
             },
           ],
@@ -696,6 +891,7 @@ async function main() {
           instructions: "Be brief",
           input: "hello",
           prompt_cache_key: "client-private-cache-key",
+          reasoning: { effort: "ultra" },
         },
       });
       assert.equal(result.statusCode, 200, result.body);
@@ -703,6 +899,8 @@ async function main() {
       assert.equal(upstream.body.model, "gpt");
       assert.ok(Array.isArray(upstream.body.messages));
       assert.equal(upstream.body.prompt_cache_key, undefined);
+      assert.equal(upstream.body.reasoning_effort, "ultra");
+      assert.equal(upstream.body.reasoning, undefined);
       // Unrecognized destination host: applyProviderNativeChatCaching's
       // default branch only strips cache_control, it does not synthesize a
       // replacement key — the client's opaque key must not be forwarded, but
