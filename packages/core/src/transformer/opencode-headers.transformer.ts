@@ -180,8 +180,14 @@ export class OpencodeHeadersTransformer implements Transformer {
       return true;
     }
     // 400: the hashed backend failed its own upstream call. Match the Console
-    // routing wrapper specifically, not arbitrary client-side 400s.
-    if (status === 400 && /upstream request failed/i.test(message)) {
+    // routing wrapper specifically, not arbitrary client-side 400s — and not
+    // request-shape validation errors that Zen wraps in the same phrase
+    // (e.g. missing json_schema.name). Re-rolling the session cannot fix those.
+    if (
+      status === 400 &&
+      /upstream request failed/i.test(message) &&
+      !/validation error/i.test(message)
+    ) {
       return true;
     }
     return false;

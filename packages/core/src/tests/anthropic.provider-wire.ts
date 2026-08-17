@@ -579,6 +579,39 @@ async function testAnthropicStructuredOutputMapsToUnifiedResponseFormat() {
   });
 }
 
+async function testAnthropicStructuredOutputDefaultsJsonSchemaName() {
+  const tf = new AnthropicTransformer();
+  // Claude Code title generation omits format.name; OpenAI-shaped providers require it.
+  const unified = await tf.transformRequestOut({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 64,
+    messages: [{ role: "user", content: "json please" }],
+    output_config: {
+      format: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+          properties: { title: { type: "string" } },
+          required: ["title"],
+          additionalProperties: false,
+        },
+      },
+    },
+  });
+  assert.deepEqual((unified as any).response_format, {
+    type: "json_schema",
+    json_schema: {
+      name: "response",
+      schema: {
+        type: "object",
+        properties: { title: { type: "string" } },
+        required: ["title"],
+        additionalProperties: false,
+      },
+    },
+  });
+}
+
 async function testResponsesCustomToolsAreAnthropicInputSchema() {
   const unified = responsesRequestToUnified({
     model: "claude-sonnet-4-20250514",
@@ -639,6 +672,7 @@ async function main() {
   await testResponsesParallelToolCallsDisableOnAnthropic();
   await testResponsesCustomToolsAreAnthropicInputSchema();
   await testAnthropicStructuredOutputMapsToUnifiedResponseFormat();
+  await testAnthropicStructuredOutputDefaultsJsonSchemaName();
   await testAnthropicThinkingHistoryMapsToResponsesReasoning();
   console.log("anthropic.provider-wire: PASS");
 }

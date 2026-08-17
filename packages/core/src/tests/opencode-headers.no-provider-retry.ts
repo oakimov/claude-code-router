@@ -176,6 +176,39 @@ async function main() {
       console.log("✓ case 2c: genuine 400 validation error is not retried");
     }
 
+    // --- Case 2d: Zen-wrapped request validation must NOT be retried ---
+    {
+      const validationWrapped = JSON.stringify({
+        error: {
+          message:
+            "Error from provider (Console): Upstream request failed: [400] 6 validation errors:\n  {'type': 'missing', 'loc': ('body', 'response_format', 'ResponseFormat', 'json_schema', 'name'), 'msg': 'Field required'}",
+          type: "invalid_request_error",
+        },
+      });
+      const calls = installFetch([
+        () => new Response(validationWrapped, { status: 400 }),
+      ]);
+
+      const t = new OpencodeHeadersTransformer();
+      await assert.rejects(
+        () => t.transformRequestIn(body, provider, makeContext()),
+        (err: any) => {
+          assert.equal(err.statusCode, 400);
+          assert.equal(err.code, "provider_response_error");
+          return true;
+        },
+        "validation 400 wrapped as Upstream request failed must not re-roll"
+      );
+      assert.equal(
+        calls.length,
+        1,
+        "validation errors must NOT be treated as Zen routing failures"
+      );
+      console.log(
+        "✓ case 2d: Zen-wrapped validation 400 is not retried"
+      );
+    }
+
     // --- Case 3: persistent No provider available exhausts retries then throws ---
     {
       const calls = installFetch([

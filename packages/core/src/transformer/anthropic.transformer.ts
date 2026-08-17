@@ -499,10 +499,18 @@ export class AnthropicTransformer implements Transformer {
 
     const format = request.output_config?.format;
     if (format?.type === "json_schema" && format.schema && typeof format.schema === "object") {
+      // OpenAI Chat Completions requires json_schema.name. Claude Code often
+      // omits it on Anthropic output_config.format (title generation, etc.);
+      // without a default, OpenAI-compatible upstreams (OpenCode/DeepSeek,
+      // NVIDIA, …) 400 on "json_schema.name Field required".
+      const schemaName =
+        typeof format.name === "string" && format.name.length > 0
+          ? format.name
+          : "response";
       (result as any).response_format = {
         type: "json_schema",
         json_schema: {
-          ...(typeof format.name === "string" ? { name: format.name } : {}),
+          name: schemaName,
           schema: format.schema,
           ...(format.strict !== undefined ? { strict: format.strict } : {}),
         },
