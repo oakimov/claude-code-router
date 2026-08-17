@@ -32,6 +32,10 @@ import {
 } from "@/utils/retry";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
 import { applyOpenAIChatReasoning } from "../utils/reasoning-effort";
+import {
+  logOutboundCacheStructure,
+  tapUpstreamSSEDebug,
+} from "../utils/sse-debug-tap";
 import { sendWithUnauthorizedAuthRecovery } from "@/utils/auth-recovery";
 import {
   canonicalizeOutboundHeaders,
@@ -695,10 +699,21 @@ async function sendRequestToProvider(
   transformer: any,
   context: any
 ) {
+  const debugOpts = {
+    logger: context?.req?.log ?? fastify.log,
+    reqId: context?.req?.id,
+    provider: provider?.name,
+  };
+
+  const tapProviderResponse = async (response: Response) => {
+    logOutboundCacheStructure(requestBody, debugOpts);
+    return tapUpstreamSSEDebug(response, debugOpts);
+  };
+
   // Allow a transformer to own the full upstream call (non-fetch transports,
   // agent SDKs, etc.) by returning a ready Response via __providerResponse.
   if (config?.__providerResponse) {
-    return config.__providerResponse as Response;
+    return tapProviderResponse(config.__providerResponse as Response);
   }
 
   // Handle authentication in passthrough mode
@@ -892,7 +907,7 @@ async function sendRequestToProvider(
     throw error;
   }
 
-  return response;
+  return tapProviderResponse(response);
 }
 
 /**

@@ -1087,11 +1087,8 @@ export class AnthropicTransformer implements Transformer {
 
               if (!line.startsWith("data:")) continue;
               const data = line.slice(5).trim();
-              this.logger.debug({
-                reqId: context.req.id,
-                type: "recieved data",
-                data,
-              });
+              // Upstream SSE debug (recieved data / Original Response) lives in
+              // tapUpstreamSSEDebug so exact-wire and conversion paths share one tap.
 
               if (data === "[DONE]") {
                 continue;
@@ -1099,11 +1096,6 @@ export class AnthropicTransformer implements Transformer {
 
               try {
                 const chunk = JSON.parse(data);
-                this.logger.debug({
-                  reqId: context.req.id,
-                  response: chunk,
-                  tppe: "Original Response",
-                });
                 if (chunk.error) {
                   const errorMessage = {
                     type: "error",
