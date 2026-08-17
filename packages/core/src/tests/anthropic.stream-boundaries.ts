@@ -408,6 +408,28 @@ async function testNonStreamingBlockOrder() {
   );
 }
 
+/** Replay metadata after text must not open a second thinking block. */
+async function testMetadataOnlyThinkingAfterTextDoesNotOpenBlock() {
+  const events = await collectEvents([
+    chunk({ thinking: { content: "plan" } }),
+    chunk({ content: "answer" }),
+    chunk({ thinking: { encrypted_content: "CIPHER", id: "rs_abc" } }),
+    chunk({}, "stop"),
+  ]);
+  const blockTypes = events
+    .filter((e) => e.event === "content_block_start")
+    .map((e) => e.data.content_block.type);
+  assert.deepEqual(blockTypes, ["thinking", "text"]);
+  const thinking = events
+    .filter(
+      (e) =>
+        e.event === "content_block_delta" && e.data.delta.type === "thinking_delta"
+    )
+    .map((e) => e.data.delta.thinking)
+    .join("");
+  assert.equal(thinking, "plan");
+}
+
 async function main() {
   await testThinkingAfterTextOpensNewThinkingBlock();
   await testTextAfterToolUseOpensNewTextBlock();
@@ -415,6 +437,7 @@ async function main() {
   await testEmptyToolCallsDeltaKeepsEndTurn();
   await testStreamedToolUseUpgradesStopReason();
   await testNonStreamingBlockOrder();
+  await testMetadataOnlyThinkingAfterTextDoesNotOpenBlock();
   console.log("anthropic.stream-boundaries: PASS");
 }
 

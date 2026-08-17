@@ -695,6 +695,70 @@ async function openAIResponsesOutboundRestoresResponseFormat() {
   });
 }
 
+function jsonObjectFormatRequest() {
+  return {
+    model: "gpt-5.6-sol",
+    messages: [{ role: "user", content: "give me json" }],
+    response_format: { type: "json_object" },
+  };
+}
+
+async function outboundJsonObjectFormatIsRestoredOnBothPaths() {
+  const responses = new OpenAIResponsesTransformer();
+  const responsesResult = await responses.transformRequestIn(
+    jsonObjectFormatRequest() as any,
+    {},
+    {}
+  );
+  assert.deepEqual((responsesResult as any).text.format, { type: "json_object" });
+  assert.equal((responsesResult as any).response_format, undefined);
+
+  const codex = new CodexTransformer();
+  (codex as any).resolveAuth = async () => ({
+    mode: "oauth",
+    token: "test-token",
+    accountId: "test-account",
+    isFedramp: false,
+  });
+  const codexResult = await codex.transformRequestIn(
+    jsonObjectFormatRequest() as any,
+    { baseUrl: "https://example.test" },
+    {}
+  );
+  assert.deepEqual((codexResult as any).body.text.format, { type: "json_object" });
+  assert.equal((codexResult as any).body.response_format, undefined);
+}
+
+async function codexOutboundHistoryStripsHeredoc() {
+  // History replay is intentionally normalized: a whole-value heredoc wrapper
+  // is stripped so the backend is not re-fed a wrapper the client never kept.
+  const transformer = new CodexTransformer();
+  (transformer as any).resolveAuth = async () => ({
+    mode: "oauth",
+    token: "test-token",
+    accountId: "test-account",
+    isFedramp: false,
+  });
+  const patch =
+    "*** Begin Patch\n*** Add File: hello.txt\n+hi\n*** End Patch";
+  const request = customToolRequest();
+  const assistant = request.messages[1] as {
+    tool_calls: Array<{ function: { arguments: string } }>;
+  };
+  assistant.tool_calls[0].function.arguments = JSON.stringify({
+    input: `<<EOF\n${patch}\nEOF`,
+  });
+  const result = await transformer.transformRequestIn(
+    request as any,
+    { baseUrl: "https://example.test" },
+    { responsesCustomToolNames: new Set(["apply_patch"]) }
+  );
+  const call = (result as any).body.input.find(
+    (item: any) => item.type === "custom_tool_call"
+  );
+  assert.equal(call.input, patch);
+}
+
 async function openAIResponsesOutboundMapsChatAndAnthropicFields() {
   const transformer = new OpenAIResponsesTransformer();
   const result = await transformer.transformRequestIn(
@@ -741,6 +805,8 @@ async function main() {
   await codexInboundParallelCustomToolsKeepDistinctIndexes();
   await codexOutboundResponseFormatIsRestored();
   await openAIResponsesOutboundRestoresResponseFormat();
+  await outboundJsonObjectFormatIsRestoredOnBothPaths();
+  await codexOutboundHistoryStripsHeredoc();
   await openAIResponsesOutboundMapsChatAndAnthropicFields();
   console.log("responses.call-id-sanitize: ok");
 }

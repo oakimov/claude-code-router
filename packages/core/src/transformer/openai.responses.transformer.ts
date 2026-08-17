@@ -20,9 +20,12 @@ import {
   createCallIdMap,
   createResponsesStreamState,
   finalizeResponsesStream,
+  recordReasoningSummaryDelta,
   responsesFailedEvent,
   responsesReasoningItemFromThinking,
   responsesRequestToUnified,
+  responsesTextFormatFromResponseFormat,
+  thinkingForLateReasoningItem,
   thinkingFromResponsesReasoningItem,
   thinkingFromUnifiedAssistant,
   unifiedChunkToResponsesEvents,
@@ -184,6 +187,8 @@ export class OpenAIResponsesTransformer implements Transformer {
       (context as any)?.protocolContext?.responsesCustomToolNames ||
       (context as any)?.req?.protocolContext?.responsesCustomToolNames ||
       new Set<string>();
+    // `/v1/responses` inbound is the Codex CLI path; Grok-via-Chat recovery
+    // of `{cmd:…}` / apply_patch heredocs depends on isolate conventions.
 
     const contentType = response.headers.get("Content-Type") || "";
     if (contentType.includes("application/json")) {
@@ -200,6 +205,7 @@ export class OpenAIResponsesTransformer implements Transformer {
         originalModel,
         callIdMap,
         customToolNames,
+        codexIsolateConventions: true,
       });
       return new Response(JSON.stringify(responsesBody), {
         status: response.status,
@@ -209,11 +215,12 @@ export class OpenAIResponsesTransformer implements Transformer {
     }
 
     if (contentType.includes("text/event-stream")) {
-      return this.convertUnifiedStreamToResponses(response, {
-        callIdMap,
-        originalModel,
-        customToolNames,
-      });
+    return this.convertUnifiedStreamToResponses(response, {
+      callIdMap,
+      originalModel,
+      customToolNames,
+      codexIsolateConventions: true,
+    });
     }
 
     return response;
@@ -225,6 +232,7 @@ export class OpenAIResponsesTransformer implements Transformer {
       callIdMap: ResponsesCallIdMap;
       originalModel?: string;
       customToolNames: Set<string>;
+      codexIsolateConventions?: boolean;
     }
   ): Response {
     if (!response.body) return response;
@@ -233,6 +241,7 @@ export class OpenAIResponsesTransformer implements Transformer {
       model: options.originalModel,
       callIdMap: options.callIdMap,
       customToolNames: options.customToolNames,
+      codexIsolateConventions: options.codexIsolateConventions,
     });
 
     return createSSEStreamReader(
@@ -384,19 +393,10 @@ export class OpenAIResponsesTransformer implements Transformer {
     // `text.format` (see responsesRequestToUnified). Restore the native field
     // for every Responses destination — xAI and OpenAI both accept it — then
     // drop the Chat-only field so it is not forwarded as an unknown property.
-    const responseFormat = (request as any).response_format;
-    if (responseFormat) {
-      const format =
-        responseFormat.type === "json_schema"
-          ? {
-              type: "json_schema",
-              name: responseFormat.json_schema?.name,
-              schema: responseFormat.json_schema?.schema,
-              ...(responseFormat.json_schema?.strict !== undefined
-                ? { strict: responseFormat.json_schema.strict }
-                : {}),
-            }
-          : { type: responseFormat.type };
+    const format = responsesTextFormatFromResponseFormat(
+      (request as any).response_format
+    );
+    if (format) {
       (request as any).text = { ...(request as any).text, format };
     }
     delete (request as any).response_format;
@@ -631,6 +631,7 @@ export class OpenAIResponsesTransformer implements Transformer {
       // keep stable Chat tool indexes.
       const toolIndexByKey = new Map<string, number>();
       const textByItemId = new Map<string, string>();
+      const thinkingByItemId = new Map<string, string>();
       let nextToolIndex = 0;
       let terminated = false;
 
@@ -708,7 +709,12 @@ export class OpenAIResponsesTransformer implements Transformer {
                 return;
               }
 
-              const chunks = this.convertStreamEvent(data, toolIndexFor, textByItemId);
+              const chunks = this.convertStreamEvent(
+                data,
+                toolIndexFor,
+                textByItemId,
+                thinkingByItemId
+              );
               for (const chunk of chunks) {
                 ctx.controller.enqueue(
                   encodeSSEData(JSON.stringify(chunk), ctx.encoder)
@@ -742,7 +748,8 @@ export class OpenAIResponsesTransformer implements Transformer {
   private convertStreamEvent(
     data: ResponsesStreamEvent,
     toolIndexFor: (data: ResponsesStreamEvent) => number,
-    textByItemId: Map<string, string>
+    textByItemId: Map<string, string>,
+    thinkingByItemId: Map<string, string>
   ): any[] {
     const textFromItem = (item: any): string =>
       (item?.content || [])
@@ -783,6 +790,13 @@ export class OpenAIResponsesTransformer implements Transformer {
       recordDelta(textFromItem(data.item));
     }
 
+    if (
+      data.type === "response.reasoning_summary_text.delta" &&
+      typeof data.delta === "string"
+    ) {
+      recordReasoningSummaryDelta(thinkingByItemId, data.item_id, data.delta);
+    }
+
     if (data.type === "response.output_text.done" && typeof data.text === "string") {
       const id = itemKey();
       const previous = textByItemId.get(id) || "";
@@ -814,6 +828,30 @@ export class OpenAIResponsesTransformer implements Transformer {
       }) : [];
     }
 
+    if (
+      data.type === "response.output_item.done" &&
+      data.item?.type === "reasoning"
+    ) {
+      const thinking = thinkingForLateReasoningItem(
+        data.item,
+        thinkingByItemId
+      );
+      if (!thinking) return [];
+      return asArray({
+        id: data.item.id || data.item_id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model,
+        choices: [
+          {
+            index: 0,
+            delta: { thinking },
+            finish_reason: null,
+          },
+        ],
+      });
+    }
+
     if (data.type === "response.completed") {
       const chunks: any[] = [];
       const terminalOutput = data.response?.output || [];
@@ -843,10 +881,11 @@ export class OpenAIResponsesTransformer implements Transformer {
         });
       }
       // Ciphertext often arrives only on the completed reasoning item — emit
-      // it before the finish chunk so Unified history can replay it.
+      // replay metadata (and content only if summary deltas never streamed it)
+      // before the finish chunk so Unified history can replay it.
       for (const item of data.response?.output || []) {
         if (item.type !== "reasoning") continue;
-        const thinking = thinkingFromResponsesReasoningItem(item);
+        const thinking = thinkingForLateReasoningItem(item, thinkingByItemId);
         if (!thinking) continue;
         chunks.push({
           id: item.id || data.response?.id || "chatcmpl-" + Date.now(),
@@ -1073,7 +1112,7 @@ export class OpenAIResponsesTransformer implements Transformer {
       // encrypted_content and Codex rejected the forged ciphertext.
       if (typeof data.item_id !== "string" || !data.item_id) return null;
       return {
-        id: data.item_id || "chatcmpl-" + Date.now(),
+        id: data.item_id,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
         model: data.response?.model,
@@ -1085,27 +1124,6 @@ export class OpenAIResponsesTransformer implements Transformer {
                 id: data.item_id,
               },
             },
-            finish_reason: null,
-          },
-        ],
-      };
-    }
-
-    if (
-      data.type === "response.output_item.done" &&
-      data.item?.type === "reasoning"
-    ) {
-      const thinking = thinkingFromResponsesReasoningItem(data.item);
-      if (!thinking) return null;
-      return {
-        id: data.item.id || data.item_id || "chatcmpl-" + Date.now(),
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model: data.response?.model,
-        choices: [
-          {
-            index: 0,
-            delta: { thinking },
             finish_reason: null,
           },
         ],

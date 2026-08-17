@@ -11,6 +11,7 @@ import {
   createResponsesStreamState,
   finalizeResponsesStream,
   responsesRequestToUnified,
+  responsesTextFormatFromResponseFormat,
   unifiedChunkToResponsesEvents,
   unifiedResponseToResponses,
 } from "../utils/openai.responses.util";
@@ -819,6 +820,99 @@ async function testExecShellEnvelopeNormalizedOnStream() {
     (event) => event.type === "response.custom_tool_call_input.done"
   );
   assert.equal(plainDone.input, 'await tools.exec_command({cmd: "echo hi"});');
+}
+
+// A generic Responses destination with a tool named `exec` that legitimately
+// accepts `{"cmd": …}` must not be rewritten into Codex V8 isolate JS.
+async function testExecShellEnvelopeUnmodifiedWithoutCodexConventions() {
+  const envelope = '{"cmd": "ls -la /tmp"}';
+  const json = unifiedResponseToResponses(
+    {
+      id: "chatcmpl-exec-generic",
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            tool_calls: [
+              {
+                id: "call_exec",
+                type: "function",
+                function: {
+                  name: "exec",
+                  arguments: JSON.stringify({ input: envelope }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      customToolNames: new Set(["exec"]),
+      codexIsolateConventions: false,
+    }
+  );
+  assert.equal(json.output[0].type, "custom_tool_call");
+  assert.equal(json.output[0].input, envelope);
+
+  const state = createResponsesStreamState({
+    model: "gpt-4o",
+    customToolNames: new Set(["exec"]),
+    codexIsolateConventions: false,
+  });
+  const events = [
+    ...unifiedChunkToResponsesEvents(
+      {
+        id: "chatcmpl-exec-generic-stream",
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_exec",
+                  function: {
+                    name: "exec",
+                    arguments: JSON.stringify({ input: envelope }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      state
+    ),
+    ...finalizeResponsesStream(state),
+  ];
+  const done = events.find(
+    (event) => event.type === "response.custom_tool_call_input.done"
+  );
+  assert.equal(done.input, envelope);
+}
+
+async function testResponsesTextFormatHelper() {
+  assert.deepEqual(
+    responsesTextFormatFromResponseFormat({
+      type: "json_schema",
+      json_schema: {
+        name: "result",
+        schema: { type: "object", properties: { ok: { type: "boolean" } } },
+        strict: true,
+      },
+    }),
+    {
+      type: "json_schema",
+      name: "result",
+      schema: { type: "object", properties: { ok: { type: "boolean" } } },
+      strict: true,
+    }
+  );
+  assert.deepEqual(
+    responsesTextFormatFromResponseFormat({ type: "json_object" }),
+    { type: "json_object" }
+  );
+  assert.equal(responsesTextFormatFromResponseFormat(undefined), undefined);
 }
 
 // Grok alternates the shell-envelope key between `cmd` and `command`; both
@@ -2021,6 +2115,8 @@ async function main() {
   await testJsonOutput();
   await testCustomToolSseLifecycle();
   await testExecShellEnvelopeNormalizedOnStream();
+  await testExecShellEnvelopeUnmodifiedWithoutCodexConventions();
+  await testResponsesTextFormatHelper();
   await testExecCommandKeyVariantNormalized();
   await testExecApplyPatchHeredocNormalized();
   await testExecShellEnvelopeNormalizedOnJson();

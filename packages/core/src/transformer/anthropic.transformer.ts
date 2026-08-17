@@ -45,6 +45,7 @@ import {
 import {
   anthropicThinkingSignatureFrom,
   canonicalAssistantTurn,
+  thinkingFromUnifiedAssistant,
 } from "../utils/openai.responses.util";
 
 function toAnthropicCacheUsage(usage: any): Record<string, number> {
@@ -1174,7 +1175,22 @@ export class AnthropicTransformer implements Transformer {
                   continue;
                 }
 
-                if (choice?.delta?.thinking && !isClosed && !hasFinished) {
+                const unifiedThinking = thinkingFromUnifiedAssistant(
+                  choice?.delta
+                );
+                if (unifiedThinking && !isClosed && !hasFinished) {
+                  const thinkingText =
+                    typeof unifiedThinking.content === "string"
+                      ? unifiedThinking.content
+                      : "";
+                  const thinkingSignatureValue = anthropicThinkingSignatureFrom(
+                    unifiedThinking
+                  );
+                  // Replay metadata (encrypted_content / Responses item id)
+                  // is not an Anthropic thinking block. Opening one for it —
+                  // especially after text has started — produces a trailing
+                  // second thinking block and a malformed assistant turn.
+                  if (thinkingText || thinkingSignatureValue) {
                   // Close any previous content block if open (e.g. text emitted
                   // before a late signature). Anthropic clients require clean
                   // block boundaries; leaving text open then starting thinking
@@ -1212,9 +1228,6 @@ export class AnthropicTransformer implements Transformer {
                     currentContentBlockIndex = thinkingBlockIndex;
                     isThinkingStarted = true;
                   }
-                  const thinkingSignatureValue = anthropicThinkingSignatureFrom(
-                    choice.delta.thinking
-                  );
                   if (thinkingSignatureValue) {
                     const thinkingSignature = {
                       type: "content_block_delta",
@@ -1244,13 +1257,13 @@ export class AnthropicTransformer implements Transformer {
                     );
                     currentContentBlockIndex = -1;
                     isThinkingStarted = false;
-                  } else if (choice.delta.thinking.content) {
+                  } else if (thinkingText) {
                     const thinkingChunk = {
                       type: "content_block_delta",
                       index: currentContentBlockIndex,
                       delta: {
                         type: "thinking_delta",
-                        thinking: choice.delta.thinking.content || "",
+                        thinking: thinkingText,
                       },
                     };
                     safeEnqueue(
@@ -1260,6 +1273,7 @@ export class AnthropicTransformer implements Transformer {
                         )}\n\n`
                       )
                     );
+                  }
                   }
                 }
 
@@ -1676,13 +1690,12 @@ export class AnthropicTransformer implements Transformer {
       }
       const content: any[] = [];
       // Fixed order: thinking → text → tools (server search, then client tools).
-      if ((choice.message as any)?.thinking?.content) {
-        const signature = anthropicThinkingSignatureFrom(
-          (choice.message as any).thinking
-        );
+      const unifiedThinking = thinkingFromUnifiedAssistant(choice.message);
+      if (unifiedThinking?.content) {
+        const signature = anthropicThinkingSignatureFrom(unifiedThinking);
         content.push({
           type: "thinking",
-          thinking: (choice.message as any).thinking.content,
+          thinking: unifiedThinking.content,
           ...(signature ? { signature } : {}),
         });
       }

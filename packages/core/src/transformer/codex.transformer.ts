@@ -23,8 +23,11 @@ import {
   assistantTurnHasText,
   canonicalAssistantTurn,
   isResponsesReasoningItemId,
+  recordReasoningSummaryDelta,
   responsesEncryptedContentFrom,
   responsesReasoningItemFromThinking,
+  responsesTextFormatFromResponseFormat,
+  thinkingForLateReasoningItem,
   thinkingFromResponsesReasoningItem,
   thinkingFromUnifiedAssistant,
   unwrapCustomToolInput,
@@ -434,19 +437,10 @@ export class CodexTransformer implements Transformer {
     // `response_format` shape on the inbound leg (openai.responses.util.ts)
     // since Unified is Chat-Completions-shaped; only codex reconstructs it
     // back — same restore-only-for-codex pattern as the custom tool type.
-    const responseFormat = (request as any).response_format;
-    if (responseFormat) {
-      const format =
-        responseFormat.type === "json_schema"
-          ? {
-              type: "json_schema",
-              name: responseFormat.json_schema?.name,
-              schema: responseFormat.json_schema?.schema,
-              ...(responseFormat.json_schema?.strict !== undefined
-                ? { strict: responseFormat.json_schema.strict }
-                : {}),
-            }
-          : { type: responseFormat.type };
+    const format = responsesTextFormatFromResponseFormat(
+      (request as any).response_format
+    );
+    if (format) {
       (request as any).text = { ...(request as any).text, format };
     }
     delete (request as any).response_format;
@@ -966,6 +960,7 @@ export class CodexTransformer implements Transformer {
       let currentIndex = -1;
       let lastEventType = "";
       const customToolInputByItemId = new Map<string, string>();
+      const thinkingByItemId = new Map<string, string>();
       const toolIndexFor = createToolIndexFor();
 
       const getCurrentIndex = (eventType: string) => {
@@ -995,7 +990,7 @@ export class CodexTransformer implements Transformer {
               if (data.response?.model) {
                 observedModel = data.response.model;
               }
-              const chunk = codexTransformer.convertStreamEvent(data, getCurrentIndex, resolveModel, customToolInputByItemId, toolIndexFor);
+              const chunk = codexTransformer.convertStreamEvent(data, getCurrentIndex, resolveModel, customToolInputByItemId, toolIndexFor, thinkingByItemId);
               if (chunk) {
                 ctx.controller.enqueue(encodeSSEData(JSON.stringify(chunk), ctx.encoder));
               }
@@ -1104,6 +1099,7 @@ export class CodexTransformer implements Transformer {
         let index = -1;
         let lastEventType = "";
         const customToolInputByItemId = new Map<string, string>();
+        const thinkingByItemId = new Map<string, string>();
         const toolIndexFor = createToolIndexFor();
         const getCurrentIndex = (eventType: string) => {
           if (eventType !== lastEventType) {
@@ -1119,7 +1115,7 @@ export class CodexTransformer implements Transformer {
               if (event?.response?.model) {
                 observedModel = event.response.model;
               }
-              const chunk = codexTransformer.convertStreamEvent(event, getCurrentIndex, resolveModel, customToolInputByItemId, toolIndexFor);
+              const chunk = codexTransformer.convertStreamEvent(event, getCurrentIndex, resolveModel, customToolInputByItemId, toolIndexFor, thinkingByItemId);
               if (chunk) {
                 controller.enqueue(
                   encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`)
@@ -1179,9 +1175,11 @@ export class CodexTransformer implements Transformer {
     getCurrentIndex: (type: string) => number,
     resolveModel?: (eventModel: string | undefined) => string | undefined,
     customToolInputByItemId?: Map<string, string>,
-    toolIndexFor?: (data: ResponsesStreamEvent) => number
+    toolIndexFor?: (data: ResponsesStreamEvent) => number,
+    thinkingByItemId?: Map<string, string>
   ): any | null {
     const toolIndex = () => (toolIndexFor ? toolIndexFor(data) : 0);
+    const deliveredThinking = thinkingByItemId ?? new Map<string, string>();
     const fallback = (eventModel: string | undefined): string | undefined =>
       resolveModel ? resolveModel(eventModel) : eventModel;
     const modelForChunk = (eventModel: string | undefined) =>
@@ -1420,8 +1418,11 @@ export class CodexTransformer implements Transformer {
         : "stop";
 
       // Ciphertext often arrives only on the completed reasoning item.
-      const reasoningThinking = thinkingFromResponsesReasoningItem(
-        data.response?.output?.find((item: any) => item.type === "reasoning")
+      // Omit content when summary deltas already streamed it — Unified
+      // `delta.thinking.content` is additive.
+      const reasoningThinking = thinkingForLateReasoningItem(
+        data.response?.output?.find((item: any) => item.type === "reasoning"),
+        deliveredThinking
       );
 
       const chunk: any = {
@@ -1456,6 +1457,7 @@ export class CodexTransformer implements Transformer {
     }
 
     if (data.type === "response.reasoning_summary_text.delta") {
+      recordReasoningSummaryDelta(deliveredThinking, data.item_id, data.delta);
       return {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
@@ -1481,7 +1483,7 @@ export class CodexTransformer implements Transformer {
       // encrypted_content and Codex rejected the forged ciphertext.
       if (typeof data.item_id !== "string" || !data.item_id) return null;
       return {
-        id: data.item_id || "chatcmpl-" + Date.now(),
+        id: data.item_id,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
         model: modelForChunk(data.response?.model),
@@ -1517,7 +1519,10 @@ export class CodexTransformer implements Transformer {
 
     if (data.type === "response.output_item.done") {
       if (data.item?.type === "reasoning") {
-        const thinking = thinkingFromResponsesReasoningItem(data.item);
+        const thinking = thinkingForLateReasoningItem(
+          data.item,
+          deliveredThinking
+        );
         if (!thinking) return null;
         return {
           id: data.item.id || data.item_id || "chatcmpl-" + Date.now(),
@@ -1772,6 +1777,7 @@ export class CodexTransformer implements Transformer {
     let currentIndex = -1;
     let lastEventType = "";
     const customToolInputByItemId = new Map<string, string>();
+    const thinkingByItemId = new Map<string, string>();
     const toolIndexFor = createToolIndexFor();
 
     const getCurrentIndex = (eventType: string) => {
@@ -1898,7 +1904,7 @@ export class CodexTransformer implements Transformer {
             const resolved = resolveModel(event.response.model);
             if (resolved) model = resolved;
           }
-          const chunk = this.convertStreamEvent(event, getCurrentIndex, resolveModel, customToolInputByItemId, toolIndexFor);
+          const chunk = this.convertStreamEvent(event, getCurrentIndex, resolveModel, customToolInputByItemId, toolIndexFor, thinkingByItemId);
           processChunk(chunk);
         } catch {
           // ignore malformed line

@@ -420,6 +420,82 @@ export function thinkingFromResponsesReasoningItem(
   };
 }
 
+/**
+ * Record streamed reasoning summary text for one item. Late handlers
+ * (`output_item.done`, `response.completed`) consult this map so they can
+ * emit ciphertext / id without re-sending content — Unified
+ * `delta.thinking.content` is additive in every downstream consumer.
+ */
+export function recordReasoningSummaryDelta(
+  deliveredContentByItemId: Map<string, string>,
+  itemId: unknown,
+  delta: unknown
+): void {
+  if (typeof itemId !== "string" || !itemId) return;
+  if (typeof delta !== "string" || !delta) return;
+  deliveredContentByItemId.set(
+    itemId,
+    (deliveredContentByItemId.get(itemId) || "") + delta
+  );
+}
+
+/**
+ * Late Responses reasoning handlers exist to rescue `encrypted_content` /
+ * item id after summary deltas have already streamed the text. If this
+ * item's content was already delivered on the current stream, return
+ * replay metadata only. A terminal-only reasoning item (no summary
+ * deltas) still delivers content exactly once.
+ */
+export function thinkingForLateReasoningItem(
+  item: any,
+  deliveredContentByItemId: Map<string, string>
+): UnifiedAssistantThinking | undefined {
+  const thinking = thinkingFromResponsesReasoningItem(item);
+  if (!thinking) return undefined;
+  const id =
+    (typeof item?.id === "string" && item.id) || thinking.id;
+  const alreadyDelivered = !!(id && deliveredContentByItemId.get(id));
+  if (alreadyDelivered) {
+    if (!thinking.encrypted_content && !thinking.id) return undefined;
+    return {
+      content: "",
+      ...(thinking.encrypted_content
+        ? { encrypted_content: thinking.encrypted_content }
+        : {}),
+      ...(thinking.id ? { id: thinking.id } : {}),
+    };
+  }
+  if (id && thinking.content) {
+    deliveredContentByItemId.set(id, thinking.content);
+  }
+  return thinking;
+}
+
+/**
+ * Inverse of the inbound `text.format` → Chat Completions `response_format`
+ * mapping in `responsesRequestToUnified`. Shared by Codex and generic
+ * Responses outbound so the two reconstruct sites cannot drift.
+ */
+export function responsesTextFormatFromResponseFormat(
+  responseFormat: any
+): { type: string; name?: string; schema?: any; strict?: boolean } | undefined {
+  if (!responseFormat || typeof responseFormat !== "object") return undefined;
+  if (responseFormat.type === "json_schema") {
+    return {
+      type: "json_schema",
+      name: responseFormat.json_schema?.name,
+      schema: responseFormat.json_schema?.schema,
+      ...(responseFormat.json_schema?.strict !== undefined
+        ? { strict: responseFormat.json_schema.strict }
+        : {}),
+    };
+  }
+  if (typeof responseFormat.type === "string" && responseFormat.type) {
+    return { type: responseFormat.type };
+  }
+  return undefined;
+}
+
 /** Unified assistant.thinking → Responses `reasoning` input/output item. */
 export function thinkingFromUnifiedAssistant(
   message: any
@@ -945,8 +1021,10 @@ export function normalizeExecApplyPatchHeredoc(
  */
 export function normalizeExecFunctionArguments(
   name: string | undefined,
-  rawArguments: string
+  rawArguments: string,
+  options?: CodexIsolateConventionsOptions
 ): string {
+  if (!applyCodexIsolateConventions(options)) return rawArguments;
   if (name !== "exec") return rawArguments;
   try {
     const parsed = JSON.parse(rawArguments);
@@ -965,9 +1043,12 @@ export function normalizeExecFunctionArguments(
 
 /** Undo the CUSTOM_TOOL_INPUT_KEY wrapping applied in normalizeResponsesTools.
  * Falls back to the raw text so a malformed/empty call still round-trips
- * instead of vanishing. Exported so CodexTransformer can reuse the same
- * unwrap+heredoc-strip logic when reconstructing native `custom_tool_call`
- * history for the real OpenAI backend. */
+ * instead of vanishing. Also strips a whole-value shell heredoc wrapper
+ * (see stripHeredocWrapper). That strip is intentional on both paths this
+ * helper serves: client emission (so the Responses client sees clean
+ * freeform text) and CodexTransformer history replay (so the backend is
+ * not re-fed a wrapper the client never kept). Replay is therefore
+ * normalized, not byte-faithful to the model's original heredoc. */
 export function unwrapCustomToolInput(rawArguments: string): string {
   if (!rawArguments) return "";
   try {
@@ -980,19 +1061,39 @@ export function unwrapCustomToolInput(rawArguments: string): string {
   return stripHeredocWrapper(rawArguments);
 }
 
+/**
+ * Codex V8 isolate calling conventions (`await tools.exec_command` /
+ * `await tools.apply_patch`). Default on: CCR's `/v1/responses` inbound
+ * is the Codex CLI path, and Grok-via-Chat recovery depends on it.
+ * Pass `false` for a generic Responses destination whose `exec` tool
+ * legitimately accepts `{"cmd": …}` JSON.
+ */
+export interface CodexIsolateConventionsOptions {
+  codexIsolateConventions?: boolean;
+}
+
+function applyCodexIsolateConventions(
+  options?: CodexIsolateConventionsOptions
+): boolean {
+  return options?.codexIsolateConventions !== false;
+}
+
 /** Client-facing custom-tool input: unwrap the Unified JSON wrapper, then
  * apply the exec/patch normalizers in one place so stream finalize, the
  * completed skeleton, and the non-stream JSON path cannot drift. */
 export function normalizeClientCustomToolInput(
   name: string | undefined,
-  rawArguments: string
+  rawArguments: string,
+  options?: CodexIsolateConventionsOptions
 ): string {
-  return normalizeCodexPatchMarkers(
-    normalizeExecApplyPatchHeredoc(
+  let text = unwrapCustomToolInput(rawArguments);
+  if (applyCodexIsolateConventions(options)) {
+    text = normalizeExecApplyPatchHeredoc(
       name,
-      normalizeExecCommandEnvelope(name, unwrapCustomToolInput(rawArguments))
-    )
-  );
+      normalizeExecCommandEnvelope(name, text)
+    );
+  }
+  return normalizeCodexPatchMarkers(text);
 }
 
 function normalizeResponsesTools(
@@ -1144,9 +1245,13 @@ export function unifiedResponseToResponses(
     originalModel?: string;
     callIdMap?: ResponsesCallIdMap;
     customToolNames?: Set<string>;
+    codexIsolateConventions?: boolean;
   }
 ): any {
   const callIdMap = options?.callIdMap ?? createCallIdMap();
+  const isolate: CodexIsolateConventionsOptions = {
+    codexIsolateConventions: options?.codexIsolateConventions,
+  };
   const choice = chat?.choices?.[0];
   const message = choice?.message || {};
   const output: any[] = [];
@@ -1202,7 +1307,8 @@ export function unifiedResponseToResponses(
           name: tc.function.name,
           input: normalizeClientCustomToolInput(
             tc.function.name,
-            rawArguments
+            rawArguments,
+            isolate
           ),
         });
         continue;
@@ -1213,7 +1319,7 @@ export function unifiedResponseToResponses(
         call_id: callId,
         name: tc.function.name,
         arguments: normalizeCodexPatchMarkers(
-          normalizeExecFunctionArguments(tc.function.name, rawArguments)
+          normalizeExecFunctionArguments(tc.function.name, rawArguments, isolate)
         ),
         status: "completed",
       });
@@ -1269,6 +1375,7 @@ export interface ResponsesStreamState {
   thinkingContent: string;
   thinkingEncryptedContent?: string;
   thinkingId?: string;
+  codexIsolateConventions: boolean;
 }
 
 export function createResponsesStreamState(
@@ -1276,6 +1383,7 @@ export function createResponsesStreamState(
     model?: string;
     callIdMap?: ResponsesCallIdMap;
     customToolNames?: Set<string>;
+    codexIsolateConventions?: boolean;
   }
 ): ResponsesStreamState {
   const id = `resp_${Date.now()}`;
@@ -1296,6 +1404,7 @@ export function createResponsesStreamState(
     callIdMap: options?.callIdMap ?? createCallIdMap(),
     customToolNames: options?.customToolNames ?? new Set<string>(),
     thinkingContent: "",
+    codexIsolateConventions: options?.codexIsolateConventions !== false,
   };
 }
 
@@ -1407,31 +1516,36 @@ export function unifiedChunkToResponsesEvents(
     state.usage = chunk.usage;
   }
 
+  // Chat providers emit reasoning_content; Unified thinking is the same
+  // history. Prefer thinkingFromUnifiedAssistant so a Responses client of a
+  // Chat Completions upstream still sees a reasoning item.
+  const thinking = thinkingFromUnifiedAssistant(delta);
+
   // First useful event: response.created
   if (
     !state.textStarted &&
     state.toolCalls.size === 0 &&
     (typeof delta.content === "string" ||
       Array.isArray(delta.tool_calls) ||
-      delta.thinking?.content ||
-      delta.thinking?.encrypted_content ||
-      delta.thinking?.id ||
+      thinking?.content ||
+      thinking?.encrypted_content ||
+      thinking?.id ||
       choice?.finish_reason)
   ) {
     appendCreatedEvent(state, events);
   }
 
-  if (delta.thinking?.content) {
-    state.thinkingContent += delta.thinking.content;
+  if (thinking?.content) {
+    state.thinkingContent += thinking.content;
   }
   const encrypted_content = responsesEncryptedContentFrom(
-    delta.thinking?.encrypted_content
+    thinking?.encrypted_content
   );
   if (encrypted_content) {
     state.thinkingEncryptedContent = encrypted_content;
   }
-  if (typeof delta.thinking?.id === "string" && delta.thinking.id) {
-    state.thinkingId = delta.thinking.id;
+  if (typeof thinking?.id === "string" && thinking.id) {
+    state.thinkingId = thinking.id;
   } else if (isResponsesReasoningItemId(delta.thinking?.signature)) {
     // Heal Unified chunks that still stash a reasoning item id on signature.
     state.thinkingId = delta.thinking.signature;
@@ -1587,6 +1701,9 @@ export function finalizeResponsesStream(
   state.finished = true;
   const events: any[] = [];
   appendCreatedEvent(state, events);
+  const isolate: CodexIsolateConventionsOptions = {
+    codexIsolateConventions: state.codexIsolateConventions,
+  };
 
   closeTextItem(state, events);
 
@@ -1594,7 +1711,8 @@ export function finalizeResponsesStream(
     if (entry.isCustom) {
       const input = normalizeClientCustomToolInput(
         entry.name,
-        entry.arguments
+        entry.arguments,
+        isolate
       );
       events.push({
         type: "response.custom_tool_call_input.delta",
@@ -1622,7 +1740,7 @@ export function finalizeResponsesStream(
       continue;
     }
     const clientArguments = normalizeCodexPatchMarkers(
-      normalizeExecFunctionArguments(entry.name, entry.arguments)
+      normalizeExecFunctionArguments(entry.name, entry.arguments, isolate)
     );
     events.push({
       type: "response.function_call_arguments.done",
@@ -1702,6 +1820,9 @@ function skeletonResponse(
     });
   }
   for (const entry of state.toolCalls.values()) {
+    const isolate: CodexIsolateConventionsOptions = {
+      codexIsolateConventions: state.codexIsolateConventions,
+    };
     indexedOutput.push({
       index: entry.outputIndex,
       item: entry.isCustom
@@ -1712,7 +1833,8 @@ function skeletonResponse(
             name: entry.name,
             input: normalizeClientCustomToolInput(
               entry.name,
-              entry.arguments
+              entry.arguments,
+              isolate
             ),
           }
         : {
@@ -1721,7 +1843,7 @@ function skeletonResponse(
             call_id: entry.id,
             name: entry.name,
             arguments: normalizeCodexPatchMarkers(
-              normalizeExecFunctionArguments(entry.name, entry.arguments)
+              normalizeExecFunctionArguments(entry.name, entry.arguments, isolate)
             ),
             status: status === "completed" ? "completed" : "in_progress",
           },
