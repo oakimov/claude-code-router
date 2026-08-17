@@ -58,6 +58,7 @@ export class OpenAITransformer implements Transformer {
   ): Promise<UnifiedChatRequest> {
     request = structuredClone(request);
     applyOpenAIChatReasoning(request);
+    request.messages = applyChatReasoningHistory(request.messages);
     return applyProviderNativeChatCaching(request, provider, context);
   }
 
@@ -72,9 +73,16 @@ export class OpenAITransformer implements Transformer {
   ): Promise<Response> {
     const contentType = response.headers.get("Content-Type") || "";
     if (contentType.includes("text/event-stream")) {
-      return ensureChatStreamDone(response);
+      return ensureChatStreamDone(response, { aliasThinking: true });
     }
-    // Non-stream JSON: already Chat-shaped when provider Out produced Unified.
+    if (contentType.includes("application/json")) {
+      const json = await response.json();
+      return new Response(JSON.stringify(applyChatThinkingToCompletion(json)), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
     return response;
   }
 }
@@ -184,7 +192,7 @@ function validateAndNormalizeChatRequest(body: any): UnifiedChatRequest {
   if (body.response_format !== undefined) {
     const rf = body.response_format;
     const type = typeof rf === "object" && rf ? rf.type : rf;
-    if (type && type !== "text") {
+    if (type && type !== "text" && type !== "json_schema" && type !== "json_object") {
       throw createApiError(
         "response_format structured output is not supported without a verified provider mapping",
         400,
@@ -310,6 +318,13 @@ function validateAndNormalizeChatRequest(body: any): UnifiedChatRequest {
   if (body.tool_choice !== undefined) unified.tool_choice = body.tool_choice;
   if (body.parallel_tool_calls !== undefined) {
     unified.parallel_tool_calls = body.parallel_tool_calls;
+  }
+  if (body.response_format !== undefined) {
+    const rf = body.response_format;
+    const type = typeof rf === "object" && rf ? rf.type : rf;
+    if (type === "json_schema" || type === "json_object") {
+      (unified as any).response_format = rf;
+    }
   }
   const chatEffort = normalizeReasoningEffort(
     body.reasoning_effort ?? body.reasoning?.effort
@@ -487,7 +502,54 @@ function normalizeChatMessage(msg: any): any {
     }
   }
   // developer → system (Unified system content)
-  return role === "developer" ? { ...msg, role: "system" } : msg;
+  const normalized = role === "developer" ? { ...msg, role: "system" } : msg;
+  if (normalized.role === "assistant") {
+    syncAssistantThinkingFields(normalized);
+  }
+  return normalized;
+}
+
+/** Chat-native `reasoning_content` and Unified `thinking` are the same history. */
+function syncAssistantThinkingFields(message: any): void {
+  if (!message || typeof message !== "object") return;
+  const thinkingText =
+    typeof message.thinking?.content === "string" ? message.thinking.content : "";
+  const reasoningText =
+    typeof message.reasoning_content === "string" ? message.reasoning_content : "";
+  const content = thinkingText || reasoningText;
+  if (
+    !content &&
+    !message.thinking?.signature &&
+    !message.thinking?.encrypted_content &&
+    !message.thinking?.id
+  ) {
+    return;
+  }
+  if (content) message.reasoning_content = content;
+  if (!message.thinking) message.thinking = { content };
+  else if (!thinkingText && content) message.thinking.content = content;
+}
+
+function applyChatReasoningHistory(messages: any[] | undefined): any[] {
+  return (messages || []).map((message) => {
+    if (message?.role !== "assistant") return message;
+    const next = { ...message };
+    if (next.thinking) next.thinking = { ...next.thinking };
+    syncAssistantThinkingFields(next);
+    // Chat Completions providers speak reasoning_content. Drop the Unified
+    // thinking object so it is not forwarded as an unknown message field.
+    delete next.thinking;
+    return next;
+  });
+}
+
+function applyChatThinkingToCompletion(payload: any): any {
+  if (!payload || typeof payload !== "object") return payload;
+  const message = payload.choices?.[0]?.message;
+  if (message) syncAssistantThinkingFields(message);
+  const delta = payload.choices?.[0]?.delta;
+  if (delta) syncAssistantThinkingFields(delta);
+  return payload;
 }
 
 function validateChatTools(tools: any, toolChoice: any): void {
@@ -534,7 +596,10 @@ function validateChatTools(tools: any, toolChoice: any): void {
  * Ensure Chat Completions SSE streams end with data: [DONE] when the upstream
  * already produced Chat-shaped events but omitted the terminator.
  */
-function ensureChatStreamDone(response: Response): Response {
+function ensureChatStreamDone(
+  response: Response,
+  options?: { aliasThinking?: boolean }
+): Response {
   if (!response.body) return response;
 
   const reader = response.body.getReader();
@@ -542,20 +607,34 @@ function ensureChatStreamDone(response: Response): Response {
   const encoder = new TextEncoder();
   let buffer = "";
   let sawDone = false;
+  const aliasThinking = options?.aliasThinking === true;
 
-  const scanForDone = (text: string, flush = false) => {
+  const rewriteDataLine = (line: string): string => {
+    if (!aliasThinking || !line.startsWith("data:")) return line;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") return line;
+    try {
+      return `data: ${JSON.stringify(applyChatThinkingToCompletion(JSON.parse(payload)))}`;
+    } catch {
+      return line;
+    }
+  };
+
+  const emitText = (text: string, flush = false): string => {
     buffer += text;
     const lines = buffer.split(/\r?\n/);
     buffer = flush ? "" : lines.pop() || "";
+    const out: string[] = [];
     for (const line of lines) {
-      if (/^data:\s*\[DONE\]\s*$/.test(line)) {
-        sawDone = true;
-      }
+      if (/^data:\s*\[DONE\]\s*$/.test(line)) sawDone = true;
+      out.push(rewriteDataLine(line));
     }
-    if (flush && /^data:\s*\[DONE\]\s*$/.test(buffer)) {
-      sawDone = true;
+    if (flush && buffer) {
+      if (/^data:\s*\[DONE\]\s*$/.test(buffer)) sawDone = true;
+      out.push(rewriteDataLine(buffer));
       buffer = "";
     }
+    return out.length ? `${out.join("\n")}\n` : "";
   };
 
   const stream = new ReadableStream({
@@ -563,16 +642,16 @@ function ensureChatStreamDone(response: Response): Response {
       try {
         const { done, value } = await reader.read();
         if (done) {
-          scanForDone(decoder.decode(), true);
+          const tail = emitText(decoder.decode(), true);
+          if (tail) controller.enqueue(encoder.encode(tail));
           if (!sawDone) {
             controller.enqueue(encoder.encode("data: [DONE]\n\n"));
           }
           controller.close();
           return;
         }
-        const text = decoder.decode(value, { stream: true });
-        scanForDone(text);
-        controller.enqueue(value);
+        const rewritten = emitText(decoder.decode(value, { stream: true }));
+        if (rewritten) controller.enqueue(encoder.encode(rewritten));
       } catch {
         if (!sawDone) {
           controller.enqueue(

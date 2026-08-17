@@ -691,6 +691,49 @@ async function testFunctionResponseIdMatchesFunctionCall() {
   assert.equal(userWithResponses.parts[1].functionResponse.name, "Read");
 }
 
+async function testChatReasoningContentHistoryBecomesThoughtPart() {
+  const body = buildRequestBody({
+    model: "gemini-3-flash",
+    messages: [
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: "ok",
+        // Signature-only thinking: the text lives in Chat's reasoning_content,
+        // which thinkingFromUnifiedAssistant falls back to.
+        reasoning_content: "plan first",
+        thinking: { content: "", signature: "sig_chat" },
+      },
+    ],
+  });
+  const model = body.contents.find((c: any) => c.role === "model");
+  const thought = model.parts.find((p: any) => p.thought === true);
+  assert.ok(thought);
+  assert.equal(thought.text, "plan first");
+  assert.equal(thought.thoughtSignature, "sig_chat");
+}
+
+async function testUnsignedReasoningContentDoesNotInventThoughtPart() {
+  const body = buildRequestBody({
+    model: "gemini-3-flash",
+    messages: [
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: "ok",
+        reasoning_content: "plan first",
+      },
+    ],
+  });
+  const model = body.contents.find((c: any) => c.role === "model");
+  assert.equal(
+    model.parts.some((p: any) => p.thought === true),
+    false,
+    "unsigned Chat reasoning must not become a Gemini thought part"
+  );
+  assert.ok(model.parts.some((p: any) => p.text === "ok"));
+}
+
 async function main() {
   await testToolTurnNoPlaceholderAndToolCallsFinish();
   await testCrossChunkToolThenStopTrailer();
@@ -704,6 +747,8 @@ async function main() {
   await testAnthropicDoesNotRoundTripToolSignature();
   await testEnhanceToolUnchangedRegardingThoughtSignature();
   await testFunctionResponseIdMatchesFunctionCall();
+  await testChatReasoningContentHistoryBecomesThoughtPart();
+  await testUnsignedReasoningContentDoesNotInventThoughtPart();
   console.log("gemini.function-call-signatures: PASS");
 }
 

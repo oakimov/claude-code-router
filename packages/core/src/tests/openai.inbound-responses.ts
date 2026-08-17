@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { OpenAIResponsesTransformer } from "../transformer/openai.responses.transformer";
 import {
+  CUSTOM_TOOL_INPUT_KEY,
   createCallIdMap,
   createResponsesStreamState,
   finalizeResponsesStream,
@@ -345,6 +346,58 @@ async function testUnsupportedState() {
   );
 }
 
+async function testResponseFormatConversion() {
+  // text.format: "text" (or absent) is the default — no response_format set.
+  const plain = responsesRequestToUnified({
+    model: "m",
+    input: "x",
+    text: { format: { type: "text" } },
+  });
+  assert.equal((plain as any).response_format, undefined);
+
+  const noText = responsesRequestToUnified({ model: "m", input: "x" });
+  assert.equal((noText as any).response_format, undefined);
+
+  // json_schema converts into the Chat Completions response_format shape —
+  // Unified is Chat-Completions-shaped, so this is the verified mapping
+  // Responses destinations later reconstruct back into a native text.format.
+  const schema = { type: "object", properties: { ok: { type: "boolean" } } };
+  const jsonSchema = responsesRequestToUnified({
+    model: "m",
+    input: "x",
+    text: {
+      format: { type: "json_schema", name: "result", schema, strict: true },
+    },
+  });
+  assert.deepEqual((jsonSchema as any).response_format, {
+    type: "json_schema",
+    json_schema: { name: "result", schema, strict: true },
+  });
+
+  const jsonObject = responsesRequestToUnified({
+    model: "m",
+    input: "x",
+    text: { format: { type: "json_object" } },
+  });
+  assert.deepEqual((jsonObject as any).response_format, {
+    type: "json_object",
+  });
+
+  // Genuinely unverified format types still reject rather than risk a wrong
+  // conversion (e.g. a tool-grammar-shaped "grammar" type at the top-level
+  // text.format, which is not a real Responses field but must not be
+  // silently accepted either).
+  await expectReject(
+    () =>
+      responsesRequestToUnified({
+        model: "m",
+        input: "x",
+        text: { format: { type: "grammar" } },
+      }),
+    "unsupported_response_format"
+  );
+}
+
 async function testReasoningAndTools() {
   const unified = responsesRequestToUnified({
     model: "m",
@@ -409,13 +462,19 @@ async function testCustomHostedToolConvertsToFunction() {
   const converted = unified.tools[0];
   assert.equal(converted.type, "function");
   assert.equal(converted.function.name, "search_code");
-  assert.equal(converted.function.description, "Search the codebase");
+  // The original description is preserved verbatim, followed by explicit
+  // JSON-wrapping guidance for models unfamiliar with the custom-tool proxy
+  // convention (see normalizeResponsesTools's comment).
+  assert.ok(converted.function.description.startsWith("Search the codebase"));
+  assert.match(converted.function.description, /single "input" argument/);
+  assert.match(converted.function.description, /shell heredoc/);
   assert.deepEqual(converted.function.parameters, {
     type: "object",
     properties: {
       input: {
         type: "string",
-        description: "The freeform text/code input for this tool.",
+        description:
+          "The complete freeform text/code input for this tool, exactly as described in the tool description — as a plain string, with no markdown code fences or shell heredoc wrapping.",
       },
     },
     required: ["input"],
@@ -548,6 +607,450 @@ async function testJsonOutput() {
   assert.equal(custom.output[0].arguments, undefined);
 }
 
+// Grok reaches for the trailing-asterisk patch markers (Claude Code dialect)
+// when driving Codex's exec → apply_patch; Codex only accepts the exact
+// `*** Begin Patch` / `*** End Patch` tokens. The client-facing emission must
+// normalize the variant so the first write is not rejected.
+async function testCodexPatchMarkersNormalizedOnStream() {
+  const state = createResponsesStreamState({
+    model: "grok-4.6",
+  });
+  const events = [
+    ...unifiedChunkToResponsesEvents(
+      {
+        id: "chatcmpl-patch",
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_patch",
+                  function: {
+                    name: "exec",
+                    arguments:
+                      '{"input":"await tools.apply_patch(`*** Begin Patch ***\\n*** Update File: demo.txt\\n@@\\n-old\\n+new\\n*** End Patch ***\\n`);"}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      state
+    ),
+    ...finalizeResponsesStream(state),
+  ];
+
+  const done = events.find(
+    (event) => event.type === "response.function_call_arguments.done"
+  );
+  assert.ok(
+    !done.arguments.includes("*** Begin Patch ***"),
+    "no trailing-asterisk Begin"
+  );
+  assert.ok(done.arguments.includes("*** Begin Patch"), "Begin marker present");
+  assert.ok(
+    !done.arguments.includes("*** End Patch ***"),
+    "no trailing-asterisk End"
+  );
+  assert.ok(done.arguments.includes("*** End Patch"), "End marker present");
+
+  const itemDone = events.find(
+    (event) => event.type === "response.output_item.done"
+  );
+  assert.equal(itemDone.item.name, "exec");
+  assert.ok(
+    !itemDone.item.arguments.includes("*** Begin Patch ***"),
+    "output_item.done normalized"
+  );
+
+  const completed = events.find(
+    (event) => event.type === "response.completed"
+  );
+  const [call] = completed.response.output;
+  assert.ok(
+    !call.arguments.includes("*** Begin Patch ***"),
+    "response.completed normalized"
+  );
+}
+
+async function testCodexPatchMarkersNormalizedOnJson() {
+  const tf = new OpenAIResponsesTransformer();
+  (tf as any).logger = { debug() {} };
+  const out = await tf.transformResponseIn(
+    new Response(
+      JSON.stringify({
+        id: "chatcmpl-json-patch",
+        object: "chat.completion",
+        model: "grok-4.6",
+        created: 1,
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Applying patch.",
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: "exec",
+                    arguments:
+                      '{"input":"await tools.apply_patch(`*** Begin Patch ***\\n*** Add File: a.txt\\n+line\\n*** End Patch ***\\n`);"}',
+                  },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    ),
+    {
+      protocolContext: { originalModel: "grok-4.6" },
+    }
+  );
+
+  const json = await out.json();
+  const [call] = json.output.filter(
+    (item: any) => item.type === "function_call"
+  );
+  assert.ok(call.arguments.includes("*** Begin Patch"), "JSON Begin present");
+  assert.ok(
+    !call.arguments.includes("*** Begin Patch ***"),
+    "JSON Begin no trailing asterisks"
+  );
+  assert.ok(
+    !call.arguments.includes("*** End Patch ***"),
+    "JSON End no trailing asterisks"
+  );
+}
+
+// Grok sometimes fills Codex's freeform `exec` (raw JS) with a JSON
+// shell-envelope (`{"cmd": "ls"}`) instead of JS; the client runs it as JS and
+// fails with SyntaxError. The client-facing custom_tool_call input must become
+// the `await tools.exec_command({cmd: …})` call the model retries with anyway.
+async function testExecShellEnvelopeNormalizedOnStream() {
+  const state = createResponsesStreamState({
+    model: "grok-4.6",
+    customToolNames: new Set(["exec"]),
+  });
+  const events = [
+    ...unifiedChunkToResponsesEvents(
+      {
+        id: "chatcmpl-exec",
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_exec",
+                  function: {
+                    name: "exec",
+                    arguments:
+                      '{"input":"{\\"cmd\\": \\"ls -la /tmp\\"}"}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      state
+    ),
+    ...finalizeResponsesStream(state),
+  ];
+
+  const delta = events.find(
+    (event) => event.type === "response.custom_tool_call_input.delta"
+  );
+  assert.equal(
+    delta.delta,
+    'await tools.exec_command({"cmd":"ls -la /tmp"});'
+  );
+  const done = events.find(
+    (event) => event.type === "response.custom_tool_call_input.done"
+  );
+  assert.equal(done.input, 'await tools.exec_command({"cmd":"ls -la /tmp"});');
+  const itemDone = events.find(
+    (event) => event.type === "response.output_item.done"
+  );
+  assert.equal(itemDone.item.name, "exec");
+  assert.ok(
+    itemDone.item.input.startsWith("await tools.exec_command("),
+    "output_item.done input rewritten"
+  );
+  // Non-cmd freeform content is untouched.
+  const plain = createResponsesStreamState({
+    model: "grok-4.6",
+    customToolNames: new Set(["exec"]),
+  });
+  const plainEvents = [
+    ...unifiedChunkToResponsesEvents(
+      {
+        id: "chatcmpl-exec2",
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_exec2",
+                  function: {
+                    name: "exec",
+                    arguments:
+                      '{"input":"await tools.exec_command({cmd: \\"echo hi\\"});"}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      plain
+    ),
+    ...finalizeResponsesStream(plain),
+  ];
+  const plainDone = plainEvents.find(
+    (event) => event.type === "response.custom_tool_call_input.done"
+  );
+  assert.equal(plainDone.input, 'await tools.exec_command({cmd: "echo hi"});');
+}
+
+// Grok alternates the shell-envelope key between `cmd` and `command`; both
+// must land on exec_command's accepted `cmd` key.
+async function testExecCommandKeyVariantNormalized() {
+  const state = createResponsesStreamState({
+    model: "grok-4.6",
+    customToolNames: new Set(["exec"]),
+  });
+  const events = [
+    ...unifiedChunkToResponsesEvents(
+      {
+        id: "chatcmpl-exec-command",
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_execc",
+                  function: {
+                    name: "exec",
+                    arguments:
+                      '{"input":"{\\"command\\": \\"ls -la /tmp\\"}"}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      state
+    ),
+    ...finalizeResponsesStream(state),
+  ];
+  const done = events.find(
+    (event) => event.type === "response.custom_tool_call_input.done"
+  );
+  assert.equal(
+    done.input,
+    'await tools.exec_command({"cmd":"ls -la /tmp"});'
+  );
+}
+
+// Grok sometimes invokes the patch tool through a shell heredoc instead of JS:
+//   apply_patch << 'PATCH' … PATCH
+// That is not valid JS for Codex's exec, so rewrite it into the JS call form.
+async function testExecApplyPatchHeredocNormalized() {
+  const state = createResponsesStreamState({
+    model: "grok-4.6",
+    customToolNames: new Set(["exec"]),
+  });
+  const events = [
+    ...unifiedChunkToResponsesEvents(
+      {
+        id: "chatcmpl-exec-heredoc",
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_exech",
+                  function: {
+                    name: "exec",
+                    arguments: JSON.stringify({
+                      input:
+                        "apply_patch << 'PATCH'\n*** Begin Patch\n*** Add File: a.txt\n+line 1\n+line 2\n*** End Patch\nPATCH",
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      state
+    ),
+    ...finalizeResponsesStream(state),
+  ];
+  const done = events.find(
+    (event) => event.type === "response.custom_tool_call_input.done"
+  );
+  assert.equal(
+    done.input,
+    'await tools.apply_patch("*** Begin Patch\\n*** Add File: a.txt\\n+line 1\\n+line 2\\n*** End Patch");'
+  );
+  // The marker normalization must not fire on the already-canonical result.
+  assert.ok(!done.input.includes("*** Begin Patch ***"));
+}
+
+// When `exec` is declared as a plain function tool its arguments stay wrapped
+// in {"input": "…"}. The envelope must be normalized inside the wrapper even
+// without the custom-tool unwrap path.
+async function testExecFunctionToolWrapperNormalized() {
+  const tf = new OpenAIResponsesTransformer();
+  (tf as any).logger = { debug() {} };
+  const out = await tf.transformResponseIn(
+    new Response(
+      JSON.stringify({
+        id: "chatcmpl-fn-exec",
+        object: "chat.completion",
+        model: "grok-4.6",
+        created: 1,
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "running",
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: "exec",
+                    arguments:
+                      '{"input":"{\\"cmd\\": \\"ls /tmp\\"}"}',
+                  },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    ),
+    {
+      protocolContext: { originalModel: "grok-4.6" },
+      req: { protocolContext: { originalModel: "grok-4.6" } },
+    }
+  );
+  const json = await out.json();
+  const [call] = json.output.filter(
+    (item: any) => item.type === "function_call"
+  );
+  assert.equal(
+    call.arguments,
+    '{"input":"await tools.exec_command({\\"cmd\\":\\"ls /tmp\\"});"}'
+  );
+}
+
+// Flatten is provider-neutral: `{input}` contract only. Codex V8 calling
+// conventions stay off the description so Anthropic / Chat Completions are
+// not prompted as if they were Codex's isolate.
+async function testExecToolDescriptionIsProviderNeutral() {
+  const customToolNames = new Set<string>();
+  const unified = responsesRequestToUnified(
+    {
+      model: "openai,gpt-4o",
+      input: [
+        {
+          role: "user",
+          content: "list the dir",
+        },
+      ],
+      tools: [
+        {
+          type: "custom",
+          name: "exec",
+          description: "Run JavaScript code to orchestrate tool calls.",
+        },
+      ],
+    },
+    undefined,
+    customToolNames
+  );
+  assert.ok(customToolNames.has("exec"));
+  const tool = unified.tools?.find((t: any) => t.function?.name === "exec");
+  assert.ok(tool);
+  const description = tool.function!.description;
+  assert.ok(description.includes("freeform text"), "keeps the input contract");
+  assert.ok(description.includes(`"${CUSTOM_TOOL_INPUT_KEY}"`), "names the wrapper key");
+  assert.ok(!description.includes("exec_command"), "no Codex V8 exec_command coaching");
+  assert.ok(!description.includes("await tools."), "no Codex V8 JS coaching");
+  assert.ok(!description.includes("Calling conventions"), "no destination-specific conventions");
+}
+
+async function testExecShellEnvelopeNormalizedOnJson() {
+  const tf = new OpenAIResponsesTransformer();
+  (tf as any).logger = { debug() {} };
+  const map = createCallIdMap();
+  const customToolNames = new Set(["exec"]);
+  const out = await tf.transformResponseIn(
+    new Response(
+      JSON.stringify({
+        id: "chatcmpl-json-exec",
+        object: "chat.completion",
+        model: "grok-4.6",
+        created: 1,
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "running",
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: "exec",
+                    arguments:
+                      '{"input":"{\\"cmd\\": \\"ls -la /tmp\\"}"}',
+                  },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    ),
+    {
+      protocolContext: { originalModel: "grok-4.6" },
+      responsesCallIdMap: map,
+      responsesCustomToolNames: customToolNames,
+      req: { protocolContext: { originalModel: "grok-4.6" } },
+    }
+  );
+  const json = await out.json();
+  const [call] = json.output.filter(
+    (item: any) => item.type === "custom_tool_call"
+  );
+  assert.equal(
+    call.input,
+    'await tools.exec_command({"cmd":"ls -la /tmp"});'
+  );
+}
+
 async function testCustomToolSseLifecycle() {
   const state = createResponsesStreamState({
     model: "gpt-4o",
@@ -649,6 +1152,144 @@ async function testCustomToolHistoryInput() {
       }),
     "invalid_custom_tool_input"
   );
+}
+
+async function testCustomToolHeredocUnwrap() {
+  const map = createCallIdMap();
+  const heredocPatch =
+    '*** Begin Patch\n*** Add File: hello.txt\n+hello world\n*** End Patch';
+
+  // Non-streaming: a model that invokes the freeform tool shell-style
+  // (`apply_patch <<EOF ... EOF`) instead of passing the freeform text
+  // directly gets unwrapped down to the clean text, not left heredoc-wrapped.
+  const wrapped = unifiedResponseToResponses(
+    {
+      id: "chatcmpl-heredoc",
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            tool_calls: [
+              {
+                id: "call_patch",
+                type: "function",
+                function: {
+                  name: "apply_patch",
+                  arguments: JSON.stringify({
+                    input: `<<EOF\n${heredocPatch}\nEOF`,
+                  }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    { callIdMap: map, customToolNames: new Set(["apply_patch"]) }
+  );
+  assert.equal(wrapped.output[0].type, "custom_tool_call");
+  assert.equal(wrapped.output[0].input, heredocPatch);
+
+  // Quoted heredoc delimiter and a leading `cat` both unwrap the same way.
+  const quotedCat = unifiedResponseToResponses(
+    {
+      id: "chatcmpl-heredoc-2",
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            tool_calls: [
+              {
+                id: "call_patch_2",
+                type: "function",
+                function: {
+                  name: "apply_patch",
+                  arguments: JSON.stringify({
+                    input: `cat <<'PATCH'\n${heredocPatch}\nPATCH`,
+                  }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    { callIdMap: createCallIdMap(), customToolNames: new Set(["apply_patch"]) }
+  );
+  assert.equal(quotedCat.output[0].input, heredocPatch);
+
+  // A genuine patch that merely contains "<<" or "EOF"-like text mid-body
+  // (not wrapping the *entire* input) must pass through untouched — this is
+  // a syntactic unwrap, not a content rewrite.
+  const untouched = unifiedResponseToResponses(
+    {
+      id: "chatcmpl-heredoc-3",
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            tool_calls: [
+              {
+                id: "call_patch_3",
+                type: "function",
+                function: {
+                  name: "apply_patch",
+                  arguments: JSON.stringify({ input: heredocPatch }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    { callIdMap: createCallIdMap(), customToolNames: new Set(["apply_patch"]) }
+  );
+  assert.equal(untouched.output[0].input, heredocPatch);
+}
+
+async function testCustomToolHeredocUnwrapSse() {
+  const state = createResponsesStreamState({
+    model: "grok-4.6",
+    customToolNames: new Set(["apply_patch"]),
+  });
+  const heredocPatch =
+    '*** Begin Patch\n*** Add File: hello.txt\n+hello world\n*** End Patch';
+  const events = [
+    ...unifiedChunkToResponsesEvents(
+      {
+        id: "chatcmpl-heredoc-sse",
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_patch",
+                  function: {
+                    name: "apply_patch",
+                    arguments: JSON.stringify({
+                      input: `<<EOF\n${heredocPatch}\nEOF`,
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      state
+    ),
+    ...finalizeResponsesStream(state),
+  ];
+
+  const done = events.find(
+    (event) => event.type === "response.custom_tool_call_input.done"
+  );
+  assert.equal(done.input, heredocPatch);
+  const itemDone = events.find(
+    (event) => event.type === "response.output_item.done"
+  );
+  assert.equal(itemDone.item.input, heredocPatch);
 }
 
 async function testExactTextSseLifecycle() {
@@ -898,6 +1539,147 @@ async function testOutputIndicesStayStableWhenTextFollowsTool() {
   assert.equal(completed.output[1].type, "message");
 }
 
+async function testTrailingTextAfterToolOpensNewMessageItem() {
+  // Regression: closing the preamble message before a tool call must not
+  // leave later text as output_text.delta against that already-done item.
+  const state = createResponsesStreamState({
+    model: "grok-4.6",
+    customToolNames: new Set(["apply_patch"]),
+  });
+  const events = [
+    ...unifiedChunkToResponsesEvents(
+      {
+        id: "chatcmpl-trail",
+        choices: [{ delta: { content: "I'll create the file." } }],
+      },
+      state
+    ),
+    ...unifiedChunkToResponsesEvents(
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_patch",
+                  function: {
+                    name: "apply_patch",
+                    arguments: '{"input":"*** Begin Patch\\n*** End Patch"}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      state
+    ),
+    ...unifiedChunkToResponsesEvents(
+      { choices: [{ delta: { content: "Done" } }] },
+      state
+    ),
+    ...finalizeResponsesStream(state),
+  ];
+
+  const messageAdds = events.filter(
+    (event) =>
+      event.type === "response.output_item.added" &&
+      event.item?.type === "message"
+  );
+  assert.equal(messageAdds.length, 2);
+  assert.equal(messageAdds[0].output_index, 0);
+  assert.equal(messageAdds[1].output_index, 2);
+
+  const trailingDeltas = events.filter(
+    (event) =>
+      event.type === "response.output_text.delta" && event.delta === "Done"
+  );
+  assert.equal(trailingDeltas.length, 1);
+  assert.equal(trailingDeltas[0].item_id, messageAdds[1].item.id);
+  assert.equal(trailingDeltas[0].output_index, 2);
+
+  const completed = events.at(-1).response;
+  assert.deepEqual(
+    completed.output.map((item: any) => item.type),
+    ["message", "custom_tool_call", "message"]
+  );
+  assert.equal(completed.output[0].content[0].text, "I'll create the file.");
+  assert.equal(completed.output[2].content[0].text, "Done");
+  assert.notEqual(completed.output[0].id, completed.output[2].id);
+}
+
+async function testTextItemClosesBeforeToolCallOpens() {
+  // Regression: a text preamble followed by a tool call in the same
+  // response must close the text item (in item-index order) before the
+  // tool call's own added/delta/done sequence begins. Previously the text
+  // item only closed at finalizeResponsesStream (end of stream), so the
+  // tool call's `output_item.added` was emitted live while the text item
+  // was still open — a client rendering items as they complete (e.g. the
+  // Codex/ChatGPT UI) could fail to render the tool call as a distinct
+  // block when items close out of their own start order.
+  const state = createResponsesStreamState({
+    model: "grok-4.6",
+    customToolNames: new Set(["apply_patch"]),
+  });
+  const events = [
+    ...unifiedChunkToResponsesEvents(
+      {
+        id: "chatcmpl-preamble",
+        choices: [{ delta: { content: "I'll create the file." } }],
+      },
+      state
+    ),
+    ...unifiedChunkToResponsesEvents(
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_patch",
+                  function: {
+                    name: "apply_patch",
+                    arguments: '{"input":"*** Begin Patch\\n*** End Patch"}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      state
+    ),
+    ...finalizeResponsesStream(state),
+  ];
+
+  const types = events.map((e) => e.type);
+  const textDoneIndex = types.indexOf("response.output_item.done");
+  const toolAddedIndex = types.findIndex(
+    (t, i) =>
+      t === "response.output_item.added" &&
+      (events[i] as any).item?.type === "custom_tool_call"
+  );
+  assert.ok(textDoneIndex !== -1, "text item must close");
+  assert.ok(toolAddedIndex !== -1, "tool call must open");
+  assert.ok(
+    textDoneIndex < toolAddedIndex,
+    `text item must close (index ${textDoneIndex}) before the tool call opens (index ${toolAddedIndex})`
+  );
+
+  const textItemDone = events[textDoneIndex] as any;
+  assert.equal(textItemDone.item.type, "message");
+  assert.equal(textItemDone.item.content[0].text, "I'll create the file.");
+
+  const toolCallDone = events.find(
+    (e) =>
+      e.type === "response.output_item.done" &&
+      (e as any).item?.type === "custom_tool_call"
+  ) as any;
+  assert.equal(toolCallDone.item.input, "*** Begin Patch\n*** End Patch");
+}
+
 async function testTransformerStreamIntegration() {
   const tf = new OpenAIResponsesTransformer();
   (tf as any).logger = { debug() {} };
@@ -997,6 +1779,187 @@ async function testCallIdMapPersistsInProtocolContext() {
   assert.ok(protocolContext.responsesCallIdMap);
 }
 
+async function testReasoningInputItemBecomesThinking() {
+  const unified = responsesRequestToUnified({
+    model: "m",
+    input: [
+      {
+        type: "reasoning",
+        id: "rs_1",
+        summary: [{ type: "summary_text", text: "I should read the file." }],
+        encrypted_content: "enc-sig",
+      },
+      {
+        type: "function_call",
+        call_id: "call_r",
+        name: "Read",
+        arguments: "{}",
+      },
+      { role: "user", content: "now continue" },
+    ],
+  });
+  const assistant = unified.messages.find((m: any) => m.role === "assistant");
+  assert.ok(assistant);
+  assert.equal(assistant.thinking?.content, "I should read the file.");
+  assert.equal(assistant.thinking?.encrypted_content, "enc-sig");
+  assert.equal(assistant.thinking?.id, "rs_1");
+  assert.equal(assistant.thinking?.signature, undefined);
+  assert.equal(assistant.tool_calls?.[0]?.id, "call_r");
+}
+
+async function testThinkingRoundTripsToResponsesReasoningItem() {
+  const responses = unifiedResponseToResponses({
+    id: "chatcmpl-think",
+    model: "gpt-4o",
+    created: 1,
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "done",
+          thinking: {
+            content: "plan first",
+            encrypted_content: "enc-blob",
+            id: "rs_plan",
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(responses.output[0].type, "reasoning");
+  assert.equal(responses.output[0].summary[0].text, "plan first");
+  assert.equal(responses.output[0].encrypted_content, "enc-blob");
+  assert.equal(responses.output[0].id, "rs_plan");
+  assert.equal(responses.output[1].type, "message");
+}
+
+async function testThinkingHistoryIsEmittedOnResponsesRequest() {
+  const tf = new OpenAIResponsesTransformer();
+  const result = await tf.transformRequestIn(
+    {
+      model: "grok-4.6",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "ok",
+          thinking: { content: "think aloud", signature: "sig-hist" },
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "Read", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "file" },
+      ],
+    } as any,
+    {},
+    {}
+  );
+  const input = (result as any).input;
+  const reasoning = input.find((item: any) => item.type === "reasoning");
+  assert.ok(reasoning, "thinking history must become a reasoning item");
+  assert.equal(reasoning.summary[0].text, "think aloud");
+  // Anthropic/Chat signatures are not Codex ciphertext — omit encrypted_content.
+  assert.equal(reasoning.encrypted_content, undefined);
+  assert.ok(input.every((item: any) => !item.thinking));
+  assert.ok(input.some((item: any) => item.type === "function_call"));
+}
+
+async function testPoisonedReasoningItemIdIsNotReplayedAsEncryptedContent() {
+  const tf = new OpenAIResponsesTransformer();
+  // Live Codex 400 shape: thinking.signature held a prior reasoning item id
+  // (`rs_0fbe4a00…`), which was then copied into encrypted_content.
+  const poisonedId = "rs_0fbe4a009e888583016a8258d857e081918ffc9d6f6f3e0d6c";
+  const result = await tf.transformRequestIn(
+    {
+      model: "gpt-5.6-sol",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "ok",
+          thinking: {
+            content: "I should check the logs",
+            signature: poisonedId,
+          },
+        },
+      ],
+    } as any,
+    {},
+    {}
+  );
+  const reasoning = (result as any).input.find((item: any) => item.type === "reasoning");
+  assert.ok(reasoning);
+  assert.equal(reasoning.summary[0].text, "I should check the logs");
+  assert.equal(reasoning.id, poisonedId);
+  assert.equal(reasoning.encrypted_content, undefined);
+}
+
+async function testChatReasoningContentHistoryBecomesResponsesReasoning() {
+  const tf = new OpenAIResponsesTransformer();
+  const result = await tf.transformRequestIn(
+    {
+      model: "grok-4.6",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "ok",
+          reasoning_content: "plan first",
+        },
+      ],
+    } as any,
+    {},
+    {}
+  );
+  const reasoning = (result as any).input.find((item: any) => item.type === "reasoning");
+  assert.ok(reasoning);
+  assert.equal(reasoning.summary[0].text, "plan first");
+  assert.ok((result as any).input.every((item: any) => !item.reasoning_content));
+}
+
+async function testStreamedThinkingLandsOnCompletedReasoningItem() {
+  const state = createResponsesStreamState({ model: "gpt-4o" });
+  const events = [
+    ...unifiedChunkToResponsesEvents(
+      {
+        id: "chatcmpl-th",
+        choices: [{ delta: { thinking: { content: "hmm" } } }],
+      },
+      state
+    ),
+    ...unifiedChunkToResponsesEvents(
+      {
+        choices: [
+          {
+            delta: {
+              thinking: {
+                encrypted_content: "enc-stream",
+                id: "rs_stream",
+              },
+            },
+          },
+        ],
+      },
+      state
+    ),
+    ...unifiedChunkToResponsesEvents(
+      { choices: [{ delta: { content: "answer" }, finish_reason: "stop" }] },
+      state
+    ),
+    ...finalizeResponsesStream(state),
+  ];
+  const completed = events.at(-1).response;
+  assert.equal(completed.output[0].type, "reasoning");
+  assert.equal(completed.output[0].summary[0].text, "hmm");
+  assert.equal(completed.output[0].encrypted_content, "enc-stream");
+  assert.equal(completed.output[0].id, "rs_stream");
+  assert.equal(completed.output[1].type, "message");
+}
+
 async function testClientTransformRequestOut() {
   const tf = new OpenAIResponsesTransformer();
   const context: any = {};
@@ -1052,19 +2015,38 @@ async function main() {
   await testParallelCustomToolCallsCoalesce();
   await testSequentialToolTurnsDoNotMerge();
   await testUnsupportedState();
+  await testResponseFormatConversion();
   await testReasoningAndTools();
   await testCustomHostedToolConvertsToFunction();
   await testJsonOutput();
   await testCustomToolSseLifecycle();
+  await testExecShellEnvelopeNormalizedOnStream();
+  await testExecCommandKeyVariantNormalized();
+  await testExecApplyPatchHeredocNormalized();
+  await testExecShellEnvelopeNormalizedOnJson();
+  await testExecFunctionToolWrapperNormalized();
+  await testExecToolDescriptionIsProviderNeutral();
+  await testCodexPatchMarkersNormalizedOnStream();
+  await testCodexPatchMarkersNormalizedOnJson();
   await testCustomToolHistoryInput();
+  await testCustomToolHeredocUnwrap();
+  await testCustomToolHeredocUnwrapSse();
   await testExactTextSseLifecycle();
   await testToolSseLifecycle();
   await testOutputIndicesStayStableWhenTextFollowsTool();
+  await testTrailingTextAfterToolOpensNewMessageItem();
+  await testTextItemClosesBeforeToolCallOpens();
   await testTransformerStreamIntegration();
   await testSeparateUsageChunkIsRetained();
   await testMalformedStreamBecomesFailedEvent();
   await testUpstreamStreamErrorBecomesFailedEvent();
   await testCallIdMapPersistsInProtocolContext();
+  await testReasoningInputItemBecomesThinking();
+  await testThinkingRoundTripsToResponsesReasoningItem();
+  await testThinkingHistoryIsEmittedOnResponsesRequest();
+  await testPoisonedReasoningItemIdIsNotReplayedAsEncryptedContent();
+  await testChatReasoningContentHistoryBecomesResponsesReasoning();
+  await testStreamedThinkingLandsOnCompletedReasoningItem();
   await testClientTransformRequestOut();
   console.log("openai.inbound-responses: PASS");
 }

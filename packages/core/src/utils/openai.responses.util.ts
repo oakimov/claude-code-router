@@ -140,13 +140,38 @@ export function responsesRequestToUnified(
       "invalid_request_error"
     );
   }
+  // Convert into the Chat Completions `response_format` shape (Unified IS
+  // Chat Completions) — a verified mapping for the two structured formats
+  // real backends (OpenAI/`codex`) actually support. Genuinely unknown
+  // format types still reject rather than risk a silent wrong conversion.
+  // Responses destinations reconstruct this into a native `text.format`
+  // on the outbound request (OpenAIResponsesTransformer and Codex). See
+  // customToolNames just below for the restore-only-for-codex pattern
+  // applied to freeform tools.
+  let responseFormat: any;
   if (body.text?.format && body.text.format.type !== "text") {
-    throw createApiError(
-      "Structured text formats are not supported without a verified mapping",
-      400,
-      "unsupported_response_format",
-      "invalid_request_error"
-    );
+    const format = body.text.format;
+    if (format.type === "json_schema") {
+      responseFormat = {
+        type: "json_schema",
+        json_schema: {
+          name: format.name,
+          schema: format.schema,
+          ...(format.strict !== undefined ? { strict: format.strict } : {}),
+        },
+      };
+    } else if (format.type === "json_object") {
+      responseFormat = { type: "json_object" };
+    } else {
+      throw createApiError(
+        `Structured text formats are not supported without a verified mapping (received text.format.type=${JSON.stringify(
+          format.type
+        )})`,
+        400,
+        "unsupported_response_format",
+        "invalid_request_error"
+      );
+    }
   }
   for (const field of [
     "metadata",
@@ -233,6 +258,10 @@ export function responsesRequestToUnified(
     (unified as any).prompt_cache_key = body.prompt_cache_key;
   }
 
+  if (responseFormat) {
+    (unified as any).response_format = responseFormat;
+  }
+
   return unified;
 }
 
@@ -294,22 +323,235 @@ function rejectUnsupportedResponsesState(body: any): void {
  * parallel tool_call. Responses emits consecutive function_call items, so merge
  * into the trailing tool-only assistant when present.
  */
+function assistantContentIsEmpty(message: any): boolean {
+  return (
+    message?.content === null ||
+    message?.content === undefined ||
+    message?.content === ""
+  );
+}
+
 function appendAssistantToolCall(messages: any[], toolCall: any): void {
   const last = messages[messages.length - 1];
-  if (
-    last &&
-    last.role === "assistant" &&
-    Array.isArray(last.tool_calls) &&
-    last.tool_calls.length > 0 &&
-    (last.content === null || last.content === undefined || last.content === "")
-  ) {
-    last.tool_calls.push(toolCall);
-    return;
+  if (last && last.role === "assistant" && assistantContentIsEmpty(last)) {
+    if (Array.isArray(last.tool_calls) && last.tool_calls.length > 0) {
+      last.tool_calls.push(toolCall);
+      return;
+    }
+    if (last.thinking && !last.tool_calls) {
+      last.tool_calls = [toolCall];
+      return;
+    }
   }
   messages.push({
     role: "assistant",
     content: null,
     tool_calls: [toolCall],
+  });
+}
+
+function reasoningSummaryText(item: any): string {
+  if (typeof item?.content === "string" && item.content) return item.content;
+  if (typeof item?.reasoning === "string" && item.reasoning) return item.reasoning;
+  if (!Array.isArray(item?.summary)) return "";
+  return item.summary
+    .map((part: any) =>
+      typeof part === "string" ? part : typeof part?.text === "string" ? part.text : ""
+    )
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Responses/Codex reasoning item ids look like `rs_<hex>` or `rs_<epoch>`. */
+const RESPONSES_REASONING_ITEM_ID = /^rs_[A-Za-z0-9]+$/;
+
+export function isResponsesReasoningItemId(value: unknown): value is string {
+  return typeof value === "string" && RESPONSES_REASONING_ITEM_ID.test(value);
+}
+
+/**
+ * Ciphertext Codex/OpenAI will verify. Item ids and Anthropic/Gemini
+ * signatures are not encrypted_content — replaying them 400s with
+ * `invalid_encrypted_content`.
+ */
+export function responsesEncryptedContentFrom(
+  value: unknown
+): string | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  if (isResponsesReasoningItemId(value)) return undefined;
+  return value;
+}
+
+export interface UnifiedAssistantThinking {
+  content: string;
+  signature?: string;
+  encrypted_content?: string;
+  id?: string;
+}
+
+/** Anthropic/Gemini thinking.signature — never a Responses item id. */
+export function anthropicThinkingSignatureFrom(
+  thinking: { signature?: string } | undefined
+): string | undefined {
+  const signature =
+    typeof thinking?.signature === "string" ? thinking.signature : "";
+  if (!signature || isResponsesReasoningItemId(signature)) return undefined;
+  return signature;
+}
+
+/** Responses `reasoning` item → Unified assistant.thinking. */
+export function thinkingFromResponsesReasoningItem(
+  item: any
+): UnifiedAssistantThinking | undefined {
+  if (!item || typeof item !== "object") return undefined;
+  const content = reasoningSummaryText(item);
+  const encrypted_content = responsesEncryptedContentFrom(item.encrypted_content);
+  const id =
+    typeof item.id === "string" && item.id
+      ? item.id
+      : isResponsesReasoningItemId(item.encrypted_content)
+        ? item.encrypted_content
+        : undefined;
+  if (!content && !encrypted_content && !id) return undefined;
+  return {
+    content,
+    ...(encrypted_content ? { encrypted_content } : {}),
+    ...(id ? { id } : {}),
+  };
+}
+
+/** Unified assistant.thinking → Responses `reasoning` input/output item. */
+export function thinkingFromUnifiedAssistant(
+  message: any
+): UnifiedAssistantThinking | undefined {
+  if (!message || typeof message !== "object") return undefined;
+  const fromThinking =
+    typeof message.thinking?.content === "string" ? message.thinking.content : "";
+  const fromReasoning =
+    typeof message.reasoning_content === "string" ? message.reasoning_content : "";
+  const content = fromThinking || fromReasoning;
+  const rawSignature =
+    typeof message.thinking?.signature === "string" && message.thinking.signature
+      ? message.thinking.signature
+      : undefined;
+  // Never copy thinking.signature into encrypted_content: Anthropic/Gemini
+  // signatures and Responses item ids are not Codex ciphertext.
+  const encrypted_content = responsesEncryptedContentFrom(
+    message.thinking?.encrypted_content
+  );
+  const id =
+    (typeof message.thinking?.id === "string" && message.thinking.id) ||
+    (isResponsesReasoningItemId(rawSignature) ? rawSignature : undefined) ||
+    (isResponsesReasoningItemId(message.thinking?.encrypted_content)
+      ? message.thinking.encrypted_content
+      : undefined);
+  const signature =
+    rawSignature && !isResponsesReasoningItemId(rawSignature)
+      ? rawSignature
+      : undefined;
+  if (!content && !signature && !encrypted_content && !id) return undefined;
+  return {
+    content,
+    ...(signature ? { signature } : {}),
+    ...(encrypted_content ? { encrypted_content } : {}),
+    ...(id ? { id } : {}),
+  };
+}
+
+/**
+ * Fixed assistant-turn order for every protocol:
+ * thinking → text → images → tool calls.
+ * Reordering here keeps cache prefixes stable across Anthropic, Chat,
+ * Responses, Gemini, and Mistral.
+ */
+export interface CanonicalAssistantTurn {
+  thinking?: UnifiedAssistantThinking;
+  texts: Array<{ text: string; cache_control?: any }>;
+  images: any[];
+  toolCalls: any[];
+}
+
+export function canonicalAssistantTurn(message: any): CanonicalAssistantTurn {
+  const texts: Array<{ text: string; cache_control?: any }> = [];
+  const images: any[] = [];
+  if (typeof message?.content === "string" && message.content) {
+    texts.push({ text: message.content });
+  } else if (Array.isArray(message?.content)) {
+    for (const part of message.content) {
+      if (!part || typeof part !== "object") continue;
+      if (
+        (part.type === "text" ||
+          part.type === "output_text" ||
+          part.type === "input_text") &&
+        part.text
+      ) {
+        texts.push({
+          text: part.text,
+          ...(part.cache_control ? { cache_control: part.cache_control } : {}),
+        });
+      } else if (part.type === "image_url" || part.type === "input_image" || part.type === "output_image") {
+        images.push(part);
+      }
+    }
+  }
+  return {
+    thinking: thinkingFromUnifiedAssistant(message),
+    texts,
+    images,
+    toolCalls: Array.isArray(message?.tool_calls) ? message.tool_calls : [],
+  };
+}
+
+export function assistantTurnHasText(turn: CanonicalAssistantTurn): boolean {
+  return turn.texts.some((part) => part.text.length > 0);
+}
+
+export function responsesReasoningItemFromThinking(
+  thinking:
+    | {
+        content?: string;
+        signature?: string;
+        encrypted_content?: string;
+        id?: string;
+      }
+    | undefined,
+  id?: string
+): any | null {
+  if (!thinking || typeof thinking !== "object") return null;
+  const content = typeof thinking.content === "string" ? thinking.content : "";
+  const encrypted_content = responsesEncryptedContentFrom(
+    thinking.encrypted_content
+  );
+  // Only an id carried on the thinking object itself (or real ciphertext /
+  // summary text) justifies emitting a reasoning item. The optional `id`
+  // argument is a preferred label for that item, not a reason to invent one
+  // — otherwise skeletonResponse always minting `rs_${responseId}` would
+  // prepend an empty reasoning item on every completed stream.
+  const thinkingId =
+    typeof thinking.id === "string" && thinking.id ? thinking.id : undefined;
+  if (!content && !encrypted_content && !thinkingId) return null;
+  const item: any = {
+    type: "reasoning",
+    id: thinkingId || id || `rs_${Date.now()}`,
+    summary: content ? [{ type: "summary_text", text: content }] : [],
+  };
+  if (encrypted_content) item.encrypted_content = encrypted_content;
+  return item;
+}
+
+function attachThinkingToAssistant(
+  messages: any[],
+  thinking: UnifiedAssistantThinking
+): void {
+  const last = messages[messages.length - 1];
+  if (last && last.role === "assistant") {
+    last.thinking = thinking;
+    return;
+  }
+  messages.push({
+    role: "assistant",
+    content: null,
+    thinking,
   });
 }
 
@@ -325,6 +567,12 @@ function appendInputItem(
       "invalid_input_item",
       "invalid_request_error"
     );
+  }
+
+  if (item.type === "reasoning") {
+    const thinking = thinkingFromResponsesReasoningItem(item);
+    if (thinking) attachThinkingToAssistant(messages, thinking);
+    return;
   }
 
   if (item.type === "function_call_output") {
@@ -588,19 +836,163 @@ function flattenResponsesContent(content: unknown): any {
  * through the Unified/Chat Completions function-call shape. */
 export const CUSTOM_TOOL_INPUT_KEY = "input";
 
+/**
+ * Custom/freeform tools have no native concept on models that were never
+ * trained on OpenAI's Responses `type: "custom"` grammar tool (only OpenAI's
+ * own backend and a handful of Responses-compatible hosts support it — see
+ * openai/codex#19416, where Codex itself falls back to a plain function tool
+ * for Bedrock-hosted models for the same reason). Proxying through a single
+ * JSON string parameter (CUSTOM_TOOL_INPUT_KEY) works, but a model
+ * unfamiliar with the convention sometimes reaches for the nearest thing it
+ * does know: invoking the tool as if it were a shell command, wrapping its
+ * freeform text in a bash heredoc. Unwrap that here so the client (Codex
+ * CLI's own apply_patch parser, etc.) receives clean freeform text instead
+ * of a heredoc-wrapped shell fragment. Mirrors opencode's stripHeredoc
+ * (packages/opencode/src/patch/index.ts) — purely syntactic: only fires when
+ * the *entire* input matches the wrapper pattern, so genuine patch/tool
+ * content is never touched.
+ */
+function stripHeredocWrapper(text: string): string {
+  const match = text.match(/^(?:cat\s+)?<<['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\1\s*$/);
+  return match ? match[2] : text;
+}
+
+/**
+ * Codex's apply_patch/apply_update grammar accepts only the exact markers
+ * `*** Begin Patch` and `*** End Patch` (no trailing asterisk triplet) as the
+ * first/last patch lines — anything else is rejected with "The first line of
+ * the patch must be '*** Begin Patch'". Models not trained on that grammar
+ * (e.g. Grok reaches for Claude's trailing-asterisk variant) emit
+ * `*** Begin Patch ***` / `*** End Patch ***`. Normalize those to the Codex
+ * form on the client-facing emission, scoped by the marker token itself so a
+ * rewrite can only ever hit an apply_patch-style payload regardless of the
+ * declared tool name.
+ */
+export function normalizeCodexPatchMarkers(text: string): string {
+  if (!text.includes("*** Begin Patch ***") && !text.includes("*** End Patch ***")) {
+    return text;
+  }
+  return text
+    .split("*** Begin Patch ***").join("*** Begin Patch")
+    .split("*** End Patch ***").join("*** End Patch");
+}
+
+/**
+ * Codex's `exec` tool runs raw JavaScript in a V8 isolate; a model that was
+ * never trained on that convention (Grok) sometimes fills the freeform input
+ * with a JSON shell-envelope instead — e.g. `{"cmd": "ls -la /tmp"}`. That is
+ * not valid JS (`{"cmd":…}` parses as a block with a string label →
+ * `SyntaxError: Unexpected token ':'`), so the shell call fails and the model
+ * wastes a turn retrying as `await tools.exec_command({cmd: …})`.
+ * Rewrite the envelope into exactly that retry shape on the client-facing
+ * emission. Scoped by the tool name and the whole-input-is-a-shell-object
+ * shape so a freeform tool that legitimately takes a JSON blob is never
+ * touched. Grok also alternates the key between `cmd` and `command`, and
+ * `exec_command` only accepts `cmd`, so normalize either to `cmd`.
+ */
+export function normalizeExecCommandEnvelope(
+  name: string | undefined,
+  text: string
+): string {
+  if (name !== "exec") return text;
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return text;
+  let parsed: any;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return text;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return text;
+  }
+  const commandKey = "cmd" in parsed ? "cmd" : "command" in parsed ? "command" : null;
+  if (!commandKey) return text;
+  const command = parsed[commandKey];
+  if (typeof command !== "string" || !command) return text;
+  delete parsed[commandKey];
+  parsed.cmd = command;
+  return `await tools.exec_command(${JSON.stringify(parsed)});`;
+}
+
+/**
+ * A model that reaches for the patch tool through a shell hereditary habit
+ * wraps the patch in a heredoc instead of JS:
+ *   apply_patch << 'PATCH'\n*** Begin Patch … *** End Patch\nPATCH
+ * That is a shell command, not the raw JS `exec` runs, so it fails with a
+ * syntax error and the model wastes a turn retrying as
+ * `await tools.apply_patch(…)`. Normalize the heredoc invocation into the JS
+ * call form. Whole-value heredoc match only; anything else passes through.
+ */
+export function normalizeExecApplyPatchHeredoc(
+  name: string | undefined,
+  text: string
+): string {
+  if (name !== "exec") return text;
+  const match = text.match(
+    /^apply_patch\s*<<\s*['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\1\s*$/
+  );
+  if (!match) return text;
+  return `await tools.apply_patch(${JSON.stringify(match[2])});`;
+}
+
+/**
+ * `exec` may cross the wire as a plain function tool (arguments stay the JSON
+ * wrapper `{"input":"…"}`) rather than a custom tool (whose freeform input was
+ * unwrapped already). The envelope/heredoc normalizers above operate on the
+ * unwrapped inner text, so when only the wrapper is available, descend into it
+ * and normalize its inner `input` value with the same rules.
+ */
+export function normalizeExecFunctionArguments(
+  name: string | undefined,
+  rawArguments: string
+): string {
+  if (name !== "exec") return rawArguments;
+  try {
+    const parsed = JSON.parse(rawArguments);
+    if (parsed && typeof parsed === "object" && typeof parsed.input === "string") {
+      parsed.input = normalizeExecApplyPatchHeredoc(
+        name,
+        normalizeExecCommandEnvelope(name, parsed.input)
+      );
+      return JSON.stringify(parsed);
+    }
+  } catch {
+    // Not the {"input": …} wrapper; leave untouched.
+  }
+  return rawArguments;
+}
+
 /** Undo the CUSTOM_TOOL_INPUT_KEY wrapping applied in normalizeResponsesTools.
  * Falls back to the raw text so a malformed/empty call still round-trips
- * instead of vanishing. */
-function unwrapCustomToolInput(rawArguments: string): string {
+ * instead of vanishing. Exported so CodexTransformer can reuse the same
+ * unwrap+heredoc-strip logic when reconstructing native `custom_tool_call`
+ * history for the real OpenAI backend. */
+export function unwrapCustomToolInput(rawArguments: string): string {
   if (!rawArguments) return "";
   try {
     const parsed = JSON.parse(rawArguments);
     const value = parsed?.[CUSTOM_TOOL_INPUT_KEY];
-    if (typeof value === "string") return value;
+    if (typeof value === "string") return stripHeredocWrapper(value);
   } catch {
     // Fall through to the raw text below.
   }
-  return rawArguments;
+  return stripHeredocWrapper(rawArguments);
+}
+
+/** Client-facing custom-tool input: unwrap the Unified JSON wrapper, then
+ * apply the exec/patch normalizers in one place so stream finalize, the
+ * completed skeleton, and the non-stream JSON path cannot drift. */
+export function normalizeClientCustomToolInput(
+  name: string | undefined,
+  rawArguments: string
+): string {
+  return normalizeCodexPatchMarkers(
+    normalizeExecApplyPatchHeredoc(
+      name,
+      normalizeExecCommandEnvelope(name, unwrapCustomToolInput(rawArguments))
+    )
+  );
 }
 
 function normalizeResponsesTools(
@@ -650,18 +1042,38 @@ function normalizeResponsesTools(
       // JSON-shaped arguments the tool never asked for. The response side
       // (unifiedChunkToResponsesEvents/unifiedResponseToResponses) unwraps
       // this key and re-emits a genuine `custom_tool_call` item.
+      //
+      // A model that was never trained on this convention (anything but
+      // OpenAI's own — see the codex/Bedrock precedent in
+      // stripHeredocWrapper's comment above) has to solve two problems at
+      // once: get the tool's own freeform grammar right, *and* figure out
+      // this JSON-wrapping detour. The property/function descriptions below
+      // spell out the wrapping explicitly so the model only has to solve the
+      // first problem — this is prompt guidance, not a content rewrite, so
+      // it's as safe as the heredoc strip: it only changes what the model is
+      // told, never what a well-formed call's content means.
       customToolNames?.add(name);
+      const baseDescription = t.description || t.function?.description || "";
+      // Provider-neutral contract only. Codex V8 calling conventions
+      // (`await tools.exec_command`, `await tools.apply_patch`) stay off
+      // this description so Anthropic and Chat Completions backends are
+      // not prompted as if they were Codex's isolate. Recovery of
+      // `{cmd:…}` / heredoc / trailing-asterisk markers happens on the
+      // Responses client emission (normalizeClientCustomToolInput).
       return {
         type: "function" as const,
         function: {
           name,
-          description: t.description || t.function?.description,
+          description: baseDescription
+            ? `${baseDescription}\n\nNote: this tool takes freeform text, not JSON. Call it with a single "${CUSTOM_TOOL_INPUT_KEY}" argument whose value is the complete text described above, as a plain string — do not add markdown code fences, a shell heredoc (e.g. "<<EOF"), or any other wrapping around it.`
+            : baseDescription,
           parameters: {
             type: "object",
             properties: {
               [CUSTOM_TOOL_INPUT_KEY]: {
                 type: "string",
-                description: "The freeform text/code input for this tool.",
+                description:
+                  "The complete freeform text/code input for this tool, exactly as described in the tool description — as a plain string, with no markdown code fences or shell heredoc wrapping.",
               },
             },
             required: [CUSTOM_TOOL_INPUT_KEY],
@@ -739,6 +1151,12 @@ export function unifiedResponseToResponses(
   const message = choice?.message || {};
   const output: any[] = [];
 
+  const reasoningItem = responsesReasoningItemFromThinking(
+    thinkingFromUnifiedAssistant(message),
+    chat?.id ? `rs_${chat.id}` : undefined
+  );
+  if (reasoningItem) output.push(reasoningItem);
+
   const text =
     typeof message.content === "string"
       ? message.content
@@ -782,7 +1200,10 @@ export function unifiedResponseToResponses(
           id: callId,
           call_id: callId,
           name: tc.function.name,
-          input: unwrapCustomToolInput(rawArguments),
+          input: normalizeClientCustomToolInput(
+            tc.function.name,
+            rawArguments
+          ),
         });
         continue;
       }
@@ -791,7 +1212,9 @@ export function unifiedResponseToResponses(
         id: callId,
         call_id: callId,
         name: tc.function.name,
-        arguments: rawArguments,
+        arguments: normalizeCodexPatchMarkers(
+          normalizeExecFunctionArguments(tc.function.name, rawArguments)
+        ),
         status: "completed",
       });
     }
@@ -815,8 +1238,14 @@ export interface ResponsesStreamState {
   model?: string;
   textItemId: string;
   textStarted: boolean;
+  textClosed: boolean;
   textOutputIndex?: number;
   textContent: string;
+  closedTextItems: Array<{
+    id: string;
+    outputIndex: number;
+    content: string;
+  }>;
   toolCalls: Map<
     number,
     {
@@ -837,6 +1266,9 @@ export interface ResponsesStreamState {
   usage?: any;
   callIdMap: ResponsesCallIdMap;
   customToolNames: Set<string>;
+  thinkingContent: string;
+  thinkingEncryptedContent?: string;
+  thinkingId?: string;
 }
 
 export function createResponsesStreamState(
@@ -852,7 +1284,9 @@ export function createResponsesStreamState(
     model: options?.model,
     textItemId: `msg_${id}`,
     textStarted: false,
+    textClosed: false,
     textContent: "",
+    closedTextItems: [],
     toolCalls: new Map(),
     nextOutputIndex: 0,
     finished: false,
@@ -861,6 +1295,7 @@ export function createResponsesStreamState(
     finishReasonSeen: false,
     callIdMap: options?.callIdMap ?? createCallIdMap(),
     customToolNames: options?.customToolNames ?? new Set<string>(),
+    thinkingContent: "",
   };
 }
 
@@ -880,6 +1315,68 @@ function appendCreatedEvent(
   events.push({
     type: "response.created",
     response: skeletonResponse(state, "in_progress"),
+  });
+}
+
+/**
+ * Close the text (message) item's Responses lifecycle — idempotent via
+ * textClosed. Must run before a tool call's `output_item.added` whenever a
+ * text preamble preceded it: Responses items are an ordered array by
+ * output_index, and a client (e.g. the Codex/ChatGPT UI) that renders items
+ * as they complete expects item N to close before item N+1 opens. Previously
+ * this only ran at finalizeResponsesStream (end of stream), so a tool call
+ * arriving after a text preamble got its `added` event emitted live while
+ * the text item was still open, and the text item's `.done` events only
+ * followed at the very end, after the tool call's own added/delta/done
+ * sequence had already interleaved with it — a real client can silently
+ * fail to render the tool call as a distinct block when items close out of
+ * their own start order.
+ */
+function closeTextItem(state: ResponsesStreamState, events: any[]): void {
+  if (!state.textStarted || state.textClosed) return;
+  state.textClosed = true;
+  events.push({
+    type: "response.output_text.done",
+    item_id: state.textItemId,
+    output_index: state.textOutputIndex,
+    content_index: 0,
+    text: state.textContent,
+    logprobs: [],
+  });
+  events.push({
+    type: "response.content_part.done",
+    item_id: state.textItemId,
+    output_index: state.textOutputIndex,
+    content_index: 0,
+    part: {
+      type: "output_text",
+      text: state.textContent,
+      annotations: [],
+      logprobs: [],
+    },
+  });
+  events.push({
+    type: "response.output_item.done",
+    output_index: state.textOutputIndex,
+    item: {
+      type: "message",
+      id: state.textItemId,
+      status: "completed",
+      role: "assistant",
+      content: [
+        {
+          type: "output_text",
+          text: state.textContent,
+          annotations: [],
+          logprobs: [],
+        },
+      ],
+    },
+  });
+  state.closedTextItems.push({
+    id: state.textItemId,
+    outputIndex: state.textOutputIndex ?? 0,
+    content: state.textContent,
   });
 }
 
@@ -916,12 +1413,42 @@ export function unifiedChunkToResponsesEvents(
     state.toolCalls.size === 0 &&
     (typeof delta.content === "string" ||
       Array.isArray(delta.tool_calls) ||
+      delta.thinking?.content ||
+      delta.thinking?.encrypted_content ||
+      delta.thinking?.id ||
       choice?.finish_reason)
   ) {
     appendCreatedEvent(state, events);
   }
 
+  if (delta.thinking?.content) {
+    state.thinkingContent += delta.thinking.content;
+  }
+  const encrypted_content = responsesEncryptedContentFrom(
+    delta.thinking?.encrypted_content
+  );
+  if (encrypted_content) {
+    state.thinkingEncryptedContent = encrypted_content;
+  }
+  if (typeof delta.thinking?.id === "string" && delta.thinking.id) {
+    state.thinkingId = delta.thinking.id;
+  } else if (isResponsesReasoningItemId(delta.thinking?.signature)) {
+    // Heal Unified chunks that still stash a reasoning item id on signature.
+    state.thinkingId = delta.thinking.signature;
+  }
+
   if (typeof delta.content === "string" && delta.content.length > 0) {
+    if (state.textClosed) {
+      // The previous message item already completed (a tool call opened
+      // after the preamble). Trailing text is a new output item — emitting
+      // more output_text.delta against the closed item leaves a live
+      // lifecycle the Codex/ChatGPT UI never sees.
+      state.textStarted = false;
+      state.textClosed = false;
+      state.textContent = "";
+      state.textItemId = `msg_${state.responseId}_${state.nextOutputIndex}`;
+      state.textOutputIndex = undefined;
+    }
     if (!state.textStarted) {
       state.textStarted = true;
       state.textOutputIndex = state.nextOutputIndex++;
@@ -953,6 +1480,12 @@ export function unifiedChunkToResponsesEvents(
       delta: delta.content,
       logprobs: [],
     });
+  }
+
+  if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
+    // A text preamble must fully close (in item-index order) before a tool
+    // call's own added/delta/done sequence begins — see closeTextItem.
+    closeTextItem(state, events);
   }
 
   if (Array.isArray(delta.tool_calls)) {
@@ -1055,50 +1588,14 @@ export function finalizeResponsesStream(
   const events: any[] = [];
   appendCreatedEvent(state, events);
 
-  if (state.textStarted) {
-    events.push({
-      type: "response.output_text.done",
-      item_id: state.textItemId,
-      output_index: state.textOutputIndex,
-      content_index: 0,
-      text: state.textContent,
-      logprobs: [],
-    });
-    events.push({
-      type: "response.content_part.done",
-      item_id: state.textItemId,
-      output_index: state.textOutputIndex,
-      content_index: 0,
-      part: {
-        type: "output_text",
-        text: state.textContent,
-        annotations: [],
-        logprobs: [],
-      },
-    });
-    events.push({
-      type: "response.output_item.done",
-      output_index: state.textOutputIndex,
-      item: {
-        type: "message",
-        id: state.textItemId,
-        status: "completed",
-        role: "assistant",
-        content: [
-          {
-            type: "output_text",
-            text: state.textContent,
-            annotations: [],
-            logprobs: [],
-          },
-        ],
-      },
-    });
-  }
+  closeTextItem(state, events);
 
   for (const entry of state.toolCalls.values()) {
     if (entry.isCustom) {
-      const input = unwrapCustomToolInput(entry.arguments);
+      const input = normalizeClientCustomToolInput(
+        entry.name,
+        entry.arguments
+      );
       events.push({
         type: "response.custom_tool_call_input.delta",
         item_id: entry.id,
@@ -1124,12 +1621,15 @@ export function finalizeResponsesStream(
       });
       continue;
     }
+    const clientArguments = normalizeCodexPatchMarkers(
+      normalizeExecFunctionArguments(entry.name, entry.arguments)
+    );
     events.push({
       type: "response.function_call_arguments.done",
       item_id: entry.id,
       output_index: entry.outputIndex,
       name: entry.name,
-      arguments: entry.arguments,
+      arguments: clientArguments,
     });
     events.push({
       type: "response.output_item.done",
@@ -1139,7 +1639,7 @@ export function finalizeResponsesStream(
         id: entry.id,
         call_id: entry.id,
         name: entry.name,
-        arguments: entry.arguments,
+        arguments: clientArguments,
         status: "completed",
       },
     });
@@ -1160,7 +1660,29 @@ function skeletonResponse(
   usage?: any
 ): any {
   const indexedOutput: Array<{ index: number; item: any }> = [];
-  if (state.textStarted || state.textContent) {
+  for (const closed of state.closedTextItems) {
+    indexedOutput.push({
+      index: closed.outputIndex,
+      item: {
+        type: "message",
+        id: closed.id,
+        status: status === "completed" ? "completed" : "in_progress",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: closed.content,
+            annotations: [],
+            logprobs: [],
+          },
+        ],
+      },
+    });
+  }
+  if (
+    (state.textStarted || state.textContent) &&
+    !state.closedTextItems.some((item) => item.id === state.textItemId)
+  ) {
     indexedOutput.push({
       index: state.textOutputIndex ?? 0,
       item: {
@@ -1188,14 +1710,19 @@ function skeletonResponse(
             id: entry.id,
             call_id: entry.id,
             name: entry.name,
-            input: unwrapCustomToolInput(entry.arguments),
+            input: normalizeClientCustomToolInput(
+              entry.name,
+              entry.arguments
+            ),
           }
         : {
             type: "function_call",
             id: entry.id,
             call_id: entry.id,
             name: entry.name,
-            arguments: entry.arguments,
+            arguments: normalizeCodexPatchMarkers(
+              normalizeExecFunctionArguments(entry.name, entry.arguments)
+            ),
             status: status === "completed" ? "completed" : "in_progress",
           },
     });
@@ -1203,6 +1730,15 @@ function skeletonResponse(
   const output = indexedOutput
     .sort((left, right) => left.index - right.index)
     .map(({ item }) => item);
+  const reasoningItem = responsesReasoningItemFromThinking(
+    {
+      content: state.thinkingContent,
+      encrypted_content: state.thinkingEncryptedContent,
+      id: state.thinkingId,
+    },
+    state.thinkingId || `rs_${state.responseId}`
+  );
+  if (reasoningItem) output.unshift(reasoningItem);
 
   return {
     id: state.responseId,

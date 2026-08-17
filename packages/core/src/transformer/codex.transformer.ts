@@ -18,6 +18,17 @@ import {
   isReasoningDisabled,
   normalizeReasoningEffort,
 } from "../utils/reasoning-effort";
+import {
+  CUSTOM_TOOL_INPUT_KEY,
+  assistantTurnHasText,
+  canonicalAssistantTurn,
+  isResponsesReasoningItemId,
+  responsesEncryptedContentFrom,
+  responsesReasoningItemFromThinking,
+  thinkingFromResponsesReasoningItem,
+  thinkingFromUnifiedAssistant,
+  unwrapCustomToolInput,
+} from "../utils/openai.responses.util";
 
 const PAT_METADATA_TTL_MS = 5 * 60 * 1000;
 const whoamiCache = new Map<
@@ -52,6 +63,9 @@ interface ResponsesAPIOutputItem {
   call_id?: string;
   name?: string;
   arguments?: string;
+  /** Freeform text for a `custom_tool_call` item (parallel to `arguments`
+   * for `function_call`). */
+  input?: string;
   content?: Array<{
     type: string;
     text?: string;
@@ -91,6 +105,8 @@ interface ResponsesStreamEvent {
   item_id?: string;
   output_index?: number;
   text?: string;
+  /** Full freeform text on a `response.custom_tool_call_input.done` event. */
+  input?: string;
   delta?:
     | string
     | {
@@ -103,6 +119,9 @@ interface ResponsesStreamEvent {
     type?: string;
     call_id?: string;
     name?: string;
+    /** Freeform text for a `custom_tool_call` item (parallel to `arguments`
+     * for `function_call`). */
+    input?: string;
     content?: Array<{
       type: string;
       text?: string;
@@ -152,6 +171,51 @@ const CODEX_SESSION_ID_KEY = "session_id";
 const CODEX_THREAD_ID_KEY = "thread_id";
 const CODEX_TURN_ID_KEY = "turn_id";
 const CODEX_WINDOW_ID_KEY = "window_id";
+
+/**
+ * Reads the set of tool names the client's inbound `type: "custom"` tools
+ * were flattened from, set by OpenAIResponsesTransformer.transformRequestOut
+ * (openai.responses.transformer.ts:130-145). Mirrors the same 3-way context
+ * fallback chain that transformer's own transformResponseIn already uses
+ * (openai.responses.transformer.ts:163-167), so this works whether the
+ * request arrived via the normal route pipeline or a direct transformer
+ * call. Real OpenAI natively supports `type: "custom"` (unlike xAI/Bedrock/
+ * other Responses-compatible backends), so the codex provider is the one
+ * destination where reconstructing the native tool shape is a pure win.
+ */
+function createToolIndexFor() {
+  const toolIndexByKey = new Map<string, number>();
+  let nextToolIndex = 0;
+  return (data: ResponsesStreamEvent): number => {
+    const key =
+      data.item_id ||
+      data.item?.id ||
+      (typeof data.output_index === "number"
+        ? `output:${data.output_index}`
+        : undefined);
+    if (key !== undefined) {
+      const existing = toolIndexByKey.get(key);
+      if (existing !== undefined) return existing;
+      const index = nextToolIndex++;
+      toolIndexByKey.set(key, index);
+      return index;
+    }
+    return nextToolIndex++;
+  };
+}
+
+function customToolInputKey(data: ResponsesStreamEvent): string {
+  return data.item_id || data.item?.id || data.item?.call_id || "";
+}
+
+function getCustomToolNames(context: any): Set<string> {
+  return (
+    context?.responsesCustomToolNames ||
+    context?.protocolContext?.responsesCustomToolNames ||
+    context?.req?.protocolContext?.responsesCustomToolNames ||
+    new Set<string>()
+  );
+}
 
 function getCodexOsType(): string {
   switch (osPlatform()) {
@@ -365,12 +429,41 @@ export class CodexTransformer implements Transformer {
       (request as any).verbosity = provider.verbosity;
     }
 
+    // Restore native structured output for the real OpenAI backend. The
+    // client's Responses `text.format` was converted to the Chat Completions
+    // `response_format` shape on the inbound leg (openai.responses.util.ts)
+    // since Unified is Chat-Completions-shaped; only codex reconstructs it
+    // back — same restore-only-for-codex pattern as the custom tool type.
+    const responseFormat = (request as any).response_format;
+    if (responseFormat) {
+      const format =
+        responseFormat.type === "json_schema"
+          ? {
+              type: "json_schema",
+              name: responseFormat.json_schema?.name,
+              schema: responseFormat.json_schema?.schema,
+              ...(responseFormat.json_schema?.strict !== undefined
+                ? { strict: responseFormat.json_schema.strict }
+                : {}),
+            }
+          : { type: responseFormat.type };
+      (request as any).text = { ...(request as any).text, format };
+    }
+    delete (request as any).response_format;
+
     request = applyRequestCacheKey(request, context);
     const messages = validateOpenAIToolCalls(request.messages);
     request.messages = messages;
 
     const input: any[] = [];
     let lastWasTool = false;
+    const customToolNames = getCustomToolNames(context);
+    // Populated while walking assistant tool_calls below (messages arrive in
+    // causal order, so a custom tool's call is always seen before its
+    // matching tool-result message) so the tool-role branch knows whether to
+    // emit custom_tool_call_output vs. function_call_output — a Unified
+    // tool-role message only carries tool_call_id, not the tool name.
+    const customToolCallIds = new Set<string>();
 
     const systemMessages = request.messages.filter(
       (msg) => msg.role === "system"
@@ -393,6 +486,27 @@ export class CodexTransformer implements Transformer {
       }
       if (instructionsText) {
         (request as any).instructions = instructionsText;
+      }
+    }
+    for (const extraSystem of systemMessages.slice(1)) {
+      const text = Array.isArray(extraSystem.content)
+        ? extraSystem.content
+            .map((item: any) =>
+              typeof item === "string"
+                ? item
+                : item && typeof item === "object" && "text" in item
+                  ? (item as { text: string }).text
+                  : ""
+            )
+            .filter(Boolean)
+            .join("\n")
+        : String(extraSystem.content || "");
+      if (text) {
+        input.push({
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text }],
+        });
       }
     }
 
@@ -419,10 +533,20 @@ export class CodexTransformer implements Transformer {
       }
 
       if (message.role === "tool") {
+        const callId =
+          sanitizeResponsesCallId(message.tool_call_id) ?? message.tool_call_id;
+        if (callId && customToolCallIds.has(callId)) {
+          input.push({
+            type: "custom_tool_call_output",
+            call_id: callId,
+            output: message.content,
+          });
+          lastWasTool = true;
+          return;
+        }
         const toolMessage: any = { ...message };
         toolMessage.type = "function_call_output";
-        toolMessage.call_id =
-          sanitizeResponsesCallId(message.tool_call_id) ?? message.tool_call_id;
+        toolMessage.call_id = callId;
         toolMessage.output = message.content;
         delete toolMessage.cache_control;
         delete toolMessage.role;
@@ -433,17 +557,48 @@ export class CodexTransformer implements Transformer {
         return;
       }
 
-      if (message.role === "assistant" && Array.isArray(message.tool_calls)) {
-        lastWasTool = false;
-        message.tool_calls.forEach((tool) => {
-          input.push({
-            type: "function_call",
-            arguments: tool.function.arguments,
-            name: tool.function.name,
-            call_id: sanitizeResponsesCallId(tool.id) ?? tool.id,
-          });
-        });
-        return;
+      if (message.role === "assistant") {
+        const turn = canonicalAssistantTurn(message);
+        if (turn.thinking || turn.toolCalls.length) {
+          lastWasTool = false;
+          const reasoningItem = responsesReasoningItemFromThinking(turn.thinking);
+          if (reasoningItem) input.push(reasoningItem);
+          if (assistantTurnHasText(turn) || turn.images.length) {
+            input.push({
+              type: "message",
+              role: "assistant",
+              content:
+                turn.images.length > 0
+                  ? message.content
+                  : [
+                      {
+                        type: "output_text",
+                        text: turn.texts.map((part) => part.text).join("\n"),
+                      },
+                    ],
+            });
+          }
+          for (const tool of turn.toolCalls) {
+            const callId = sanitizeResponsesCallId(tool.id) ?? tool.id;
+            if (customToolNames.has(tool.function.name)) {
+              customToolCallIds.add(callId);
+              input.push({
+                type: "custom_tool_call",
+                name: tool.function.name,
+                call_id: callId,
+                input: unwrapCustomToolInput(tool.function.arguments),
+              });
+              continue;
+            }
+            input.push({
+              type: "function_call",
+              arguments: tool.function.arguments,
+              name: tool.function.name,
+              call_id: callId,
+            });
+          }
+          if (turn.toolCalls.length || turn.thinking) return;
+        }
       }
 
       if (lastWasTool && message.role === "user") {
@@ -489,6 +644,19 @@ export class CodexTransformer implements Transformer {
       (request as any).tools = request.tools
         .filter((tool) => tool.function.name !== "web_search")
         .map((tool) => {
+          if (customToolNames.has(tool.function.name)) {
+            // Real OpenAI natively supports the freeform `custom` tool type
+            // (unlike xAI/Bedrock/other Responses-compatible backends) —
+            // restore it instead of the generic JSON-schema function-tool
+            // proxy normalizeResponsesTools built for the inbound leg. No
+            // `parameters` key: custom tools take unconstrained freeform
+            // text, not a JSON schema.
+            return {
+              type: "custom",
+              name: tool.function.name,
+              description: tool.function.description,
+            };
+          }
           if (tool.function.name === "WebSearch") {
             delete tool.function.parameters.properties.allowed_domains;
           }
@@ -797,6 +965,8 @@ export class CodexTransformer implements Transformer {
 
       let currentIndex = -1;
       let lastEventType = "";
+      const customToolInputByItemId = new Map<string, string>();
+      const toolIndexFor = createToolIndexFor();
 
       const getCurrentIndex = (eventType: string) => {
         if (eventType !== lastEventType) {
@@ -825,7 +995,7 @@ export class CodexTransformer implements Transformer {
               if (data.response?.model) {
                 observedModel = data.response.model;
               }
-              const chunk = codexTransformer.convertStreamEvent(data, getCurrentIndex, resolveModel);
+              const chunk = codexTransformer.convertStreamEvent(data, getCurrentIndex, resolveModel, customToolInputByItemId, toolIndexFor);
               if (chunk) {
                 ctx.controller.enqueue(encodeSSEData(JSON.stringify(chunk), ctx.encoder));
               }
@@ -933,6 +1103,8 @@ export class CodexTransformer implements Transformer {
         const encoder = new TextEncoder();
         let index = -1;
         let lastEventType = "";
+        const customToolInputByItemId = new Map<string, string>();
+        const toolIndexFor = createToolIndexFor();
         const getCurrentIndex = (eventType: string) => {
           if (eventType !== lastEventType) {
             index++;
@@ -947,7 +1119,7 @@ export class CodexTransformer implements Transformer {
               if (event?.response?.model) {
                 observedModel = event.response.model;
               }
-              const chunk = codexTransformer.convertStreamEvent(event, getCurrentIndex, resolveModel);
+              const chunk = codexTransformer.convertStreamEvent(event, getCurrentIndex, resolveModel, customToolInputByItemId, toolIndexFor);
               if (chunk) {
                 controller.enqueue(
                   encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`)
@@ -968,18 +1140,35 @@ export class CodexTransformer implements Transformer {
 
       if (jsonResponse.object === "response" && jsonResponse.output) {
         const chatResponse = this.convertResponseToChat(jsonResponse);
-        return new Response(JSON.stringify(chatResponse), {
+        const bodyJson = JSON.stringify(chatResponse);
+        if (reqId && wantsStream) {
+          return new Response(this.jsonToSseStream(bodyJson), {
+            status: response.status,
+            statusText: response.statusText,
+            headers: new Headers({ "Content-Type": "text/event-stream" }),
+          });
+        }
+        return new Response(bodyJson, {
           status: response.status,
           statusText: response.statusText,
           headers: new Headers({ "Content-Type": "application/json" }),
         });
       }
 
-      return new Response(JSON.stringify(jsonResponse), {
+      const bodyJson = JSON.stringify(jsonResponse);
+      if (reqId && wantsStream) {
+        return new Response(this.jsonToSseStream(bodyJson), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: new Headers({ "Content-Type": "text/event-stream" }),
+        });
+      }
+      return new Response(bodyJson, {
         status: response.status,
         statusText: response.statusText,
         headers: new Headers({ "Content-Type": "application/json" }),
       });
+
     }
 
     return response;
@@ -988,8 +1177,11 @@ export class CodexTransformer implements Transformer {
   private convertStreamEvent(
     data: ResponsesStreamEvent,
     getCurrentIndex: (type: string) => number,
-    resolveModel?: (eventModel: string | undefined) => string | undefined
+    resolveModel?: (eventModel: string | undefined) => string | undefined,
+    customToolInputByItemId?: Map<string, string>,
+    toolIndexFor?: (data: ResponsesStreamEvent) => number
   ): any | null {
+    const toolIndex = () => (toolIndexFor ? toolIndexFor(data) : 0);
     const fallback = (eventModel: string | undefined): string | undefined =>
       resolveModel ? resolveModel(eventModel) : eventModel;
     const modelForChunk = (eventModel: string | undefined) =>
@@ -1025,7 +1217,7 @@ export class CodexTransformer implements Transformer {
               role: "assistant",
               tool_calls: [
                 {
-                  index: 0,
+                  index: toolIndex(),
                   id:
                     sanitizeResponsesCallId(
                       data.item.call_id || data.item.id
@@ -1035,6 +1227,93 @@ export class CodexTransformer implements Transformer {
                     arguments: "",
                   },
                   type: "function",
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    if (data.type === "response.output_item.added" && data.item?.type === "custom_tool_call") {
+      const itemId = customToolInputKey(data);
+      if (itemId) customToolInputByItemId?.set(itemId, "");
+      return {
+        id: data.item.call_id || data.item.id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: modelForChunk(data.response?.model),
+        choices: [
+          {
+            index: getCurrentIndex(data.type),
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: toolIndex(),
+                  id:
+                    sanitizeResponsesCallId(
+                      data.item.call_id || data.item.id
+                    ) || data.item.call_id || data.item.id,
+                  function: {
+                    name: data.item.name || "",
+                    arguments: "",
+                  },
+                  type: "function",
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    if (data.type === "response.custom_tool_call_input.delta") {
+      // Custom tools carry unconstrained freeform text, not JSON — a partial
+      // string can't be JSON-wrapped mid-stream (CUSTOM_TOOL_INPUT_KEY
+      // convention requires valid JSON per chunk). Accumulate and emit the
+      // complete wrapped argument once, on .done, mirroring how
+      // unifiedChunkToResponsesEvents treats custom tools as
+      // non-streaming-argument on the reverse path
+      // (openai.responses.util.ts:1017-1035).
+      const itemId = customToolInputKey(data);
+      if (customToolInputByItemId && itemId) {
+        const prev = customToolInputByItemId.get(itemId) ?? "";
+        const delta = typeof data.delta === "string" ? data.delta : "";
+        customToolInputByItemId.set(itemId, prev + delta);
+      }
+      return null;
+    }
+
+    if (data.type === "response.custom_tool_call_input.done") {
+      const itemId = customToolInputKey(data);
+      const fullInput =
+        (typeof data.input === "string" ? data.input : undefined) ??
+        (itemId ? customToolInputByItemId?.get(itemId) : undefined) ??
+        "";
+      if (itemId) customToolInputByItemId?.delete(itemId);
+      return {
+        id: data.item_id || data.item?.id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: modelForChunk(data.response?.model),
+        choices: [
+          {
+            // Same index bucket the function_call arguments delta uses, so a
+            // custom tool call's argument block transitions identically to
+            // a function tool call's.
+            index: getCurrentIndex("response.function_call_arguments.delta"),
+            delta: {
+              tool_calls: [
+                {
+                  index: toolIndex(),
+                  function: {
+                    arguments: JSON.stringify({
+                      [CUSTOM_TOOL_INPUT_KEY]: fullInput,
+                    }),
+                  },
                 },
               ],
             },
@@ -1120,7 +1399,7 @@ export class CodexTransformer implements Transformer {
             delta: {
               tool_calls: [
                 {
-                  index: 0,
+                  index: toolIndex(),
                   function: {
                     arguments: data.delta || "",
                   },
@@ -1135,10 +1414,15 @@ export class CodexTransformer implements Transformer {
 
     if (data.type === "response.completed") {
       const finishReason = data.response?.output?.some(
-        (item: any) => item.type === "function_call"
+        (item: any) => item.type === "function_call" || item.type === "custom_tool_call"
       )
         ? "tool_calls"
         : "stop";
+
+      // Ciphertext often arrives only on the completed reasoning item.
+      const reasoningThinking = thinkingFromResponsesReasoningItem(
+        data.response?.output?.find((item: any) => item.type === "reasoning")
+      );
 
       const chunk: any = {
         id: data.response?.id || "chatcmpl-" + Date.now(),
@@ -1148,7 +1432,7 @@ export class CodexTransformer implements Transformer {
         choices: [
           {
             index: 0,
-            delta: {},
+            delta: reasoningThinking ? { thinking: reasoningThinking } : {},
             finish_reason: finishReason,
           },
         ],
@@ -1192,6 +1476,10 @@ export class CodexTransformer implements Transformer {
     }
 
     if (data.type === "response.reasoning_summary_text.done") {
+      // Preserve the reasoning item id for replay. Never store it as
+      // thinking.signature — that field used to be copied into
+      // encrypted_content and Codex rejected the forged ciphertext.
+      if (typeof data.item_id !== "string" || !data.item_id) return null;
       return {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
@@ -1202,7 +1490,7 @@ export class CodexTransformer implements Transformer {
             index: getCurrentIndex(data.type),
             delta: {
               thinking: {
-                signature: data.item_id,
+                id: data.item_id,
               },
             },
             finish_reason: null,
@@ -1228,6 +1516,23 @@ export class CodexTransformer implements Transformer {
     }
 
     if (data.type === "response.output_item.done") {
+      if (data.item?.type === "reasoning") {
+        const thinking = thinkingFromResponsesReasoningItem(data.item);
+        if (!thinking) return null;
+        return {
+          id: data.item.id || data.item_id || "chatcmpl-" + Date.now(),
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model: modelForChunk(data.response?.model),
+          choices: [
+            {
+              index: getCurrentIndex(data.type),
+              delta: { thinking },
+              finish_reason: null,
+            },
+          ],
+        };
+      }
       return {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
@@ -1300,12 +1605,28 @@ export class CodexTransformer implements Transformer {
               }],
             }));
           }
-          if (message.thinking?.content) {
+          if (
+            message.thinking?.content ||
+            message.thinking?.encrypted_content ||
+            message.thinking?.id
+          ) {
             controller.enqueue(emit({
               ...base,
               choices: [{
                 index: 0,
-                delta: { thinking: { content: message.thinking.content } },
+                delta: {
+                  thinking: {
+                    ...(message.thinking?.content
+                      ? { content: message.thinking.content }
+                      : {}),
+                    ...(message.thinking?.encrypted_content
+                      ? { encrypted_content: message.thinking.encrypted_content }
+                      : {}),
+                    ...(message.thinking?.id
+                      ? { id: message.thinking.id }
+                      : {}),
+                  },
+                },
                 finish_reason: null,
               }],
             }));
@@ -1441,6 +1762,8 @@ export class CodexTransformer implements Transformer {
     // Accumulator state — mirrors convertStreamEvent output shape
     let contentText = "";
     let reasoningText = "";
+    let thinkingEncryptedContent: string | undefined;
+    let thinkingId: string | undefined;
     const annotations: any[] = [];
     const toolCallsMap = new Map<number, any>();
     let finishReason: string | null = null;
@@ -1448,6 +1771,8 @@ export class CodexTransformer implements Transformer {
 
     let currentIndex = -1;
     let lastEventType = "";
+    const customToolInputByItemId = new Map<string, string>();
+    const toolIndexFor = createToolIndexFor();
 
     const getCurrentIndex = (eventType: string) => {
       if (eventType !== lastEventType) {
@@ -1459,8 +1784,14 @@ export class CodexTransformer implements Transformer {
 
     const finalize = (): any => {
       const message: any = { role: "assistant" };
-      if (reasoningText) {
-        message.thinking = { content: reasoningText, signature: "" };
+      if (reasoningText || thinkingEncryptedContent || thinkingId) {
+        message.thinking = {
+          content: reasoningText,
+          ...(thinkingEncryptedContent
+            ? { encrypted_content: thinkingEncryptedContent }
+            : {}),
+          ...(thinkingId ? { id: thinkingId } : {}),
+        };
       }
       const toolCalls = Array.from(toolCallsMap.values());
       if (toolCalls.length) {
@@ -1516,8 +1847,14 @@ export class CodexTransformer implements Transformer {
       if (delta.thinking?.content) {
         reasoningText += delta.thinking.content;
       }
-      if (delta.thinking?.signature) {
-        // signature carried through message.thinking
+      const encrypted = responsesEncryptedContentFrom(
+        delta.thinking?.encrypted_content
+      );
+      if (encrypted) thinkingEncryptedContent = encrypted;
+      if (typeof delta.thinking?.id === "string" && delta.thinking.id) {
+        thinkingId = delta.thinking.id;
+      } else if (isResponsesReasoningItemId(delta.thinking?.signature)) {
+        thinkingId = delta.thinking.signature;
       }
       if (Array.isArray(delta.annotations)) {
         for (const a of delta.annotations) {
@@ -1561,7 +1898,7 @@ export class CodexTransformer implements Transformer {
             const resolved = resolveModel(event.response.model);
             if (resolved) model = resolved;
           }
-          const chunk = this.convertStreamEvent(event, getCurrentIndex, resolveModel);
+          const chunk = this.convertStreamEvent(event, getCurrentIndex, resolveModel, customToolInputByItemId, toolIndexFor);
           processChunk(chunk);
         } catch {
           // ignore malformed line
@@ -1599,8 +1936,8 @@ export class CodexTransformer implements Transformer {
     const messageOutput = responseData.output?.find(
       (item) => item.type === "message"
     );
-    const functionCallOutput = responseData.output?.find(
-      (item) => item.type === "function_call"
+    const toolCallOutputs = (responseData.output ?? []).filter(
+      (item) => item.type === "function_call" || item.type === "custom_tool_call"
     );
     let annotations;
     if (
@@ -1628,9 +1965,12 @@ export class CodexTransformer implements Transformer {
 
     let messageContent: string | MessageContent[] | null = null;
     let toolCalls = null;
-    let thinking = null;
+    let thinking =
+      thinkingFromResponsesReasoningItem(
+        responseData.output?.find((item) => item.type === "reasoning")
+      ) || null;
 
-    if (messageOutput && messageOutput.reasoning) {
+    if (!thinking && messageOutput && messageOutput.reasoning) {
       thinking = {
         content: messageOutput.reasoning,
       };
@@ -1677,20 +2017,25 @@ export class CodexTransformer implements Transformer {
       }
     }
 
-    if (functionCallOutput) {
-      toolCalls = [
-        {
-          id:
-            sanitizeResponsesCallId(
-              functionCallOutput.call_id || functionCallOutput.id
-            ) || functionCallOutput.call_id || functionCallOutput.id,
-          function: {
-            name: functionCallOutput.name,
-            arguments: functionCallOutput.arguments,
-          },
-          type: "function",
+    if (toolCallOutputs.length > 0) {
+      // Every function_call / custom_tool_call survives, in source order —
+      // parallel calls must not collapse into the first one found.
+      toolCalls = toolCallOutputs.map((call) => ({
+        id:
+          sanitizeResponsesCallId(call.call_id || call.id) ||
+          call.call_id ||
+          call.id,
+        function: {
+          name: call.name,
+          arguments:
+            call.type === "custom_tool_call"
+              ? JSON.stringify({
+                  [CUSTOM_TOOL_INPUT_KEY]: call.input || "",
+                })
+              : call.arguments,
         },
-      ];
+        type: "function",
+      }));
     }
 
     return {

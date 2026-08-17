@@ -192,6 +192,121 @@ async function testJsonNoToolCallsOmitsThem() {
   assert.equal(chat.choices[0].finish_reason, "stop");
 }
 
+async function testTerminalOutputRepairsEmptyDeltaStream() {
+  const { chunks } = await convertStream([
+    '{"type":"response.completed","response":{"id":"resp_terminal","model":"grok-4.6","output":[{"type":"message","id":"msg_terminal","content":[{"type":"output_text","text":"terminal answer"}]}]}}',
+  ]);
+  const content = chunks
+    .map((chunk) => chunk.choices?.[0]?.delta?.content || "")
+    .join("");
+  assert.equal(content, "terminal answer");
+  assert.equal(chunks.at(-1).choices[0].finish_reason, "stop");
+}
+
+async function testDoneEventTextIsRecovered() {
+  const { chunks } = await convertStream([
+    '{"type":"response.output_text.done","item_id":"msg_done","text":"done-only answer"}',
+    '{"type":"response.completed","response":{"id":"resp_done","model":"grok","output":[]}}',
+  ]);
+  assert.equal(
+    chunks.map((chunk) => chunk.choices?.[0]?.delta?.content || "").join(""),
+    "done-only answer"
+  );
+}
+
+// Reproduces Grok's live stream: deltas carry the text, output_text.done
+// repeats the full accumulated text, and response.completed repeats it again
+// in the terminal message item. Without delta tracking the reminder logic
+// re-emits the whole string — the client saw "hello xaihello xai".
+async function testDeltasPlusDoneAndTerminalTextIsNotDuplicated() {
+  const { chunks } = await convertStream([
+    '{"type":"response.output_item.added","item":{"id":"msg_1","type":"message","role":"assistant","content":[],"status":"in_progress"}}',
+    '{"type":"response.content_part.added","item_id":"msg_1","content_index":0,"part":{"type":"output_text","text":""}}',
+    '{"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"hello"}',
+    '{"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":" x"}',
+    '{"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"ai"}',
+    '{"type":"response.output_text.done","item_id":"msg_1","content_index":0,"text":"hello xai"}',
+    '{"type":"response.content_part.done","item_id":"msg_1","content_index":0,"part":{"type":"output_text","text":"hello xai"}}',
+    '{"type":"response.output_item.done","item_id":"msg_1","item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello xai"}],"status":"completed"}}',
+    '{"type":"response.completed","response":{"id":"resp_dup","model":"grok-4.6","output":[{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"hello xai"}]}]}}',
+  ]);
+  const text = chunks
+    .map((chunk) => chunk.choices?.[0]?.delta?.content || "")
+    .join("");
+  assert.equal(text, "hello xai");
+  const finishes = chunks.filter(
+    (chunk) => chunk.choices?.[0]?.finish_reason
+  );
+  assert.equal(finishes.length, 1);
+  assert.equal(finishes[0].choices[0].finish_reason, "stop");
+}
+
+async function testCompletedStreamPreservesUsage() {
+  const { chunks } = await convertStream([
+    '{"type":"response.output_text.delta","item_id":"msg_u","delta":"hi"}',
+    '{"type":"response.completed","response":{"id":"resp_usage","model":"grok-4.6","output":[{"type":"message","id":"msg_u","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14,"input_tokens_details":{"cached_tokens":2}}}}',
+  ]);
+  const finishes = chunks.filter((chunk) => chunk.choices?.[0]?.finish_reason);
+  assert.equal(finishes.length, 1);
+  assert.deepEqual(finishes[0].usage, {
+    prompt_tokens: 11,
+    completion_tokens: 3,
+    total_tokens: 14,
+    prompt_tokens_details: {
+      cached_tokens: 2,
+      cache_write_tokens: 0,
+    },
+  });
+}
+
+async function testAddedWithContentDoesNotDuplicateOnCompleted() {
+  // Short-completion hosts open the message item already carrying text and
+  // never emit output_text.delta. The added event has no top-level item_id,
+  // so recording under "text" used to miss the later item.id lookup and
+  // re-emit the full string on response.completed.
+  const { chunks } = await convertStream([
+    '{"type":"response.output_item.added","item":{"id":"msg_short","type":"message","role":"assistant","content":[{"type":"output_text","text":"short answer"}]}}',
+    '{"type":"response.completed","response":{"id":"resp_short","model":"grok-4.6","output":[{"type":"message","id":"msg_short","content":[{"type":"output_text","text":"short answer"}]}]}}',
+  ]);
+  assert.equal(
+    chunks.map((chunk) => chunk.choices?.[0]?.delta?.content || "").join(""),
+    "short answer"
+  );
+}
+
+// Grok's live tool stream: message item with deltas closes, then the
+// function_call item opens. Message text must not be re-emitted once the tool
+// item's done/terminal copy arrives.
+async function testMessageThenToolCallTerminalTextNotDuplicated() {
+  const { chunks } = await convertStream([
+    '{"type":"response.output_item.added","item":{"id":"msg_tool","type":"message","role":"assistant","content":[],"status":"in_progress"}}',
+    '{"type":"response.output_text.delta","item_id":"msg_tool","delta":"Applying the patch now."}',
+    '{"type":"response.output_text.done","item_id":"msg_tool","text":"Applying the patch now."}',
+    '{"type":"response.output_item.done","item_id":"msg_tool","item":{"id":"msg_tool","type":"message","role":"assistant","content":[{"type":"output_text","text":"Applying the patch now."}],"status":"completed"}}',
+    '{"type":"response.output_item.added","item":{"id":"fc_tool","type":"function_call","call_id":"call-tool-1","name":"apply_patch","arguments":""}}',
+    '{"type":"response.function_call_arguments.delta","item_id":"fc_tool","delta":"{\\"input\\":\\"patch\\"}"}',
+    '{"type":"response.function_call_arguments.done","item_id":"fc_tool","arguments":"{\\"input\\":\\"patch\\"}"}',
+    '{"type":"response.output_item.done","item_id":"fc_tool","item":{"id":"fc_tool","type":"function_call","call_id":"call-tool-1","name":"apply_patch","arguments":"{\\"input\\":\\"patch\\"}"}}',
+    '{"type":"response.completed","response":{"id":"resp_tool","model":"grok-4.6","output":[{"type":"message","id":"msg_tool","content":[{"type":"output_text","text":"Applying the patch now."}]},{"type":"function_call","id":"fc_tool","call_id":"call-tool-1","name":"apply_patch","arguments":"{\\"input\\":\\"patch\\"}"}]}}',
+  ]);
+  const text = chunks
+    .map((chunk) => chunk.choices?.[0]?.delta?.content || "")
+    .join("");
+  assert.equal(text, "Applying the patch now.");
+  const tc = chunks.flatMap(
+    (chunk) => chunk.choices?.[0]?.delta?.tool_calls ?? []
+  );
+  // Exactly one start chunk (name present) plus its arguments deltas.
+  const starts = tc.filter((call: any) => call.function?.name);
+  assert.equal(starts.length, 1);
+  assert.equal(tc.filter((call: any) => call.index === 0).length, 2);
+  assert.equal(starts[0].function.name, "apply_patch");
+  assert.equal(
+    chunks.at(-1).choices[0].finish_reason,
+    "tool_calls"
+  );
+}
+
 async function testFailedBeforeOutput() {
   const { chunks, doneCount } = await convertStream([
     '{"type":"response.failed","response":{"id":"resp_f1","status":"failed","error":{"message":"rate limit hit","type":"rate_limit_error","code":"rate_limit"}}}',
@@ -257,6 +372,12 @@ async function main() {
   await testSanitizeCollisionProneIdsKeepDistinctIndexes();
   await testJsonParallelCallsAllSurvive();
   await testJsonNoToolCallsOmitsThem();
+  await testTerminalOutputRepairsEmptyDeltaStream();
+  await testDoneEventTextIsRecovered();
+  await testDeltasPlusDoneAndTerminalTextIsNotDuplicated();
+  await testCompletedStreamPreservesUsage();
+  await testAddedWithContentDoesNotDuplicateOnCompleted();
+  await testMessageThenToolCallTerminalTextNotDuplicated();
   await testFailedBeforeOutput();
   await testFailedAfterPartialText();
   await testFailedAfterPartialToolCall();

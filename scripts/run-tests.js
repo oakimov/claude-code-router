@@ -46,6 +46,30 @@ const OPT_IN_ONLY = {
 
 const PER_TEST_TIMEOUT_MS = 120_000;
 
+// This suite tests third-party emulation of a real Claude Code / Anthropic
+// CLI session — and this repo is itself commonly developed from inside such
+// a session. Several of these vars (e.g. CLAUDE_CODE_ENTRYPOINT) are read
+// into frozen module-level constants at import time, so an ambient value
+// leaks into every test process and can't be undone by a test's own
+// save/restore. Strip them so `pnpm test` is hermetic regardless of the
+// invoking shell's environment.
+const CLAUDE_CODE_PASSTHROUGH_ENV_VARS = [
+  'ANTHROPIC_BETAS',
+  'ANTHROPIC_CLI_VERSION',
+  'ANTHROPIC_CUSTOM_HEADERS',
+  'ANTHROPIC_USER_AGENT',
+  'CLAUDE_AGENT_SDK_CLIENT_APP',
+  'CLAUDE_AGENT_SDK_VERSION',
+  'CLAUDE_CODE_ADDITIONAL_PROTECTION',
+  'CLAUDE_CODE_ATTRIBUTION_HEADER',
+  'CLAUDE_CODE_CONTAINER_ID',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_REMOTE_SESSION_ID',
+];
+
+const testEnv = { ...process.env };
+for (const key of CLAUDE_CODE_PASSTHROUGH_ENV_VARS) delete testEnv[key];
+
 const args = process.argv.slice(2);
 const enabledFlags = new Set(args.filter((a) => a.startsWith('--')));
 const filters = args.filter((a) => !a.startsWith('--'));
@@ -86,6 +110,7 @@ for (const test of tests) {
     cwd: path.join(repoRoot, 'packages', test.pkg),
     encoding: 'utf8',
     timeout: PER_TEST_TIMEOUT_MS,
+    env: testEnv,
   });
 
   const timedOut = result.error && result.error.code === 'ETIMEDOUT';

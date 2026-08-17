@@ -14,11 +14,17 @@ import {
 } from "@/utils/reasoning-effort";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
 import {
+  CUSTOM_TOOL_INPUT_KEY,
+  assistantTurnHasText,
+  canonicalAssistantTurn,
   createCallIdMap,
   createResponsesStreamState,
   finalizeResponsesStream,
   responsesFailedEvent,
+  responsesReasoningItemFromThinking,
   responsesRequestToUnified,
+  thinkingFromResponsesReasoningItem,
+  thinkingFromUnifiedAssistant,
   unifiedChunkToResponsesEvents,
   unifiedResponseToResponses,
   type ResponsesCallIdMap,
@@ -30,6 +36,9 @@ interface ResponsesAPIOutputItem {
   call_id?: string;
   name?: string;
   arguments?: string;
+  input?: string;
+  summary?: Array<{ type?: string; text?: string } | string>;
+  encrypted_content?: string;
 	  content?: Array<{
 	    type: string;
 	    text?: string;
@@ -97,6 +106,15 @@ interface ResponsesStreamEvent {
     };
     output?: Array<{
       type: string;
+      id?: string;
+      call_id?: string;
+      name?: string;
+      arguments?: string;
+      input?: string;
+      content?: Array<{
+        type: string;
+        text?: string;
+      }>;
     }>;
     usage?: {
       input_tokens: number;
@@ -116,6 +134,7 @@ interface ResponsesStreamEvent {
     end_index?: number;
   };
   part?: any;
+  text?: string;
 }
 
 export class OpenAIResponsesTransformer implements Transformer {
@@ -353,17 +372,34 @@ export class OpenAIResponsesTransformer implements Transformer {
           : {}),
       };
     }
-    if ((request as any).stop !== undefined) {
-      throw createApiError(
-        "stop cannot be represented by the Responses API provider adapter",
-        400,
-        "unsupported_stop",
-        "invalid_request_error"
-      );
-    }
+    // Chat/Anthropic stop sequences have no Responses equivalent. Omit
+    // rather than reject so a Claude Code or Chat client is not failed
+    // for a field the destination cannot express.
+    delete (request as any).stop;
     // Chat's include_usage request is unnecessary for Responses: terminal
     // response events carry usage when the provider reports it.
     delete (request as any).stream_options;
+
+    // Chat Completions `response_format` is the Unified stand-in for Responses
+    // `text.format` (see responsesRequestToUnified). Restore the native field
+    // for every Responses destination — xAI and OpenAI both accept it — then
+    // drop the Chat-only field so it is not forwarded as an unknown property.
+    const responseFormat = (request as any).response_format;
+    if (responseFormat) {
+      const format =
+        responseFormat.type === "json_schema"
+          ? {
+              type: "json_schema",
+              name: responseFormat.json_schema?.name,
+              schema: responseFormat.json_schema?.schema,
+              ...(responseFormat.json_schema?.strict !== undefined
+                ? { strict: responseFormat.json_schema.strict }
+                : {}),
+            }
+          : { type: responseFormat.type };
+      (request as any).text = { ...(request as any).text, format };
+    }
+    delete (request as any).response_format;
 
     const model = request.model || "";
     request = applyOpenAIChatCaching(request, provider, context);
@@ -409,6 +445,13 @@ export class OpenAIResponsesTransformer implements Transformer {
       }
     });
 
+    const pushReasoningFromMessage = (message: any) => {
+      const reasoningItem = responsesReasoningItemFromThinking(
+        thinkingFromUnifiedAssistant(message)
+      );
+      if (reasoningItem) input.push(reasoningItem);
+    };
+
     request.messages.forEach((message) => {
       if (message.role === "system") return;
 
@@ -443,26 +486,31 @@ export class OpenAIResponsesTransformer implements Transformer {
         return;
       }
 
-      if (message.role === "assistant" && Array.isArray(message.tool_calls)) {
-        const hasContent = message.content &&
-          (typeof message.content === "string" ||
-            (Array.isArray(message.content) && message.content.length > 0));
-        lastWasTool = false;
-        if (hasContent) {
-          const contentMessage: any = { ...message };
-          delete contentMessage.tool_calls;
-          input.push(contentMessage);
+      if (message.role === "assistant") {
+        const turn = canonicalAssistantTurn(message);
+        if (turn.thinking || turn.toolCalls.length || assistantTurnHasText(turn) || turn.images.length) {
+          lastWasTool = false;
+          if (turn.thinking) pushReasoningFromMessage(message);
+          if (assistantTurnHasText(turn) || turn.images.length) {
+            const contentMessage: any = { ...message };
+            delete contentMessage.tool_calls;
+            delete contentMessage.thinking;
+            delete contentMessage.reasoning_content;
+            if (turn.texts.length === 1 && turn.images.length === 0) {
+              contentMessage.content = turn.texts[0].text;
+            }
+            input.push(contentMessage);
+          }
+          for (const tool of turn.toolCalls) {
+            input.push({
+              type: "function_call",
+              arguments: tool.function.arguments,
+              name: tool.function.name,
+              call_id: sanitizeResponsesCallId(tool.id) ?? tool.id,
+            });
+          }
+          return;
         }
-        message.tool_calls.forEach((tool) => {
-          input.push({
-            type: "function_call",
-            arguments: tool.function.arguments,
-            name: tool.function.name,
-            call_id: sanitizeResponsesCallId(tool.id) ?? tool.id,
-          });
-        });
-
-        return;
       }
 
       // If a user message follows a tool output, insert a dummy assistant message
@@ -537,6 +585,16 @@ export class OpenAIResponsesTransformer implements Transformer {
         type: "function",
         name: request.tool_choice.function?.name,
       };
+    } else if (request.tool_choice === "required") {
+      (request as any).tool_choice = "required";
+    } else if (request.tool_choice === "none") {
+      (request as any).tool_choice = "none";
+    } else if (request.tool_choice === "auto") {
+      (request as any).tool_choice = "auto";
+    }
+
+    if (request.parallel_tool_calls !== undefined) {
+      (request as any).parallel_tool_calls = request.parallel_tool_calls;
     }
 
     return request;
@@ -572,6 +630,7 @@ export class OpenAIResponsesTransformer implements Transformer {
       // inferred from event-type transitions, so interleaved parallel calls
       // keep stable Chat tool indexes.
       const toolIndexByKey = new Map<string, number>();
+      const textByItemId = new Map<string, string>();
       let nextToolIndex = 0;
       let terminated = false;
 
@@ -649,9 +708,11 @@ export class OpenAIResponsesTransformer implements Transformer {
                 return;
               }
 
-              const chunk = this.convertStreamEvent(data, toolIndexFor);
-              if (chunk) {
-                ctx.controller.enqueue(encodeSSEData(JSON.stringify(chunk), ctx.encoder));
+              const chunks = this.convertStreamEvent(data, toolIndexFor, textByItemId);
+              for (const chunk of chunks) {
+                ctx.controller.enqueue(
+                  encodeSSEData(JSON.stringify(chunk), ctx.encoder)
+                );
               }
 
               // Responses upstreams end after response.completed without a
@@ -678,7 +739,137 @@ export class OpenAIResponsesTransformer implements Transformer {
    * always 0 — parallel-call identity lives in `delta.tool_calls[n].index`,
    * allocated per Responses item by `toolIndexFor`.
    */
-  private convertStreamEvent(data: ResponsesStreamEvent, toolIndexFor: (data: ResponsesStreamEvent) => number): any | null {
+  private convertStreamEvent(
+    data: ResponsesStreamEvent,
+    toolIndexFor: (data: ResponsesStreamEvent) => number,
+    textByItemId: Map<string, string>
+  ): any[] {
+    const textFromItem = (item: any): string =>
+      (item?.content || [])
+        .filter((part: any) => part?.type === "output_text")
+        .map((part: any) => part.text || "")
+        .join("");
+    const asArray = (chunk: any): any[] => (chunk ? [chunk] : []);
+    // output_item.added carries item.id (no top-level item_id); deltas and
+    // output_text.done carry item_id. Using only one of those keys made a
+    // later terminal copy look unseen and re-emitted the full string.
+    const itemKey = (item?: any) =>
+      item?.id || data.item?.id || data.item_id || "text";
+
+    // Record every text fragment the provider emits — deltas, message items
+    // opened with content, and terminal copies — keyed by item id. The
+    // "remainder" logic in the output_text.done / output_item.done /
+    // response.completed branches must see the already-delivered text or it
+    // re-emits the full text on top of the deltas (xAI: "hello"+" x"+"ai" then
+    // output_text.done "hello xai" produced "hello xaihello xai" at the client).
+    const recordDelta = (text: string) => {
+      const id = itemKey();
+      textByItemId.set(
+        id,
+        (textByItemId.get(id) || "") + (typeof text === "string" ? text : "")
+      );
+    };
+    if (
+      data.type === "response.output_text.delta" &&
+      typeof data.delta === "string"
+    ) {
+      recordDelta(data.delta);
+    } else if (
+      data.type === "response.output_item.added" &&
+      data.item?.type === "message"
+    ) {
+      // Some hosts open a message item already carrying text; record it so a
+      // later terminal copy isn't mistaken for unsent content.
+      recordDelta(textFromItem(data.item));
+    }
+
+    if (data.type === "response.output_text.done" && typeof data.text === "string") {
+      const id = itemKey();
+      const previous = textByItemId.get(id) || "";
+      const remainder = data.text.startsWith(previous)
+        ? data.text.slice(previous.length)
+        : data.text;
+      textByItemId.set(id, data.text);
+      return remainder ? asArray({
+        id,
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model,
+        choices: [{ index: 0, delta: { content: remainder }, finish_reason: null }],
+      }) : [];
+    }
+
+    if (data.type === "response.output_item.done" && data.item?.type === "message") {
+      const id = itemKey(data.item);
+      const text = textFromItem(data.item);
+      const previous = textByItemId.get(id) || "";
+      const remainder = text.startsWith(previous) ? text.slice(previous.length) : text;
+      textByItemId.set(id, text);
+      return remainder ? asArray({
+        id,
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model,
+        choices: [{ index: 0, delta: { content: remainder }, finish_reason: null }],
+      }) : [];
+    }
+
+    if (data.type === "response.completed") {
+      const chunks: any[] = [];
+      const terminalOutput = data.response?.output || [];
+      for (const item of terminalOutput) {
+        if (item.type !== "message") continue;
+        const id = item.id || "text";
+        const text = textFromItem(item);
+        if (text && !textByItemId.has(id)) textByItemId.set(id, "");
+      }
+
+      // Terminal Responses payloads sometimes contain the only copy of text;
+      // emit it before the Chat finish chunk so downstream clients cannot see
+      // a successful empty completion.
+      for (const item of data.response?.output || []) {
+        if (item.type !== "message") continue;
+        const id = item.id || "text";
+        const text = textFromItem(item);
+        const previous = textByItemId.get(id) || "";
+        const remainder = text.startsWith(previous) ? text.slice(previous.length) : text;
+        textByItemId.set(id, text);
+        if (remainder) chunks.push({
+          id,
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model: data.response?.model,
+          choices: [{ index: 0, delta: { content: remainder }, finish_reason: null }],
+        });
+      }
+      // Ciphertext often arrives only on the completed reasoning item — emit
+      // it before the finish chunk so Unified history can replay it.
+      for (const item of data.response?.output || []) {
+        if (item.type !== "reasoning") continue;
+        const thinking = thinkingFromResponsesReasoningItem(item);
+        if (!thinking) continue;
+        chunks.push({
+          id: item.id || data.response?.id || "chatcmpl-" + Date.now(),
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model: data.response?.model,
+          choices: [{ index: 0, delta: { thinking }, finish_reason: null }],
+        });
+      }
+      // Reuse the core finish chunk so token usage stays attached. This
+      // interceptor only exists to emit unseen terminal text first.
+      const finish = this.convertStreamEventCore(data, toolIndexFor);
+      if (finish) chunks.push(finish);
+      return chunks;
+    }
+
+    return asArray(this.convertStreamEventCore(data, toolIndexFor));
+  }
+
+  private convertStreamEventCore(
+    data: ResponsesStreamEvent,
+    toolIndexFor: (data: ResponsesStreamEvent) => number
+  ): any | null {
     if (data.type === "response.output_text.delta") {
       return {
         id: data.item_id || "chatcmpl-" + Date.now(),
@@ -820,7 +1011,7 @@ export class OpenAIResponsesTransformer implements Transformer {
 
     if (data.type === "response.completed") {
       const finishReason = data.response?.output?.some(
-        (item: any) => item.type === "function_call"
+        (item: any) => item.type === "function_call" || item.type === "custom_tool_call"
       )
         ? "tool_calls"
         : "stop";
@@ -877,6 +1068,10 @@ export class OpenAIResponsesTransformer implements Transformer {
     }
 
     if (data.type === "response.reasoning_summary_part.done" && data.part) {
+      // Preserve the reasoning item id for replay. Never store it as
+      // thinking.signature — that field used to be copied into
+      // encrypted_content and Codex rejected the forged ciphertext.
+      if (typeof data.item_id !== "string" || !data.item_id) return null;
       return {
         id: data.item_id || "chatcmpl-" + Date.now(),
         object: "chat.completion.chunk",
@@ -887,9 +1082,30 @@ export class OpenAIResponsesTransformer implements Transformer {
             index: 0,
             delta: {
               thinking: {
-                signature: data.item_id,
+                id: data.item_id,
               },
             },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    if (
+      data.type === "response.output_item.done" &&
+      data.item?.type === "reasoning"
+    ) {
+      const thinking = thinkingFromResponsesReasoningItem(data.item);
+      if (!thinking) return null;
+      return {
+        id: data.item.id || data.item_id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model,
+        choices: [
+          {
+            index: 0,
+            delta: { thinking },
             finish_reason: null,
           },
         ],
@@ -933,10 +1149,13 @@ export class OpenAIResponsesTransformer implements Transformer {
     const messageOutput = responseData.output?.find(
       (item) => item.type === "message"
     );
+    const reasoningOutput = responseData.output?.find(
+      (item) => item.type === "reasoning"
+    );
     // Every function_call output survives, in source order — parallel calls
     // must not collapse into the first one found.
     const functionCallOutputs = (responseData.output ?? []).filter(
-      (item) => item.type === "function_call"
+      (item) => item.type === "function_call" || item.type === "custom_tool_call"
     );
     let annotations;
     if (
@@ -964,9 +1183,9 @@ export class OpenAIResponsesTransformer implements Transformer {
 
     let messageContent: string | MessageContent[] | null = null;
     let toolCalls = null;
-    let thinking = null;
+    let thinking = thinkingFromResponsesReasoningItem(reasoningOutput) || null;
 
-    if (messageOutput && messageOutput.reasoning) {
+    if (!thinking && messageOutput && messageOutput.reasoning) {
       thinking = {
         content: messageOutput.reasoning,
       };
@@ -1021,7 +1240,12 @@ export class OpenAIResponsesTransformer implements Transformer {
           call.id,
         function: {
           name: call.name,
-          arguments: call.arguments,
+          arguments:
+            call.type === "custom_tool_call"
+              ? JSON.stringify({
+                  [CUSTOM_TOOL_INPUT_KEY]: call.input || "",
+                })
+              : call.arguments,
         },
         type: "function",
       }));

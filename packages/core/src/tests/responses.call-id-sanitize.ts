@@ -214,7 +214,36 @@ async function streamingResponsesAreSanitized() {
   }
 }
 
+async function streamingFlatJsonIsReEmittedAsSse() {
+  const transformer = new CodexTransformer();
+  (transformer as any).logger = { debug() {} };
+  const payload = {
+    id: "resp_flat",
+    object: "response",
+    model: "gpt-5.6-sol",
+    created_at: 1,
+    output: [
+      {
+        type: "message",
+        content: [{ type: "output_text", text: "flat answer" }],
+      },
+    ],
+  };
+  const response = await transformer.transformResponseOut(
+    new Response(JSON.stringify(payload), {
+      headers: { "Content-Type": "application/json" },
+    }),
+    { req: { id: "req-flat" } } as any
+  );
+  assert.match(response.headers.get("Content-Type") || "", /text\/event-stream/);
+  const text = await response.text();
+  assert.ok(text.includes('"content":"flat answer"'));
+  assert.ok(text.includes("data: [DONE]"));
+}
+
 async function nonStreamingResponsesAreSanitized() {
+  // Explicitly record non-streaming intent for the flat JSON branch.
+
   const payload = {
     id: "resp_test",
     object: "response",
@@ -317,6 +346,383 @@ async function clientBoundCallIdsAreMapped() {
   assert.match(responses.output[0].call_id, RESPONSES_CALL_ID_PATTERN);
 }
 
+function customToolRequest() {
+  return {
+    model: "gpt-5.6-sol",
+    messages: [
+      { role: "user", content: "edit a file" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_apply_patch_1",
+            type: "function",
+            function: {
+              name: "apply_patch",
+              arguments: JSON.stringify({
+                input:
+                  "*** Begin Patch\n*** Add File: hello.txt\n+hi\n*** End Patch",
+              }),
+            },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call_apply_patch_1",
+        content: "Success",
+      },
+    ],
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "apply_patch",
+          description: "Apply a patch envelope",
+          parameters: {
+            type: "object",
+            properties: {
+              input: { type: "string", description: "freeform patch text" },
+            },
+            required: ["input"],
+          },
+        },
+      },
+    ],
+  };
+}
+
+async function codexOutboundCustomToolIsRestored() {
+  const transformer = new CodexTransformer();
+  (transformer as any).resolveAuth = async () => ({
+    mode: "oauth",
+    token: "test-token",
+    accountId: "test-account",
+    isFedramp: false,
+  });
+
+  const result = await transformer.transformRequestIn(
+    customToolRequest() as any,
+    { baseUrl: "https://example.test" },
+    { responsesCustomToolNames: new Set(["apply_patch"]) }
+  );
+  const body: any = result.body;
+
+  const tool = body.tools.find((t: any) => t.name === "apply_patch");
+  assert.ok(tool);
+  assert.equal(tool.type, "custom");
+  assert.equal(tool.parameters, undefined);
+
+  const call = body.input.find((item: any) => item.type === "custom_tool_call");
+  const output = body.input.find(
+    (item: any) => item.type === "custom_tool_call_output"
+  );
+  assert.ok(call);
+  assert.ok(output);
+  assert.equal(
+    call.input,
+    "*** Begin Patch\n*** Add File: hello.txt\n+hi\n*** End Patch"
+  );
+  assert.equal(output.output, "Success");
+  assert.equal(call.call_id, output.call_id);
+  assert.ok(!body.input.some((item: any) => item.type === "function_call"));
+  assert.ok(
+    !body.input.some((item: any) => item.type === "function_call_output")
+  );
+}
+
+async function codexOutboundRegressionWithoutCustomToolNames() {
+  // Same request shape, but no responsesCustomToolNames on context — must
+  // stay on the plain function/function_call path unchanged (this is the
+  // overwhelming majority case: any caller that isn't relaying a client's
+  // Responses `type: "custom"` tool).
+  const transformer = new CodexTransformer();
+  (transformer as any).resolveAuth = async () => ({
+    mode: "oauth",
+    token: "test-token",
+    accountId: "test-account",
+    isFedramp: false,
+  });
+
+  const result = await transformer.transformRequestIn(
+    customToolRequest() as any,
+    { baseUrl: "https://example.test" },
+    {}
+  );
+  const body: any = result.body;
+
+  const tool = body.tools.find((t: any) => t.name === "apply_patch");
+  assert.equal(tool.type, "function");
+  assert.ok(tool.parameters);
+  assert.ok(body.input.some((item: any) => item.type === "function_call"));
+  assert.ok(
+    body.input.some((item: any) => item.type === "function_call_output")
+  );
+  assert.ok(!body.input.some((item: any) => item.type === "custom_tool_call"));
+}
+
+function customToolStreamingResponse() {
+  const encoder = new TextEncoder();
+  const events = [
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: {
+        type: "custom_tool_call",
+        id: "ct_test",
+        call_id: "ct_test",
+        name: "apply_patch",
+      },
+    },
+    {
+      type: "response.custom_tool_call_input.delta",
+      item_id: "ct_test",
+      delta: "*** Begin",
+    },
+    {
+      type: "response.custom_tool_call_input.delta",
+      item_id: "ct_test",
+      delta: " Patch",
+    },
+    {
+      type: "response.custom_tool_call_input.done",
+      item_id: "ct_test",
+      input: "*** Begin Patch",
+    },
+  ];
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const event of events) {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+          );
+        }
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    }),
+    { headers: { "Content-Type": "text/event-stream" } }
+  );
+}
+
+async function codexInboundCustomToolStreamingIsConverted() {
+  const transformer = new CodexTransformer();
+  const response = await transformer.transformResponseOut(
+    customToolStreamingResponse()
+  );
+  const text = await response.text();
+  const chunks = text
+    .split("\n")
+    .filter((line) => line.startsWith("data: {"))
+    .map((line) => JSON.parse(line.slice(6)));
+
+  const toolCallChunks = chunks.filter(
+    (c: any) => c.choices?.[0]?.delta?.tool_calls
+  );
+  // Only two tool_calls-bearing chunks reach the client: output_item.added
+  // (empty arguments placeholder) and custom_tool_call_input.done (the full
+  // JSON-wrapped freeform text). The two .delta events accumulate silently —
+  // a partial freeform string can't be JSON-wrapped mid-stream.
+  assert.equal(toolCallChunks.length, 2);
+  assert.equal(
+    toolCallChunks[0].choices[0].delta.tool_calls[0].function.arguments,
+    ""
+  );
+  assert.equal(
+    toolCallChunks[1].choices[0].delta.tool_calls[0].function.arguments,
+    JSON.stringify({ input: "*** Begin Patch" })
+  );
+}
+
+async function codexInboundCustomToolNonStreamingIsConverted() {
+  const payload = {
+    id: "resp_test2",
+    object: "response",
+    model: "gpt-5.6-sol",
+    created_at: 1,
+    output: [
+      {
+        type: "custom_tool_call",
+        id: "ct_test2",
+        call_id: "ct_test2",
+        name: "apply_patch",
+        input: "*** Begin Patch\n*** End Patch",
+      },
+    ],
+  };
+
+  const transformer = new CodexTransformer();
+  (transformer as any).logger = { debug() {} };
+  const response = await transformer.transformResponseOut(
+    new Response(JSON.stringify(payload), {
+      headers: { "Content-Type": "application/json" },
+    })
+  );
+  const json: any = await response.json();
+  const toolCall = json.choices[0].message.tool_calls[0];
+  assert.equal(toolCall.function.name, "apply_patch");
+  assert.equal(
+    toolCall.function.arguments,
+    JSON.stringify({ input: "*** Begin Patch\n*** End Patch" })
+  );
+}
+
+function responseFormatRequest() {
+  return {
+    model: "gpt-5.6-sol",
+    messages: [{ role: "user", content: "give me json" }],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "result",
+        schema: { type: "object", properties: { ok: { type: "boolean" } } },
+        strict: true,
+      },
+    },
+  };
+}
+
+async function codexOutboundResponseFormatIsRestored() {
+  const transformer = new CodexTransformer();
+  (transformer as any).resolveAuth = async () => ({
+    mode: "oauth",
+    token: "test-token",
+    accountId: "test-account",
+    isFedramp: false,
+  });
+
+  const result = await transformer.transformRequestIn(
+    responseFormatRequest() as any,
+    { baseUrl: "https://example.test" },
+    {}
+  );
+  const body: any = result.body;
+
+  assert.deepEqual(body.text.format, {
+    type: "json_schema",
+    name: "result",
+    schema: { type: "object", properties: { ok: { type: "boolean" } } },
+    strict: true,
+  });
+  assert.equal(body.response_format, undefined);
+}
+
+async function codexInboundParallelCustomToolsKeepDistinctIndexes() {
+  const transformer = new CodexTransformer();
+  const encoder = new TextEncoder();
+  const events = [
+    {
+      type: "response.output_item.added",
+      item: {
+        type: "custom_tool_call",
+        id: "ct_a",
+        call_id: "ct_a",
+        name: "apply_patch",
+      },
+    },
+    {
+      type: "response.output_item.added",
+      item: {
+        type: "custom_tool_call",
+        id: "ct_b",
+        call_id: "ct_b",
+        name: "apply_patch",
+      },
+    },
+    {
+      type: "response.custom_tool_call_input.done",
+      item_id: "ct_a",
+      input: "patch A",
+    },
+    {
+      type: "response.custom_tool_call_input.done",
+      item_id: "ct_b",
+      input: "patch B",
+    },
+  ];
+  const response = await transformer.transformResponseOut(
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of events) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+            );
+          }
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      }),
+      { headers: { "Content-Type": "text/event-stream" } }
+    )
+  );
+  const chunks = (await response.text())
+    .split("\n")
+    .filter((line) => line.startsWith("data: {"))
+    .map((line) => JSON.parse(line.slice(6)));
+  const toolCalls = chunks.flatMap(
+    (chunk: any) => chunk.choices?.[0]?.delta?.tool_calls ?? []
+  );
+  const starts = toolCalls.filter((call: any) => call.id);
+  assert.equal(starts.length, 2);
+  assert.equal(starts[0].index, 0);
+  assert.equal(starts[1].index, 1);
+  const args = toolCalls.filter((call: any) => call.function?.arguments);
+  assert.equal(args[0].index, 0);
+  assert.equal(args[1].index, 1);
+  assert.equal(args[0].function.arguments, JSON.stringify({ input: "patch A" }));
+  assert.equal(args[1].function.arguments, JSON.stringify({ input: "patch B" }));
+}
+
+async function openAIResponsesOutboundRestoresResponseFormat() {
+  // Chat Completions response_format is the Unified stand-in for Responses
+  // text.format. Generic Responses destinations (xAI, OpenAI) accept the
+  // native field, so restore it and drop the Chat-only property.
+  const transformer = new OpenAIResponsesTransformer();
+  const result = await transformer.transformRequestIn(
+    responseFormatRequest() as any,
+    {},
+    {}
+  );
+  assert.equal((result as any).response_format, undefined);
+  assert.deepEqual((result as any).text.format, {
+    type: "json_schema",
+    name: "result",
+    schema: { type: "object", properties: { ok: { type: "boolean" } } },
+    strict: true,
+  });
+}
+
+async function openAIResponsesOutboundMapsChatAndAnthropicFields() {
+  const transformer = new OpenAIResponsesTransformer();
+  const result = await transformer.transformRequestIn(
+    {
+      model: "grok-4.6",
+      messages: [{ role: "user", content: "hi" }],
+      tool_choice: "required",
+      parallel_tool_calls: false,
+      stop: ["END"],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "Read",
+            description: "read",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+    } as any,
+    {},
+    {}
+  );
+  assert.equal((result as any).tool_choice, "required");
+  assert.equal((result as any).parallel_tool_calls, false);
+  assert.equal((result as any).stop, undefined);
+}
+
 async function main() {
   sanitizerContract();
   redosAdversarialInputIsLinear();
@@ -325,8 +731,17 @@ async function main() {
   await openAIResponsesRequestIsSanitized();
   await openAIResponsesProviderRequestPreservesAssistantText();
   await streamingResponsesAreSanitized();
+  await streamingFlatJsonIsReEmittedAsSse();
   await nonStreamingResponsesAreSanitized();
   await clientBoundCallIdsAreMapped();
+  await codexOutboundCustomToolIsRestored();
+  await codexOutboundRegressionWithoutCustomToolNames();
+  await codexInboundCustomToolStreamingIsConverted();
+  await codexInboundCustomToolNonStreamingIsConverted();
+  await codexInboundParallelCustomToolsKeepDistinctIndexes();
+  await codexOutboundResponseFormatIsRestored();
+  await openAIResponsesOutboundRestoresResponseFormat();
+  await openAIResponsesOutboundMapsChatAndAnthropicFields();
   console.log("responses.call-id-sanitize: ok");
 }
 

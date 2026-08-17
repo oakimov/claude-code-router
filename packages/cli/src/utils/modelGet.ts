@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { backupConfigFile, readConfigFile, readConfigFileRaw, writeConfigFile } from "./index";
-import { CONFIG_FILE, resolveCodexPat } from "@caeliq/ccr-shared";
+import { CONFIG_FILE, resolveCodexPat, resolveXaiApiKey } from "@caeliq/ccr-shared";
 import type { ProviderConfig } from "@caeliq/ccr-shared";
 import {
   buildCliCodexHeaders,
@@ -25,6 +25,7 @@ const ANTIGRAVITY_AUTH_FILE = join(
   "antigravity_auth.json"
 );
 const QWEN_AUTH_FILE = join(homedir(), ".claude-code-router", "qwen_auth.json");
+const XAI_AUTH_FILE = join(homedir(), ".claude-code-router", "xai_auth.json");
 const CONFIG_PATH_DISPLAY = "~/.claude-code-router/config.json";
 const READABLE_CONFIG_FILE = process.env.CCR_CONFIG_FILE || CONFIG_FILE;
 const DEFAULT_CODEX_CLIENT_VERSION = "0.145.0";
@@ -92,6 +93,13 @@ function isQwenAuthProvider(provider: ProviderConfig): boolean {
     return true;
   }
   return transformerUseIncludes(provider, "qwen-auth");
+}
+
+function isXaiAuthProvider(provider: ProviderConfig): boolean {
+  if (normalizeProviderName(provider.name) === "xai") {
+    return true;
+  }
+  return transformerUseIncludes(provider, "xai-auth");
 }
 
 function hostnameOf(urlLike: string): string {
@@ -208,6 +216,31 @@ function getQwenAccessToken(): string {
   return tokens.token;
 }
 
+function getXaiAccessToken(): string {
+  if (!existsSync(XAI_AUTH_FILE)) {
+    throw new Error("No xAI OAuth tokens found. Run `ccr xai-auth` to authenticate.");
+  }
+
+  let tokens: { access_token?: string; expires_at?: number };
+  try {
+    tokens = JSON.parse(readFileSync(XAI_AUTH_FILE, "utf-8"));
+  } catch {
+    throw new Error("Failed to read xAI OAuth tokens from ~/.claude-code-router/xai_auth.json.");
+  }
+
+  if (!isNonEmptyString(tokens.access_token)) {
+    throw new Error("xAI OAuth access token is missing. Run `ccr xai-auth` again.");
+  }
+
+  // expires_at is best-effort — xAI doesn't always return expires_in (see
+  // core utils/xai-auth.ts) — so only fail closed when it's actually present.
+  if (typeof tokens.expires_at === "number" && tokens.expires_at <= Date.now() / 1000) {
+    throw new Error("xAI OAuth access token is expired. Run `ccr xai-auth` again.");
+  }
+
+  return tokens.access_token;
+}
+
 function getRequestApiKey(provider: ProviderConfig): string | undefined {
   if (isCursorProvider(provider)) {
     const apiKey = getProviderApiKey(provider)?.trim();
@@ -242,6 +275,14 @@ function getRequestApiKey(provider: ProviderConfig): string | undefined {
     return getQwenAccessToken();
   }
 
+  // xAI: a literal xai-... key (or $VAR reference to one) bypasses OAuth
+  // entirely, mirroring Codex's PAT/OAuth split; otherwise fall back to the
+  // stored device-code OAuth token.
+  if (isXaiAuthProvider(provider)) {
+    const pat = resolveXaiApiKey(getProviderApiKey(provider), { allowBareEnvName: true });
+    return pat || getXaiAccessToken();
+  }
+
   return getProviderApiKey(provider);
 }
 
@@ -266,6 +307,10 @@ function getMissingApiKeyMessage(provider: ProviderConfig): string {
 
   if (isQwenAuthProvider(provider)) {
     return "Qwen authentication unavailable. Run `ccr qwen-auth` to authenticate.";
+  }
+
+  if (isXaiAuthProvider(provider)) {
+    return "xAI authentication unavailable. Set api_key to a xai-... key, or run `ccr xai-auth` for OAuth.";
   }
 
   return `Provider \"${provider.name}\" does not have a usable API key configured.`;
@@ -802,6 +847,15 @@ function printAuthSource(provider: ProviderConfig): void {
 
   if (isQwenAuthProvider(provider)) {
     console.log(`${BOLDCYAN}Auth source:${RESET} ${QWEN_AUTH_FILE}`);
+  }
+
+  if (isXaiAuthProvider(provider)) {
+    const pat = resolveXaiApiKey(getProviderApiKey(provider), { allowBareEnvName: true });
+    if (pat) {
+      console.log(`${BOLDCYAN}Auth source:${RESET} api_key (xai-...)`);
+    } else {
+      console.log(`${BOLDCYAN}Auth source:${RESET} ${XAI_AUTH_FILE}`);
+    }
   }
 }
 

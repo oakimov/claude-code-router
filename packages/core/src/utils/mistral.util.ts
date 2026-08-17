@@ -8,44 +8,89 @@ import {
 import { normalizeToolParameters } from "./schema";
 import { deriveCacheSessionKey } from "./cacheControl";
 
+function thinkingTextFromPart(part: any): string {
+  if (!part || part.type !== "thinking") return "";
+  const parts = Array.isArray(part.thinking) ? part.thinking : [part.thinking];
+  return parts
+    .map((piece: any) => {
+      if (typeof piece === "string") return piece;
+      if (piece && typeof piece.text === "string") return piece.text;
+      return piece == null ? "" : JSON.stringify(piece);
+    })
+    .join("");
+}
+
+function thinkingTextFromMessage(msg: any): string {
+  const fromThinking =
+    typeof msg?.thinking?.content === "string" ? msg.thinking.content : "";
+  const fromReasoning =
+    typeof msg?.reasoning_content === "string" ? msg.reasoning_content : "";
+  let fromContent = "";
+  if (Array.isArray(msg?.content)) {
+    for (const part of msg.content) {
+      fromContent += thinkingTextFromPart(part);
+    }
+  }
+  return fromThinking || fromReasoning || fromContent;
+}
+
+function mistralThinkingBlock(text: string): Record<string, unknown> {
+  return {
+    type: "thinking",
+    thinking: [{ type: "text", text }],
+  };
+}
+
+function stripPartCacheControl(part: any): any {
+  if (!part || typeof part !== "object" || !("cache_control" in part)) {
+    return part;
+  }
+  const { cache_control: _cache_control, ...rest } = part;
+  return rest;
+}
+
 /**
- * Helper to flatten array content to strings and remove cache_control
+ * Flatten array content, fold Unified/Chat thinking into Mistral ThinkChunks,
+ * and drop Unified-only fields Mistral rejects.
  */
 function transformMessage(msg: any): any {
   const clonedMsg = { ...msg };
-  if (Array.isArray(clonedMsg.content)) {
-    const contentArray = clonedMsg.content as MessageContent[];
-
-    const hasImages = contentArray.some(
-      (part) => (part as any).type === "image_url"
-    );
-
-    const hasThinking = contentArray.some(
-      (part) => (part as any).type === "thinking"
-    );
-
-    if (hasImages || hasThinking) {
-      clonedMsg.content = contentArray.map((part) => {
-        if ((part as any).type === "text") {
-          const { cache_control: _cache_control, ...rest } = part as TextContent;
-          return rest;
-        }
-        return part;
-      });
-    } else {
-      const textParts = contentArray
-        .filter((part): part is TextContent => part.type === "text")
+  const thinkingText = thinkingTextFromMessage(clonedMsg);
+  const contentArray = Array.isArray(clonedMsg.content)
+    ? (clonedMsg.content as any[])
+    : undefined;
+  const imageParts = (contentArray || [])
+    .filter((part) => part?.type === "image_url")
+    .map(stripPartCacheControl);
+  const plainText = contentArray
+    ? contentArray
+        .filter((part): part is TextContent => part?.type === "text")
         .map((part) => part.text)
-        .filter((text) => text && text.length > 0);
+        .filter((text) => text && text.length > 0)
+        .join("\n")
+    : typeof clonedMsg.content === "string"
+      ? clonedMsg.content
+      : "";
 
-      clonedMsg.content = textParts.join("\n");
+  if (clonedMsg.role === "assistant" && thinkingText) {
+    const content: any[] = [];
+    content.push(mistralThinkingBlock(thinkingText));
+    if (plainText) content.push({ type: "text", text: plainText });
+    content.push(...imageParts);
+    clonedMsg.content = content;
+  } else if (contentArray) {
+    if (imageParts.length > 0) {
+      clonedMsg.content = contentArray
+        .filter((part) => part?.type === "text" || part?.type === "image_url")
+        .map(stripPartCacheControl);
+    } else {
+      clonedMsg.content = plainText;
     }
   }
 
-  if ((clonedMsg as any).cache_control) {
-    delete (clonedMsg as any).cache_control;
-  }
-
+  delete clonedMsg.thinking;
+  delete clonedMsg.reasoning_content;
+  delete clonedMsg.cache_control;
   return clonedMsg;
 }
 
@@ -163,6 +208,15 @@ export function buildRequestBody(
     delete req.reasoning;
   }
 
+  // Request-level Unified / Anthropic control fields are not Mistral Chat
+  // properties. Thinking history already lives on messages as ThinkChunks.
+  delete (req as any).thinking;
+  delete (req as any).enable_thinking;
+  delete (req as any).anthropic_thinking;
+  delete (req as any).anthropic_output_config;
+  delete (req as any).anthropic_metadata;
+  delete (req as any).anthropic_stop_sequences;
+
   return req;
 }
 
@@ -218,6 +272,7 @@ export async function transformResponseOut(
 
       if (thinkingText) {
         jsonResponse.thinking = { content: thinkingText };
+        message.thinking = { content: thinkingText };
       }
     }
 

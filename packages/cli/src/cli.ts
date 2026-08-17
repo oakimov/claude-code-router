@@ -25,6 +25,7 @@ import { runQwenAuth } from "./utils/qwen-cli-auth";
 import { runChromeBridge } from "./utils/chrome-device-bridge";
 import { runClaudeAuth } from "./utils/claude-auth-cli";
 import { runAntigravityAuth } from "./utils/antigravity-cli-auth";
+import { runXaiAuth } from "./utils/xai-auth-cli";
 
 
 const command = process.argv[2];
@@ -48,6 +49,7 @@ const KNOWN_COMMANDS = [
   "qwen-auth",
   "claude-auth",
   "antigravity-auth",
+  "xai-auth",
   "chrome-bridge",
   "-v",
   "version",
@@ -80,6 +82,9 @@ Commands:
   claude-auth   Show Claude Code OAuth credential status and provider config
   antigravity-auth  Authenticate with Google Antigravity via OAuth
                     Options: --manual, --project <id>
+  xai-auth      Authenticate with xAI Grok via SuperGrok/X Premium+ OAuth
+                (device code, no browser callback needed), or use a plain
+                XAI_API_KEY / xai-... api_key instead
   chrome-bridge Start Chrome on-device model bridge (for Gemini Nano)
   -v, version   Show version information
   -h, help      Show help information
@@ -344,6 +349,9 @@ async function main() {
       break;
     case "antigravity-auth":
       await runAntigravityAuth();
+      break;
+    case "xai-auth":
+      await runXaiAuth();
       break;
     case "chrome-bridge": {
       // Parse optional --port and --cdp flags

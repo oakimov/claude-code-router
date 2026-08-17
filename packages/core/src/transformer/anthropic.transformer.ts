@@ -39,6 +39,13 @@ import {
   normalizeReasoningEffort,
   toAnthropicReasoningEffort,
 } from "@/utils/reasoning-effort";
+// Relative path, not the "@/" alias: esbuild's alias resolver treats the
+// trailing ".util" as a file extension and fails to resolve dotted module
+// names. Every other importer of this module uses a relative path too.
+import {
+  anthropicThinkingSignatureFrom,
+  canonicalAssistantTurn,
+} from "../utils/openai.responses.util";
 
 function toAnthropicCacheUsage(usage: any): Record<string, number> {
   const cached = usage?.prompt_tokens_details?.cached_tokens || 0;
@@ -479,10 +486,29 @@ export class AnthropicTransformer implements Transformer {
           type: "function",
           function: { name: request.tool_choice.name },
         };
+      } else if (request.tool_choice.type === "any") {
+        // Unified is Chat Completions: Anthropic "any" is Chat/Responses "required".
+        result.tool_choice = "required";
       } else {
         result.tool_choice = request.tool_choice.type;
       }
+      if (request.tool_choice.disable_parallel_tool_use === true) {
+        result.parallel_tool_calls = false;
+      }
     }
+
+    const format = request.output_config?.format;
+    if (format?.type === "json_schema" && format.schema && typeof format.schema === "object") {
+      (result as any).response_format = {
+        type: "json_schema",
+        json_schema: {
+          ...(typeof format.name === "string" ? { name: format.name } : {}),
+          schema: format.schema,
+          ...(format.strict !== undefined ? { strict: format.strict } : {}),
+        },
+      };
+    }
+
     return result;
   }
 
@@ -599,27 +625,41 @@ export class AnthropicTransformer implements Transformer {
 
       if (msg.role === "assistant") {
         const content: any[] = [];
-        // Anthropic requires thinking blocks to precede tool_use blocks in the content array
-        if (msg.thinking) {
-          content.push({ type: "thinking", thinking: msg.thinking.content, signature: msg.thinking.signature });
+        // Fixed order: thinking → text → images → tool_use.
+        const turn = canonicalAssistantTurn(msg);
+        if (turn.thinking) {
+          const signature = anthropicThinkingSignatureFrom(turn.thinking);
+          content.push({
+            type: "thinking",
+            thinking: turn.thinking.content,
+            ...(signature ? { signature } : {}),
+          });
         }
-        if (typeof msg.content === "string" && msg.content) {
-          content.push({ type: "text", text: msg.content });
-        } else if (Array.isArray(msg.content)) {
-          for (const part of msg.content) {
-            if (part.type === "text" && part.text) {
-              content.push({
-                type: "text",
-                text: part.text,
-                ...((part as any).cache_control
-                  ? { cache_control: (part as any).cache_control }
-                  : {}),
-              });
-            }
+        for (const text of turn.texts) {
+          content.push({
+            type: "text",
+            text: text.text,
+            ...(text.cache_control ? { cache_control: text.cache_control } : {}),
+          });
+        }
+        for (const image of turn.images) {
+          const url = image.image_url?.url;
+          if (typeof url === "string" && url.startsWith("data:")) {
+            const [meta, data] = url.split(",");
+            const mediaType = meta.split(":")[1]?.split(";")[0] ?? "image/jpeg";
+            content.push({
+              type: "image",
+              source: { type: "base64", media_type: mediaType, data },
+            });
+          } else if (typeof url === "string") {
+            content.push({
+              type: "image",
+              source: { type: "url", url },
+            });
           }
         }
-        if (msg.tool_calls?.length) {
-          for (const tc of msg.tool_calls) {
+        if (turn.toolCalls.length) {
+          for (const tc of turn.toolCalls) {
             let input: Record<string, any> = {};
             try { input = JSON.parse(tc.function.arguments || "{}"); } catch (e) { (logger?.error ?? console.error)("Failed to parse tool_call arguments for tool '%s': %s", tc.function.name, e); }
             content.push({
@@ -705,6 +745,20 @@ export class AnthropicTransformer implements Transformer {
       else if (typeof tc === "string") tool_choice = { type: "tool", name: tc };
       else if (tc.type === "function") tool_choice = { type: "tool", name: tc.function?.name };
     }
+    // Responses `parallel_tool_calls: false` is Anthropic's
+    // disable_parallel_tool_use. When tools exist and the client did not
+    // force a choice, emit auto so the flag has a home.
+    if (
+      request.parallel_tool_calls === false &&
+      request.tool_choice !== "none"
+    ) {
+      if (!tool_choice && tools?.length) {
+        tool_choice = { type: "auto" };
+      }
+      if (tool_choice && typeof tool_choice === "object") {
+        tool_choice.disable_parallel_tool_use = true;
+      }
+    }
 
     // Collapse to the legacy string form only for a single plain-text block;
     // anything else stays an Anthropic system block array.
@@ -756,11 +810,24 @@ export class AnthropicTransformer implements Transformer {
         : request.reasoning?.effort
           ? { effort: request.reasoning.effort }
           : undefined;
-    const outputConfig = normalizeAnthropicOutputConfig(
-      outputConfigSource,
-      reasoningDisabled
-    );
-    if (outputConfig) {
+    const outputConfig =
+      normalizeAnthropicOutputConfig(outputConfigSource, reasoningDisabled) ||
+      {};
+    // Responses text.format arrives as Unified response_format. Anthropic
+    // structured output lives on output_config.format — json_schema only.
+    // json_object has no Messages equivalent; omit rather than reject.
+    const responseFormat = (request as any).response_format;
+    if (
+      responseFormat?.type === "json_schema" &&
+      responseFormat.json_schema?.schema &&
+      typeof responseFormat.json_schema.schema === "object"
+    ) {
+      outputConfig.format = {
+        type: "json_schema",
+        schema: responseFormat.json_schema.schema,
+      };
+    }
+    if (Object.keys(outputConfig).length) {
       body.output_config = outputConfig;
     }
     if (source?.metadata) {
@@ -1145,13 +1212,16 @@ export class AnthropicTransformer implements Transformer {
                     currentContentBlockIndex = thinkingBlockIndex;
                     isThinkingStarted = true;
                   }
-                  if (choice.delta.thinking.signature) {
+                  const thinkingSignatureValue = anthropicThinkingSignatureFrom(
+                    choice.delta.thinking
+                  );
+                  if (thinkingSignatureValue) {
                     const thinkingSignature = {
                       type: "content_block_delta",
                       index: currentContentBlockIndex,
                       delta: {
                         type: "signature_delta",
-                        signature: choice.delta.thinking.signature,
+                        signature: thinkingSignatureValue,
                       },
                     };
                     safeEnqueue(
@@ -1605,15 +1675,21 @@ export class AnthropicTransformer implements Transformer {
         throw new Error("No choices found in OpenAI response");
       }
       const content: any[] = [];
-      // Anthropic block order: thinking → server tool use → text → tool_use.
-      // Thinking must lead, otherwise a client replaying this turn (or resuming
-      // a tool loop) sees a signed thinking block that does not start the
-      // assistant message. The streaming path already emits this order.
+      // Fixed order: thinking → text → tools (server search, then client tools).
       if ((choice.message as any)?.thinking?.content) {
+        const signature = anthropicThinkingSignatureFrom(
+          (choice.message as any).thinking
+        );
         content.push({
           type: "thinking",
           thinking: (choice.message as any).thinking.content,
-          signature: (choice.message as any).thinking.signature,
+          ...(signature ? { signature } : {}),
+        });
+      }
+      if (choice.message.content) {
+        content.push({
+          type: "text",
+          text: choice.message.content,
         });
       }
       if (choice.message.annotations) {
@@ -1636,12 +1712,6 @@ export class AnthropicTransformer implements Transformer {
               title: item.url_citation.title,
             };
           }),
-        });
-      }
-      if (choice.message.content) {
-        content.push({
-          type: "text",
-          text: choice.message.content,
         });
       }
       if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {

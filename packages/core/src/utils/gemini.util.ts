@@ -2,6 +2,10 @@ import { UnifiedChatRequest, UnifiedMessage } from "../types/llm";
 import { Content, ContentListUnion, Part, ToolListUnion } from "@google/genai";
 import { collapseTypelessUnions, sanitizeJsonSchema } from "./schema";
 import { buildGeminiThinkingConfig } from "./gemini-thinking";
+import {
+  anthropicThinkingSignatureFrom,
+  thinkingFromUnifiedAssistant,
+} from "./openai.responses.util";
 
 /**
  * Models that Antigravity serves from an Anthropic backend while still speaking
@@ -313,11 +317,12 @@ export function buildRequestBody(
     const role = mapRole(message.role, { assistant: "model" });
     const parts = [];
 
-    // "ccr_…" signatures are CCR placeholders, not upstream reasoning state, so
-    // they are dropped. The sentinel is not substituted here: the API does not
-    // validate signatures on thought parts, and the sentinel measurably degrades
-    // model quality — it belongs on functionCall parts only (see below).
-    const rawSignature = message.thinking?.signature;
+    // Chat `reasoning_content` and Unified `thinking` are the same history.
+    // Unsigned thought parts are still omitted — Gemini 3 / Antigravity 400
+    // when a thought part has no thoughtSignature. The sentinel is not
+    // substituted here: it belongs on functionCall parts only.
+    const unifiedThinking = thinkingFromUnifiedAssistant(message);
+    const rawSignature = anthropicThinkingSignatureFrom(unifiedThinking);
     const realSignature = rawSignature?.startsWith("ccr_")
       ? undefined
       : rawSignature;
@@ -334,7 +339,7 @@ export function buildRequestBody(
     if (realSignature && role === "model") {
       parts.push({
         thought: true,
-        text: message.thinking?.content || "",
+        text: unifiedThinking?.content || "",
         thoughtSignature: realSignature,
       });
     }

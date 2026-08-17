@@ -29,6 +29,7 @@ import { OpencodeHeadersTransformer } from "./opencode-headers.transformer";
 import { ClaudeAuthTransformer } from "./claude-auth.transformer";
 import { CursorSdkTransformer } from "./cursor-sdk.transformer";
 import { AntigravityAuthTransformer } from "./antigravity-auth.transformer";
+import { XaiAuthTransformer } from "./xai-auth.transformer";
 
 export default {
   AnthropicTransformer,
@@ -62,4 +63,5 @@ export default {
   ClaudeAuthTransformer,
   CursorSdkTransformer,
   AntigravityAuthTransformer,
+  XaiAuthTransformer,
 };

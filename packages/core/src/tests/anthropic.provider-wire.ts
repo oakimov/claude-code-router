@@ -5,7 +5,9 @@
  */
 import assert from "node:assert/strict";
 import { AnthropicTransformer } from "../transformer/anthropic.transformer";
+import { OpenAIResponsesTransformer } from "../transformer/openai.responses.transformer";
 import type { UnifiedChatRequest } from "../types/llm";
+import { responsesRequestToUnified } from "../utils/openai.responses.util";
 
 const logger = { debug() {}, info() {}, warn() {}, error() {} } as any;
 
@@ -465,6 +467,160 @@ async function testTopLevelSystemPlusResidualSystemMessagesMerge() {
   assert.equal(body.messages.length, 1);
 }
 
+async function testResponsesJsonSchemaMapsToOutputConfigFormat() {
+  const unified = responsesRequestToUnified({
+    model: "claude-sonnet-4-20250514",
+    input: "give me json",
+    text: {
+      format: {
+        type: "json_schema",
+        name: "result",
+        schema: { type: "object", properties: { ok: { type: "boolean" } } },
+        strict: true,
+      },
+    },
+    reasoning: { effort: "high" },
+  });
+  const body = AnthropicTransformer.buildAnthropicBody(unified, logger);
+  assert.equal(body.output_config.effort, "high");
+  assert.deepEqual(body.output_config.format, {
+    type: "json_schema",
+    schema: { type: "object", properties: { ok: { type: "boolean" } } },
+  });
+}
+
+async function testResponsesJsonObjectOmitsOutputFormat() {
+  const unified = responsesRequestToUnified({
+    model: "claude-sonnet-4-20250514",
+    input: "give me json",
+    text: { format: { type: "json_object" } },
+  });
+  const body = AnthropicTransformer.buildAnthropicBody(unified, logger);
+  assert.equal(body.output_config, undefined);
+}
+
+async function testResponsesParallelToolCallsDisableOnAnthropic() {
+  const unified = responsesRequestToUnified({
+    model: "claude-sonnet-4-20250514",
+    input: "use a tool",
+    parallel_tool_calls: false,
+    tools: [
+      {
+        type: "function",
+        name: "Read",
+        description: "read",
+        parameters: { type: "object", properties: {} },
+      },
+    ],
+  });
+  const body = AnthropicTransformer.buildAnthropicBody(unified, logger);
+  assert.equal(body.tool_choice.type, "auto");
+  assert.equal(body.tool_choice.disable_parallel_tool_use, true);
+}
+
+async function testAnthropicThinkingHistoryMapsToResponsesReasoning() {
+  const anthropic = new AnthropicTransformer();
+  const unified = await anthropic.transformRequestOut({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 64,
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "plan it", signature: "anth-sig" },
+          { type: "text", text: "ok" },
+        ],
+      },
+    ],
+  });
+  const responses = new OpenAIResponsesTransformer();
+  const result = await responses.transformRequestIn(unified, {}, {});
+  const reasoning = (result as any).input.find((item: any) => item.type === "reasoning");
+  assert.ok(reasoning);
+  assert.equal(reasoning.summary[0].text, "plan it");
+  // Anthropic signatures are not Codex ciphertext — omit encrypted_content.
+  assert.equal(reasoning.encrypted_content, undefined);
+  assert.ok((result as any).input.every((item: any) => !item.thinking));
+}
+
+async function testAnthropicStructuredOutputMapsToUnifiedResponseFormat() {
+  const tf = new AnthropicTransformer();
+  const unified = await tf.transformRequestOut({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 64,
+    messages: [{ role: "user", content: "json please" }],
+    output_config: {
+      effort: "high",
+      format: {
+        type: "json_schema",
+        name: "result",
+        schema: { type: "object", properties: { ok: { type: "boolean" } } },
+        strict: true,
+      },
+    },
+    tool_choice: { type: "any", disable_parallel_tool_use: true },
+    tools: [
+      {
+        name: "Read",
+        description: "read",
+        input_schema: { type: "object", properties: {} },
+      },
+    ],
+  });
+  assert.equal(unified.tool_choice, "required");
+  assert.equal(unified.parallel_tool_calls, false);
+  assert.deepEqual((unified as any).response_format, {
+    type: "json_schema",
+    json_schema: {
+      name: "result",
+      schema: { type: "object", properties: { ok: { type: "boolean" } } },
+      strict: true,
+    },
+  });
+}
+
+async function testResponsesCustomToolsAreAnthropicInputSchema() {
+  const unified = responsesRequestToUnified({
+    model: "claude-sonnet-4-20250514",
+    input: [
+      { role: "user", content: "patch it" },
+      {
+        type: "custom_tool_call",
+        call_id: "ct_1",
+        name: "apply_patch",
+        input: "*** Begin Patch\n*** End Patch",
+      },
+      {
+        type: "custom_tool_call_output",
+        call_id: "ct_1",
+        output: "ok",
+      },
+    ],
+    tools: [
+      {
+        type: "custom",
+        name: "apply_patch",
+        description: "Apply a patch.",
+      },
+      {
+        type: "custom",
+        name: "exec",
+        description: "Run JavaScript.",
+      },
+    ],
+  });
+  const body = AnthropicTransformer.buildAnthropicBody(unified, logger);
+  const patch = body.tools.find((t: any) => t.name === "apply_patch");
+  const exec = body.tools.find((t: any) => t.name === "exec");
+  assert.ok(patch.input_schema.properties.input);
+  assert.ok(exec.input_schema.properties.input);
+  assert.ok(!exec.description.includes("await tools."));
+  const assistant = body.messages.find((m: any) => m.role === "assistant");
+  const toolUse = assistant.content.find((p: any) => p.type === "tool_use");
+  assert.equal(toolUse.name, "apply_patch");
+  assert.equal(toolUse.input.input, "*** Begin Patch\n*** End Patch");
+}
+
 async function main() {
   await testUnifiedToAnthropicRequest();
   await testBuildAnthropicBodyRoundTripViaClientOut();
@@ -478,6 +634,12 @@ async function main() {
   await testExactAuthPreservesBodyAndNormalizesUrl();
   await testClaudeAuthChainOwnsAuthNotWireBuild();
   await testTopLevelSystemPlusResidualSystemMessagesMerge();
+  await testResponsesJsonSchemaMapsToOutputConfigFormat();
+  await testResponsesJsonObjectOmitsOutputFormat();
+  await testResponsesParallelToolCallsDisableOnAnthropic();
+  await testResponsesCustomToolsAreAnthropicInputSchema();
+  await testAnthropicStructuredOutputMapsToUnifiedResponseFormat();
+  await testAnthropicThinkingHistoryMapsToResponsesReasoning();
   console.log("anthropic.provider-wire: PASS");
 }
 

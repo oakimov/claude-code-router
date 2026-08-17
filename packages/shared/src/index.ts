@@ -1,5 +1,6 @@
 export * from "./constants";
 export * from "./codex-auth";
+export * from "./xai-auth";
 export * from "./model-alias";
 
 // Export preset-related functionality

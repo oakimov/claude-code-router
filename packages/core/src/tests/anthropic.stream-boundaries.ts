@@ -14,9 +14,10 @@
  *
  * Non-streaming:
  *
- * 3. Blocks come back as thinking → server tool use → text → tool_use, matching
- *    the streaming order and `buildAnthropicBody`. A trailing thinking block
- *    means a client replaying the turn has one that does not lead the message.
+ * 3. Blocks come back as thinking → text → server tool use → tool_use, matching
+ *    `buildAnthropicBody` and the cache-stable assistant-turn order. A trailing
+ *    thinking block means a client replaying the turn has one that does not
+ *    lead the message.
  */
 import assert from "node:assert/strict";
 import { AnthropicTransformer } from "../transformer/anthropic.transformer";
@@ -377,7 +378,7 @@ async function testNonStreamingBlockOrder() {
 
   assert.deepEqual(
     body.content.map((b: any) => b.type),
-    ["thinking", "server_tool_use", "web_search_tool_result", "text", "tool_use"]
+    ["thinking", "text", "server_tool_use", "web_search_tool_result", "tool_use"]
   );
   assert.equal(body.content[0].thinking, "weighing options");
   assert.equal(body.content[0].signature, "sig_ns");

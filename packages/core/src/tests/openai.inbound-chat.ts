@@ -4,6 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { OpenAITransformer } from "../transformer/openai.transformer";
+import { responsesRequestToUnified } from "../utils/openai.responses.util";
 
 const logger = { debug() {}, info() {}, warn() {}, error() {} } as any;
 
@@ -131,10 +132,29 @@ async function testUnsupportedFields() {
       tf.transformRequestOut({
         model: "m",
         messages: [{ role: "user", content: "x" }],
-        response_format: { type: "json_schema", json_schema: {} },
+        response_format: { type: "grammar" },
       }),
     "unsupported_response_format"
   );
+
+  const withSchema = await tf.transformRequestOut({
+    model: "m",
+    messages: [{ role: "user", content: "x" }],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "result",
+        schema: { type: "object", properties: { ok: { type: "boolean" } } },
+      },
+    },
+  });
+  assert.deepEqual((withSchema as any).response_format, {
+    type: "json_schema",
+    json_schema: {
+      name: "result",
+      schema: { type: "object", properties: { ok: { type: "boolean" } } },
+    },
+  });
 
   await expectReject(
     () =>
@@ -369,6 +389,131 @@ async function testMissingMessages() {
   );
 }
 
+async function testResponsesOriginForwardsChatNativeFields() {
+  // Codex → Unified → Chat Completions must keep native Chat fields.
+  // transformRequestIn is provider outbound; it must not apply the
+  // Chat-client 400 that rejects structured response_format.
+  const unified = responsesRequestToUnified({
+    model: "gpt-4o",
+    input: "hi",
+    parallel_tool_calls: false,
+    reasoning: { effort: "high" },
+    text: {
+      format: {
+        type: "json_schema",
+        name: "result",
+        schema: { type: "object", properties: { ok: { type: "boolean" } } },
+      },
+    },
+    tools: [
+      {
+        type: "custom",
+        name: "exec",
+        description: "Run JavaScript.",
+      },
+    ],
+  });
+  const tf = new OpenAITransformer();
+  const out = await tf.transformRequestIn(unified, { name: "openai" }, {});
+  assert.deepEqual((out as any).response_format, {
+    type: "json_schema",
+    json_schema: {
+      name: "result",
+      schema: { type: "object", properties: { ok: { type: "boolean" } } },
+    },
+  });
+  assert.equal(out.parallel_tool_calls, false);
+  assert.equal((out as any).reasoning_effort, "high");
+  assert.equal((out as any).reasoning, undefined);
+  const exec = out.tools?.find((t: any) => t.function?.name === "exec");
+  assert.ok(exec?.function?.parameters?.properties?.input);
+  assert.ok(!exec?.function?.description?.includes("await tools."));
+}
+
+async function testChatInboundReasoningContentBecomesThinking() {
+  const tf = new OpenAITransformer();
+  const unified = await tf.transformRequestOut({
+    model: "gpt-4o",
+    messages: [
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: "ok",
+        reasoning_content: "plan first",
+      },
+    ],
+  });
+  const assistant = unified.messages[1] as any;
+  assert.equal(assistant.reasoning_content, "plan first");
+  assert.equal(assistant.thinking.content, "plan first");
+}
+
+async function testChatOutboundThinkingBecomesReasoningContent() {
+  const tf = new OpenAITransformer();
+  const out = await tf.transformRequestIn(
+    {
+      model: "gpt-4o",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "ok",
+          thinking: { content: "plan first", signature: "sig" },
+        },
+      ],
+    } as any,
+    { name: "openai" },
+    {}
+  );
+  const assistant = out.messages[1] as any;
+  assert.equal(assistant.reasoning_content, "plan first");
+  assert.equal(assistant.thinking, undefined);
+}
+
+async function testChatClientResponseAliasesThinking() {
+  const tf = new OpenAITransformer();
+  const out = await tf.transformResponseIn(
+    new Response(
+      JSON.stringify({
+        id: "chatcmpl-1",
+        object: "chat.completion",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "done",
+              thinking: { content: "hmm", signature: "sig" },
+            },
+          },
+        ],
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    )
+  );
+  const json = await out.json();
+  assert.equal(json.choices[0].message.reasoning_content, "hmm");
+  assert.equal(json.choices[0].message.thinking.content, "hmm");
+}
+
+async function testChatClientStreamAliasesReasoningContent() {
+  const tf = new OpenAITransformer();
+  const sse = [
+    'data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"hmm"},"finish_reason":null}]}',
+    "",
+    'data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const out = await tf.transformResponseIn(
+    new Response(sse, { headers: { "Content-Type": "text/event-stream" } })
+  );
+  const text = await out.text();
+  assert.ok(text.includes('"reasoning_content":"hmm"'));
+  assert.ok(text.includes('"thinking":{"content":"hmm"}'));
+  assert.equal((text.match(/data: \[DONE\]/g) || []).length, 1);
+}
+
 async function main() {
   await testSupportedFields();
   await testUnsupportedFields();
@@ -380,6 +525,11 @@ async function main() {
   await testDoneTextDoesNotSuppressTerminator();
   await testStreamFailureEmitsErrorAndDone();
   await testMissingMessages();
+  await testResponsesOriginForwardsChatNativeFields();
+  await testChatInboundReasoningContentBecomesThinking();
+  await testChatOutboundThinkingBecomesReasoningContent();
+  await testChatClientResponseAliasesThinking();
+  await testChatClientStreamAliasesReasoningContent();
   console.log("openai.inbound-chat: PASS");
 }
 

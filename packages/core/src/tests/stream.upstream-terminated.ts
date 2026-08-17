@@ -124,6 +124,47 @@ async function cancelDoesNotEmitUnhandledRejection() {
   );
 }
 
+async function cancelSkipsOnCompleteEnqueue() {
+  // Reproduces the real production race: a client disconnects (cancel())
+  // at the same moment the read loop is independently reaching its natural
+  // end, landing in the finally block. onComplete (e.g.
+  // finalizeResponsesStream's terminal-event flush) tries to enqueue on a
+  // controller the platform has already made unusable because of the
+  // cancel — in the real implementation this throws "Invalid state:
+  // Controller is already closed". There is no consumer left to receive
+  // it either way, so onComplete must be skipped once cancelled, not just
+  // have its failure swallowed after the fact.
+  let onCompleteCalled = false;
+  const upstream = sseResponse((controller) => {
+    controller.enqueue(new TextEncoder().encode('data: {"a":1}\n\n'));
+    // Deliberately left open: only an explicit cancel can end this stream.
+  });
+
+  const out = createSSEStreamReader(upstream, passthrough, {
+    logger: silentLogger,
+    onComplete: (ctx: any) => {
+      onCompleteCalled = true;
+      ctx.controller.enqueue(ctx.encoder.encode("data: [DONE]\n\n"));
+    },
+  });
+
+  const reader = out.body!.getReader();
+  await reader.read();
+  await reader.cancel("client gone");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(
+    onCompleteCalled,
+    false,
+    "onComplete must be skipped once the client has cancelled — there is no consumer left to enqueue to"
+  );
+  assert.deepEqual(
+    unhandled.map((r) => (r as any)?.message ?? String(r)),
+    [],
+    "cancel + onComplete race must not throw / orphan a rejection"
+  );
+}
+
 async function healthyStreamStillCompletes() {
   const upstream = sseResponse((controller) => {
     controller.enqueue(new TextEncoder().encode('data: {"a":1}\n\n'));
@@ -172,6 +213,7 @@ async function main() {
   await midStreamTerminationIsClassified();
   await clientCancelPropagatesUpstream();
   await cancelDoesNotEmitUnhandledRejection();
+  await cancelSkipsOnCompleteEnqueue();
   await healthyStreamStillCompletes();
   await malformedLineLoggingIsBoundedAndRedacted();
 

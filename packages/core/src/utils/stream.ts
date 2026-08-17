@@ -140,18 +140,43 @@ export function createSSEStreamReader(
       } finally {
         upstreamReader = null;
 
-        try {
-          options?.onComplete?.(ctx);
-        } catch (error) {
-          logStreamError(options?.logger, "Stream completion error", error);
-          if (!streamFailed) {
-            streamFailed = true;
-            controller.error(error);
+        // The client can disconnect (cancel() fires, see below) at the same
+        // moment the upstream read loop is independently reaching its
+        // natural end (done: true) — there's no ordering guarantee between
+        // the two. When that race lands here, the controller is already
+        // unusable from the platform's perspective even though we never
+        // called close()/error() on it ourselves: any onComplete that
+        // enqueues (e.g. flushing finalizeResponsesStream's terminal events)
+        // throws "Invalid state: Controller is already closed", which this
+        // catch turned into an unconditional controller.error() call that
+        // could itself throw on an already-dead controller — an unhandled
+        // rejection with a genuinely connected client still on the other
+        // end, i.e. a request that looked fine over HTTP but silently
+        // truncated. Skip onComplete entirely once cancelled: there is no
+        // consumer left to receive anything it would enqueue.
+        if (!cancelled) {
+          try {
+            options?.onComplete?.(ctx);
+          } catch (error) {
+            logStreamError(options?.logger, "Stream completion error", error);
+            if (!streamFailed) {
+              streamFailed = true;
+              try {
+                controller.error(error);
+              } catch {
+                // Controller was already closed/errored by the platform
+                // (e.g. the same disconnect race) — nothing left to signal.
+              }
+            }
           }
         }
 
-        if (!streamFailed) {
-          controller.close();
+        if (!streamFailed && !cancelled) {
+          try {
+            controller.close();
+          } catch {
+            // Same race as above: already closed by the platform.
+          }
         }
       }
     },

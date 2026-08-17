@@ -71,7 +71,12 @@ export interface UnifiedMessage {
   };
   thinking?: {
     content: string;
+    /** Anthropic thinking signature; never treat as Responses ciphertext. */
     signature?: string;
+    /** Provider-minted Responses/Codex reasoning ciphertext for replay. */
+    encrypted_content?: string;
+    /** Responses reasoning item id (`rs_…`); not interchangeable with ciphertext. */
+    id?: string;
   };
 }
 
@@ -196,6 +201,8 @@ export interface StreamChunk {
       thinking?: {
         content?: string;
         signature?: string;
+        encrypted_content?: string;
+        id?: string;
       };
       tool_calls?: Array<{
         id?: string;
