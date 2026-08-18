@@ -335,5 +335,29 @@
     "loading_config": "正在加载配置...",
     "error_prefix": "错误",
     "presets_installed": "已安装 {{count}} 个"
+  },
+  "health": {
+    "state_ok": "健康",
+    "state_warn": "性能下降",
+    "state_bad": "负载过高",
+    "memory": "内存",
+    "cpu": "CPU",
+    "event_loop": "事件循环",
+    "sessions": "会话",
+    "requests": "请求",
+    "cache": "缓存",
+    "cores": "核",
+    "system": "系统",
+    "container": "容器",
+    "memory_detail": "堆内存 {{heapUsed}} / {{heapTotal}} · {{scope}}已用 {{used}} / {{total}}",
+    "cpu_detail": "本窗口内进程 CPU 占用。负载均值 {{load}}，共 {{cpus}} 个 CPU",
+    "event_loop_detail": "回调延迟 p99，均值 {{mean}} 毫秒。数值偏高时客户端会感觉响应卡顿",
+    "sessions_detail": "最近 {{window}} 内共出现 {{active}} 个会话",
+    "requests_value": "{{inFlight}} / {{completed}}",
+    "requests_detail": "当前进行中 / 本窗口已完成 · 失败 {{failed}} 个（{{rate}}%）· p95 {{p95}} · 最久进行中 {{oldest}}",
+    "cache_detail": "本窗口缓存命中 {{cached}} / 提示词 {{prompt}} tokens",
+    "process_detail": "pid {{pid}} · node {{node}} · 运行 {{uptime}}",
+    "updated": "{{ago}}前",
+    "refresh": "刷新健康状态"
   }
 }

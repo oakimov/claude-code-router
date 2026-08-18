@@ -4,16 +4,21 @@ import { randomBytes } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
 import { initConfig, initDir } from "./utils";
+import {
+  HealthHeartbeat,
+  resolveHeartbeatIntervalMs,
+} from "./utils/health-heartbeat";
 import { createServer } from "./server";
 import { apiKeyAuth, detectClientProtocol } from "./middleware/auth";
 import {
   CONFIG_FILE,
+  HEALTH_FILE,
   HOME_DIR,
   RATE_LIMIT_CONFIG,
   listPresets,
 } from "@caeliq/ccr-shared";
 import { createStream } from 'rotating-file-stream';
-import { sessionUsageCache, SSEParserTransform, SSESerializerTransform, rewriteStream } from "@caeliq/llms";
+import { sessionUsageCache, setHealthReporter, SSEParserTransform, SSESerializerTransform, rewriteStream } from "@caeliq/llms";
 import JSON5 from "json5";
 import { IAgent, ITool } from "./agents/type";
 import agentsManager from "./agents";
@@ -192,9 +197,19 @@ async function getServer(options: RunOptions = {}) {
   // Register and configure plugins from config
   await registerPluginsFromConfig(serverInstance, config);
 
+  const heartbeat = new HealthHeartbeat({
+    intervalMs: resolveHeartbeatIntervalMs(config),
+    logger: serverInstance.app.log,
+    snapshotFile: HEALTH_FILE,
+  });
+
+  // Enrich the existing `/health` liveness probe rather than adding a second
+  // endpoint; the UI status bar reads its `vitals` field.
+  setHealthReporter(() => heartbeat.getState());
+
   // Pathname + protocol detection MUST run before auth so 401/403 can use
   // the client protocol error envelope.
-  serverInstance.addHook("onRequest", async (req: any, _reply: any) => {
+  serverInstance.addHook("onRequest", async (req: any, reply: any) => {
     const url = new URL(`http://127.0.0.1${req.url}`);
     req.pathname = url.pathname;
     detectClientProtocol(req);
@@ -202,6 +217,10 @@ async function getServer(options: RunOptions = {}) {
     const presetMatch = req.pathname.match(/^\/preset\/([^/]+)\//);
     if (presetMatch) {
       req.preset = presetMatch[1];
+    }
+    // Only routed LLM traffic counts; UI/status polling would drown the report.
+    if (req.protocolMatch) {
+      heartbeat.trackRequest(req, reply);
     }
   });
 
@@ -397,6 +416,7 @@ async function getServer(options: RunOptions = {}) {
               try {
                 const message = JSON.parse(str);
                 sessionUsageCache.put(req.sessionId, message.usage);
+                heartbeat.recordUsage(req.sessionId, message.usage);
               } catch {}
             }
           } catch (readError: any) {
@@ -415,6 +435,7 @@ async function getServer(options: RunOptions = {}) {
       }
       if (typeof payload === 'object' && payload !== null) {
         sessionUsageCache.put(req.sessionId, payload.usage);
+        heartbeat.recordUsage(req.sessionId, payload.usage);
       }
     }
     done(null, payload)
@@ -422,6 +443,14 @@ async function getServer(options: RunOptions = {}) {
   serverInstance.addHook("onSend", async (req: any, reply: any, payload: any) => {
     event.emit('onSend', req, reply, payload);
     return payload;
+  });
+
+  // Report once the port is bound, then on every interval.
+  serverInstance.addHook("onListen", async () => {
+    heartbeat.start();
+  });
+  serverInstance.addHook("onClose", async () => {
+    heartbeat.stop();
   });
 
   // Add global error handlers to prevent the service from crashing

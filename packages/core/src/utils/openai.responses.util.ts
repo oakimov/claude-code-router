@@ -1,4 +1,5 @@
 import { UnifiedChatRequest } from "@/types/llm";
+import { createHash } from "crypto";
 import { createApiError } from "@/api/middleware";
 import { sanitizeResponsesCallId } from "@/utils/toolCallId";
 import { canonicalReasoning } from "@/utils/reasoning-effort";
@@ -608,7 +609,15 @@ export function responsesReasoningItemFromThinking(
   if (!content && !encrypted_content && !thinkingId) return null;
   const item: any = {
     type: "reasoning",
-    id: thinkingId || id || `rs_${Date.now()}`,
+    // Date.now() ids rewrite the whole Responses/Codex prefix on every
+    // turn and bust prompt cache. Prefer a carried id, then a caller
+    // label, then a stable hash of the summary text.
+    id:
+      thinkingId ||
+      id ||
+      (content
+        ? `rs_${createHash("sha256").update(content).digest("hex").slice(0, 24)}`
+        : "rs_anon"),
     summary: content ? [{ type: "summary_text", text: content }] : [],
   };
   if (encrypted_content) item.encrypted_content = encrypted_content;

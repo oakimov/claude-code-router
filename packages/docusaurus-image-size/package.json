@@ -11,10 +11,10 @@
     }
   },
   "dependencies": {
-    "probe-image-size": "^7.3.0"
+    "probe-image-size": "^7.4.0"
   },
   "devDependencies": {
-    "tsx": "^4.23.1"
+    "tsx": "^4.23.12"
   },
   "engines": {
     "node": ">=22.19.0"

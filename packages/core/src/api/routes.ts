@@ -7,6 +7,7 @@ import { Readable } from "stream";
 import { RegisterProviderRequest, LLMProvider } from "@/types/llm";
 import { sendUnifiedRequest } from "@/utils/request";
 import { createApiError } from "./middleware";
+import { readHealthVitals } from "@/utils/health-reporter";
 import { version } from "../../package.json";
 import { ConfigService } from "@/services/config";
 import { ProviderService } from "@/services/provider";
@@ -36,6 +37,7 @@ import {
   logOutboundCacheStructure,
   tapUpstreamSSEDebug,
 } from "../utils/sse-debug-tap";
+import { withSSEClientKeepalive } from "@/utils/sse/client-keepalive";
 import { sendWithUnauthorizedAuthRecovery } from "@/utils/auth-recovery";
 import {
   canonicalizeOutboundHeaders,
@@ -175,6 +177,8 @@ async function handleTransformerEndpoint(
           model: prepared.modelName,
         }
       : cloneProtocolBody(prepared.unifiedBody);
+
+    recordClientCachePrefix(req, fastify, provider, pipelineBody);
 
     const { requestBody, config, bypass } = await processRequestTransformers(
       pipelineBody,
@@ -409,6 +413,8 @@ async function handleFallback(
             model: fallbackModelOnly,
           }
         : unifiedBody;
+
+      recordClientCachePrefix(newReq, fastify, provider, pipelineBody);
 
       const { requestBody, config, bypass } = await processRequestTransformers(
         pipelineBody,
@@ -687,6 +693,28 @@ async function processRequestTransformers(
 }
 
 /**
+ * Snapshot the client-leg cache prefix before the provider transformer chain
+ * runs. Held on the request so the wire snapshot can attribute a broken prefix
+ * to the client or to our own transformers instead of leaving it ambiguous.
+ */
+function recordClientCachePrefix(
+  req: any,
+  fastify: FastifyInstance,
+  provider: any,
+  body: any
+): void {
+  if (!req) return;
+  req._cachePrefixClientDiff = logOutboundCacheStructure(body, {
+    logger: req.log ?? fastify.log,
+    reqId: req.id,
+    provider: provider?.name,
+    model: body?.model,
+    conversationId: req.sessionId,
+    stage: "client",
+  });
+}
+
+/**
  * Send request to LLM provider
  * Handle authentication, build request config, send request and handle errors
  */
@@ -703,11 +731,28 @@ async function sendRequestToProvider(
     logger: context?.req?.log ?? fastify.log,
     reqId: context?.req?.id,
     provider: provider?.name,
+    model: requestBody?.model,
+    conversationId: context?.req?.sessionId,
   };
 
   const tapProviderResponse = async (response: Response) => {
-    logOutboundCacheStructure(requestBody, debugOpts);
-    return tapUpstreamSSEDebug(response, debugOpts);
+    const cacheDiff = logOutboundCacheStructure(requestBody, {
+      ...debugOpts,
+      stage: "wire",
+      responseStatus: response?.status,
+      clientStageDiff: context?.req?._cachePrefixClientDiff,
+      cacheAffinity: {
+        sessionId: config?.headers?.["session-id"],
+        threadId: config?.headers?.["thread-id"],
+        clientRequestId: config?.headers?.["x-client-request-id"],
+      },
+    });
+    return tapUpstreamSSEDebug(response, {
+      ...debugOpts,
+      responseStatus: response?.status,
+      clientStageDiff: context?.req?._cachePrefixClientDiff,
+      cacheDiff,
+    });
   };
 
   // Allow a transformer to own the full upstream call (non-fetch transports,
@@ -1045,7 +1090,12 @@ async function formatResponse(
       // fromWeb() locks response.body; destroy() cancels via that reader.
       // Never call response.body.cancel() afterward — it rejects with
       // ERR_INVALID_STATE ("ReadableStream is locked") as an unhandledRejection.
-      const nodeStream = Readable.fromWeb(response.body as any);
+      //
+      // Keepalive comments every 10s of upstream silence so Claude Code's 20s
+      // byte-idle spinner ("Waiting for API response · check your network")
+      // does not abort-and-retry during Anthropic's ~25–30s ping gaps.
+      const clientBody = withSSEClientKeepalive(response.body);
+      const nodeStream = Readable.fromWeb(clientBody as any);
       let cleanedUp = false;
 
       const cleanup = () => {
@@ -1187,7 +1237,14 @@ export const registerApiRoutes = async (
   });
 
   fastify.get("/health", rateLimitOptions, async () => {
-    return { status: "ok", timestamp: new Date().toISOString() };
+    // The liveness contract (status + timestamp) is fixed. The process owner
+    // may attach richer vitals; when it does not, the probe is unchanged.
+    const vitals = readHealthVitals();
+    return {
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      ...(vitals ? { vitals } : {}),
+    };
   });
 
   // Client protocol routes (canonical + aliases) from the protocol registry.

@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Outlet } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppSidebar } from "@/components/layout/AppSidebar";
+import { HealthBar } from "@/components/layout/HealthBar";
 import { ShellChromeProvider } from "@/components/layout/ShellChrome";
 import { cn } from "@/lib/utils";
 
@@ -35,14 +36,17 @@ export function AppShell({ children }: AppShellProps) {
       <ShellChromeProvider>
         <div className="flex h-dvh overflow-hidden bg-background font-sans">
           <AppSidebar collapsed={collapsed} onCollapsedChange={setCollapsed} />
-          <div
-            className={cn(
-              "content-container my-2 mr-2 min-w-0 flex-1 overflow-hidden rounded-md border border-border bg-card",
-            )}
-          >
-            <main className="content-container-inner custom-scrollbar h-full overflow-auto p-4 md:p-6">
-              {children ?? <Outlet />}
-            </main>
+          <div className="my-2 mr-2 flex min-w-0 flex-1 flex-col overflow-hidden">
+            <HealthBar />
+            <div
+              className={cn(
+                "content-container min-h-0 flex-1 overflow-hidden rounded-md border border-border bg-card",
+              )}
+            >
+              <main className="content-container-inner custom-scrollbar h-full overflow-auto p-4 md:p-6">
+                {children ?? <Outlet />}
+              </main>
+            </div>
           </div>
         </div>
       </ShellChromeProvider>

@@ -272,3 +272,5 @@ export {
   type ProtocolRouteMatch,
 } from "./routing/protocol-endpoints";
 export { protocolErrorBody } from "./routing/protocol-errors";
+export { setHealthReporter } from "./utils/health-reporter";
+export type { HealthReporter } from "./utils/health-reporter";

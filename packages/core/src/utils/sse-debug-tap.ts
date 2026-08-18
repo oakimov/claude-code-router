@@ -5,11 +5,32 @@ import {
   sanitizeBodyForLog,
   sanitizeUpstreamErrorBody,
 } from "./redact";
+import {
+  attributeDivergenceStage,
+  rememberAndDiffOutboundCachePrefix,
+  type CacheAffinityHeaders,
+  type CachePrefixDiff,
+  type CachePrefixStage,
+} from "./cache-prefix-debug";
 
 export type UpstreamSSEDebugOptions = {
   logger?: any;
   reqId?: string | number;
   provider?: string;
+  /** Routed model — snapshots are keyed per destination. */
+  model?: string;
+  /** Conversation / Claude session id used to pair consecutive cache snapshots. */
+  conversationId?: string;
+  /** Pipeline position this body was captured at. Defaults to `wire`. */
+  stage?: CachePrefixStage;
+  /** Codex (and similar) routing headers that pin prompt-cache affinity. */
+  cacheAffinity?: CacheAffinityHeaders;
+  /** Upstream status. Non-2xx bodies are diffed but never become the baseline. */
+  responseStatus?: number;
+  /** Client-leg diff, used to attribute a broken wire prefix to a stage. */
+  clientStageDiff?: CachePrefixDiff | null;
+  /** Outbound diff for this request, joined with the observed cache usage. */
+  cacheDiff?: CachePrefixDiff | null;
   /** Cap for a single logged payload string (raw `data` field). */
   maxBytes?: number;
 };
@@ -74,6 +95,158 @@ function logReceived(
   }
 }
 
+type CacheUsage = {
+  /** True when cached tokens are reported outside the prompt total (Anthropic). */
+  cachedExcludedFromPrompt: boolean;
+  promptTokens?: number;
+  cachedTokens?: number;
+  cacheWriteTokens?: number;
+  outputTokens?: number;
+};
+
+function num(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function pickMax(a: number | undefined, b: number | undefined) {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.max(a, b);
+}
+
+/**
+ * Every provider reports prompt-cache hits under a different name. Collect the
+ * usage objects each protocol can emit and normalize them onto one shape.
+ */
+function mergeCacheUsage(acc: CacheUsage, event: unknown): CacheUsage {
+  if (!event || typeof event !== "object") return acc;
+  const node = event as any;
+  const candidates = [
+    node.usage,
+    node.message?.usage,
+    node.response?.usage,
+    node.usageMetadata,
+  ].filter((value) => value && typeof value === "object");
+
+  let next = acc;
+  for (const usage of candidates) {
+    const cached = pickMax(
+      pickMax(
+        num(usage.cache_read_input_tokens),
+        num(usage.prompt_tokens_details?.cached_tokens)
+      ),
+      pickMax(
+        pickMax(
+          num(usage.input_tokens_details?.cached_tokens),
+          num(usage.cachedContentTokenCount)
+        ),
+        num(usage.prompt_cache_hit_tokens)
+      )
+    );
+    next = {
+      // Anthropic's input_tokens counts only the uncached remainder; the
+      // OpenAI/Gemini families fold cached tokens into the prompt total.
+      cachedExcludedFromPrompt:
+        next.cachedExcludedFromPrompt ||
+        num(usage.cache_read_input_tokens) !== undefined ||
+        num(usage.cache_creation_input_tokens) !== undefined,
+      promptTokens: pickMax(
+        next.promptTokens,
+        pickMax(
+          pickMax(num(usage.input_tokens), num(usage.prompt_tokens)),
+          num(usage.promptTokenCount)
+        )
+      ),
+      cachedTokens: pickMax(next.cachedTokens, cached),
+      cacheWriteTokens: pickMax(
+        next.cacheWriteTokens,
+        num(usage.cache_creation_input_tokens)
+      ),
+      outputTokens: pickMax(
+        next.outputTokens,
+        pickMax(
+          pickMax(num(usage.output_tokens), num(usage.completion_tokens)),
+          num(usage.candidatesTokenCount)
+        )
+      ),
+    };
+  }
+  return next;
+}
+
+/**
+ * One-line triage verdict joining what we predicted against what upstream did.
+ * `unexpected-miss` is the row worth chasing: the prefix we sent was intact and
+ * the provider still charged full price.
+ */
+function cacheVerdict(
+  diff: CachePrefixDiff | null | undefined,
+  hitRatio: number | undefined
+): string {
+  if (hitRatio === undefined) return "unknown";
+  if (!diff || diff.firstTurn) return hitRatio > 0 ? "warm-start" : "cold";
+  if (diff.prefixIntact) return hitRatio > 0 ? "hit" : "unexpected-miss";
+  return hitRatio > 0 ? "partial" : "expected-miss";
+}
+
+function logCacheOutcome(opts: UpstreamSSEDebugOptions, usage: CacheUsage): void {
+  if (!isDebugEnabled(opts.logger)) return;
+  const diff = opts.cacheDiff;
+  const cached = usage.cachedTokens;
+  const prompt = usage.promptTokens;
+  // Anthropic reports the uncached remainder, so the billable prompt is the sum.
+  const promptTotal =
+    prompt === undefined
+      ? undefined
+      : usage.cachedExcludedFromPrompt
+        ? prompt + (cached || 0) + (usage.cacheWriteTokens || 0)
+        : prompt;
+  const hitRatio =
+    cached === undefined || !promptTotal
+      ? undefined
+      : Math.round((cached / promptTotal) * 1000) / 1000;
+
+  if (cached === undefined && prompt === undefined && !diff) return;
+
+  const divergenceStage = diff
+    ? attributeDivergenceStage(opts.clientStageDiff, diff)
+    : undefined;
+
+  opts.logger.debug({
+    reqId: opts.reqId,
+    provider: opts.provider,
+    type: "cache outcome",
+    verdict: cacheVerdict(diff, hitRatio),
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.responseStatus ? { status: opts.responseStatus } : {}),
+    ...(diff
+      ? {
+          conversationId: diff.conversationId,
+          conversationIdSource: diff.conversationIdSource,
+          predictedChange: diff.change,
+          prefixIntact: diff.prefixIntact,
+          ...(diff.firstDivergencePath
+            ? { firstDivergencePath: diff.firstDivergencePath }
+            : {}),
+          approxPrefixTokensLost: diff.approxPrefixTokensLost,
+          ...(diff.msSinceLastTurn !== undefined
+            ? { msSinceLastTurn: diff.msSinceLastTurn }
+            : {}),
+          ...(divergenceStage ? { divergenceStage } : {}),
+        }
+      : {}),
+    ...(promptTotal !== undefined ? { promptTokens: promptTotal } : {}),
+    ...(cached !== undefined ? { cachedTokens: cached } : {}),
+    ...(usage.cacheWriteTokens !== undefined
+      ? { cacheWriteTokens: usage.cacheWriteTokens }
+      : {}),
+    ...(usage.outputTokens !== undefined
+      ? { outputTokens: usage.outputTokens }
+      : {}),
+    ...(hitRatio !== undefined ? { cacheHitRatio: hitRatio } : {}),
+  });
+}
+
 function consumeSSEDebugBranch(
   debugBranch: ReadableStream<Uint8Array>,
   opts: UpstreamSSEDebugOptions
@@ -84,6 +257,13 @@ function consumeSSEDebugBranch(
       .pipeThrough(new TextDecoderStream())
       .pipeThrough(new SSEParserTransform())
       .getReader();
+
+    let usage: CacheUsage = { cachedExcludedFromPrompt: false };
+
+    // Yield so a sync-heavy logger.debug (pino file I/O) cannot monopolize the
+    // event loop and starve the client TransformStream on the same thread.
+    const yieldToClient = () =>
+      new Promise<void>((resolve) => setImmediate(resolve));
 
     try {
       while (true) {
@@ -99,14 +279,18 @@ function consumeSSEDebugBranch(
           (event.data as any).type === "done"
         ) {
           logReceived(opts, "[DONE]");
+          await yieldToClient();
           continue;
         }
 
         if (typeof event.data === "object" && (event.data as any).raw != null) {
           const raw = String((event.data as any).raw);
           logReceived(opts, raw);
+          await yieldToClient();
           continue;
         }
+
+        usage = mergeCacheUsage(usage, event.data);
 
         let dataStr: string;
         try {
@@ -115,6 +299,7 @@ function consumeSSEDebugBranch(
           dataStr = String(event.data);
         }
         logReceived(opts, dataStr, event.data);
+        await yieldToClient();
       }
     } catch {
       // Debug branch must never affect the client stream.
@@ -124,6 +309,8 @@ function consumeSSEDebugBranch(
       } catch {
         // ignore
       }
+      // Usage lands on terminal frames, so the verdict is only knowable here.
+      logCacheOutcome(opts, usage);
     }
   };
 
@@ -142,6 +329,10 @@ async function tapJsonBody(
     parsed = undefined;
   }
   logReceived(opts, text, parsed);
+  logCacheOutcome(
+    opts,
+    mergeCacheUsage({ cachedExcludedFromPrompt: false }, parsed)
+  );
   return new Response(text, {
     status: response.status,
     statusText: response.statusText,
@@ -152,9 +343,20 @@ async function tapJsonBody(
 /**
  * Byte-preserving upstream response debug tap.
  *
- * For SSE: tees the body so the client branch is unchanged while a background
- * consumer emits Codex-parity `recieved data` / `Original Response` logs
- * (including Anthropic usage / cache fields on message_start / message_delta).
+ * For SSE: mirrors bytes to a background consumer that emits Codex-parity
+ * `recieved data` / `Original Response` logs (including Anthropic usage /
+ * cache fields on message_start / message_delta).
+ *
+ * Important: do **not** use `ReadableStream.tee()` here. Tee couples
+ * backpressure across both branches — a slow debug logger (pino file I/O on
+ * every thinking delta) stalls the client branch. Claude Code then idles long
+ * enough to surface "Waiting for API response · check your network" and retry
+ * while CCR eventually still finishes the upstream as HTTP 200.
+ *
+ * Instead, a TransformStream forwards each chunk to the client immediately and
+ * copies into a debug tunnel whose writable side has an infinite high-water
+ * mark, so debug I/O can never delay the client. The debug consumer drains the
+ * buffered copy at its own pace (memory-bound to the stream size).
  *
  * Exact-wire passthrough never enters transformer stream loggers; this tap is
  * the single shared place that covers every outbound provider.
@@ -178,12 +380,13 @@ export async function tapUpstreamSSEDebug(
   }
 
   if (!contentType.includes("text/event-stream")) {
+    // Unknown body shape: no usage to read, but still surface the prediction.
+    logCacheOutcome(opts, { cachedExcludedFromPrompt: false });
     return response;
   }
 
   try {
-    const [clientBranch, debugBranch] = response.body.tee();
-    consumeSSEDebugBranch(debugBranch, opts);
+    const clientBranch = pipeSSEWithNonblockingDebugTap(response.body, opts);
     return new Response(clientBranch, {
       status: response.status,
       statusText: response.statusText,
@@ -192,6 +395,59 @@ export async function tapUpstreamSSEDebug(
   } catch {
     return response;
   }
+}
+
+/**
+ * Forward upstream SSE bytes to the client without waiting on debug I/O.
+ *
+ * The debug tunnel writable uses `highWaterMark: Infinity` so `write()` always
+ * accepts immediately and queues in memory. That preserves full debug logs
+ * (including terminal usage frames for cache outcome) without the tee()
+ * backpressure footgun and without dropping mid-stream chunks (which would
+ * tear the SSE parser and lose usage anyway).
+ */
+function pipeSSEWithNonblockingDebugTap(
+  body: ReadableStream<Uint8Array>,
+  opts: UpstreamSSEDebugOptions
+): ReadableStream<Uint8Array> {
+  const debugTunnel = new TransformStream<Uint8Array, Uint8Array>(
+    undefined,
+    // Writable strategy: never apply backpressure toward the client tap.
+    { highWaterMark: Infinity },
+    // Readable strategy: let the debug consumer pull at its own pace.
+    { highWaterMark: 1 }
+  );
+  const debugWriter = debugTunnel.writable.getWriter();
+  consumeSSEDebugBranch(debugTunnel.readable, opts);
+
+  let debugAlive = true;
+  const abandonDebug = () => {
+    if (!debugAlive) return;
+    debugAlive = false;
+    void debugWriter.close().catch(() => {});
+  };
+
+  return body.pipeThrough(
+    // `cancel` is part of the Transformer contract at runtime but missing from
+    // the bundled DOM lib types.
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        controller.enqueue(chunk);
+        if (!debugAlive) return;
+        // Infinite writable HWM: write() queues synchronously and resolves
+        // without waiting on the debug consumer / pino I/O.
+        void debugWriter.write(chunk.slice()).catch(() => {
+          abandonDebug();
+        });
+      },
+      flush() {
+        abandonDebug();
+      },
+      cancel() {
+        abandonDebug();
+      },
+    } as Transformer<Uint8Array, Uint8Array>)
+  );
 }
 
 export type CacheStructureSummary = {
@@ -292,17 +548,50 @@ export function summarizeOutboundCacheStructure(
   };
 }
 
+/**
+ * Snapshot the outbound body, diff it against the previous turn, and log both.
+ * Returns the diff so the caller can join it with the observed cache usage
+ * once upstream responds.
+ */
 export function logOutboundCacheStructure(
   body: Record<string, any> | null | undefined,
   opts: UpstreamSSEDebugOptions
-): void {
-  if (!isDebugEnabled(opts.logger)) return;
+): CachePrefixDiff | null {
+  if (!isDebugEnabled(opts.logger)) return null;
   const summary = summarizeOutboundCacheStructure(body);
-  if (!summary) return;
+  if (summary) {
+    opts.logger.debug({
+      reqId: opts.reqId,
+      provider: opts.provider,
+      type: "cache structure",
+      stage: opts.stage ?? "wire",
+      ...summary,
+    });
+  }
+
+  const status = opts.responseStatus;
+  const diff = rememberAndDiffOutboundCachePrefix(
+    opts.conversationId,
+    body,
+    opts.cacheAffinity,
+    {
+      stage: opts.stage ?? "wire",
+      provider: opts.provider,
+      model: opts.model,
+      // A rejected request was never cached upstream; keeping it as the
+      // baseline would report the next turn as a phantom prefix break.
+      commit: status === undefined || (status >= 200 && status < 300),
+    }
+  );
+  if (!diff) return null;
+
+  const divergenceStage = attributeDivergenceStage(opts.clientStageDiff, diff);
   opts.logger.debug({
     reqId: opts.reqId,
     provider: opts.provider,
-    type: "cache structure",
-    ...summary,
+    type: "cache prefix diff",
+    ...diff,
+    ...(divergenceStage ? { divergenceStage } : {}),
   });
+  return diff;
 }

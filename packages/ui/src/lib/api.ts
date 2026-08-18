@@ -1,4 +1,4 @@
-import type { Config, Provider, Transformer } from '@/types';
+import type { Config, HealthResponse, Provider, Transformer } from '@/types';
 
 // API Client Class for handling requests with baseUrl and apikey authentication
 class ApiClient {
@@ -274,6 +274,22 @@ class ApiClient {
   // Install preset from GitHub repository
   async installPresetFromGitHub(repo: string, name?: string): Promise<any> {
     return this.post<any>('/presets/install/github', { repo, name });
+  }
+
+  /**
+   * Process vitals from the server's liveness probe. This endpoint sits outside
+   * the /api prefix and requires no authentication, so it deliberately bypasses
+   * apiFetch and its unauthorized redirect.
+   */
+  async getHealth(): Promise<HealthResponse> {
+    const base = this.baseUrl.replace(/\/api\/?$/, '');
+    const response = await fetch(`${base}/health`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      throw new Error(`Health request failed: ${response.status}`);
+    }
+    return (await response.json()) as HealthResponse;
   }
 }
 

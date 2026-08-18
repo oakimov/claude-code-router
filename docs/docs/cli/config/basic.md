@@ -134,6 +134,108 @@ Only request bodies are captured. Successful responses are streamed and stay
 uncaptured; error responses are already logged in full as
 `Upstream Provider Error Body`.
 
+#### Health heartbeat
+
+Everything above goes to the rotating log file, so a foreground `ccr start` or
+`docker compose logs -f ccr` shows nothing between requests. The health
+heartbeat is the one thing written to stdout: a periodic snapshot of process
+health and routing activity since the previous report. It is on by default and
+reports every 10 minutes.
+
+```json5
+{
+  "HEARTBEAT_INTERVAL_MS": 600000  // Default 600000 (10 min); 0 disables
+}
+```
+
+`CCR_HEARTBEAT_INTERVAL_MS` in the environment does the same thing and is
+useful for containers.
+
+```
+[ccr:health] uptime 3h 12m · pid 41231 · node v22.23.2
+[ccr:health] memory rss 412.0 MB (+18.2 MB) · heap 180.4 MB/240.0 MB · external 22.1 MB · system 19.9 GB/32.0 GB used
+[ccr:health] load 2.41 / 1.98 / 1.75 (10 cpus) · proc cpu 0.37 cores · event loop mean 0.9 ms, p99 18.4 ms
+[ccr:health] sessions 2 running · 7 active in the last 10m
+[ccr:health] requests 2 in flight (oldest 41s) · 128 completed in 10m · 3 failed (2.3%) · p50 1.9s · p95 12.4s
+[ccr:health] upstream openrouter 90 ok / 1 failed · claude 38 ok / 2 failed
+[ccr:health] cache 82.3% prompt-cache hit · 145.0k cached / 176.3k prompt tokens · 3.4k written
+```
+
+How to read it:
+
+- **memory** — `rss` with its change since the previous report. A steady climb
+  across reports is the leak signal; a single spike is usually one large
+  request. Under a cgroup limit the last field reads `container` instead of
+  `system`.
+- **load / proc cpu** — machine load average and this process's own CPU time
+  over the window, expressed in cores. `proc cpu` near `1.00` means the single
+  Node thread is saturated.
+- **event loop** — how long callbacks waited beyond their scheduled time. This
+  is the streaming-stall signal: memory and load look fine while a blocking
+  logger or transformer holds the loop, and a p99 in the tens of milliseconds
+  is what a client experiences as a stalled response.
+- **sessions** — Claude Code sessions with a request in flight right now, and
+  how many were seen at all during the window.
+- **requests** — in-flight count with the age of the oldest. A single
+  long-lived entry that survives several reports is a hung upstream stream.
+  `failed` counts responses with a 4xx/5xx status.
+- **upstream** — the same counts split per provider, so a degrading provider is
+  visible without reading the log file.
+- **cache** — prompt-cache hit rate for the window, the always-on companion to
+  the `cache outcome` records that `LOG_LEVEL: "debug"` writes per request.
+  Only routed LLM requests are counted; UI and status polling are excluded.
+
+#### Health state file and endpoint
+
+Each report is also written to `~/.claude-code-router/health.json`. The file
+holds the **current state only** — no history and no accumulated snapshots — so
+it stays small and never needs pruning. It is written to a temp file and
+renamed, so a reader never sees a half-written document.
+
+```json
+{
+  "version": 1,
+  "pid": 41231,
+  "node": "v22.23.2",
+  "updatedAt": 1755500000000,
+  "intervalMs": 600000,
+  "current": { "memory": {}, "load": {}, "sessions": {}, "requests": {}, "cache": {} }
+}
+```
+
+The same payload is served as the `vitals` field of the existing liveness probe:
+
+```bash
+curl -s http://127.0.0.1:3456/health
+```
+
+```json
+{ "status": "ok", "timestamp": "2026-08-18T09:00:00.000Z", "vitals": { "...": "as above" } }
+```
+
+`/health` requires no authentication, and `vitals` is a live read rather than
+the last written report, so it is never up to one interval stale. On a server
+without the heartbeat (or with `HEARTBEAT_INTERVAL_MS: 0`) the field is simply
+absent and the probe keeps its original `status` + `timestamp` contract.
+
+#### Status bar in the Web UI
+
+`ccr ui` shows a compact bar above every page fed by `/health` — never by the
+file on disk. It polls on the server's own cadence (`intervalMs`, so every
+10 minutes by default) and colours each metric:
+
+| Metric | Yellow | Red |
+| --- | --- | --- |
+| Memory (system/container used) | 75% | 90% |
+| Process CPU (cores) | 0.50 | 0.80 |
+| Event loop p99 | 50 ms | 200 ms |
+| Failed requests | 2% | 10% |
+
+The overall dot is the worst of those four. Sessions and cache hit rate are
+shown for context but do not drive the colour — a low hit rate costs money, it
+does not mean the proxy is unhealthy. The bar hides itself entirely when the
+server reports no `vitals`.
+
 ### Routing Configuration
 
 ```json5

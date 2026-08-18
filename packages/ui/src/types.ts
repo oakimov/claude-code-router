@@ -77,3 +77,61 @@ export interface Config {
 }
 
 export type AccessLevel = 'restricted' | 'full';
+
+/** Current process vitals, as reported by the server's health heartbeat. */
+export interface HealthSnapshot {
+  uptimeMs: number;
+  windowMs: number;
+  memory: {
+    rss: number;
+    rssDelta?: number;
+    heapUsed: number;
+    heapTotal: number;
+    external: number;
+    systemTotal: number;
+    systemFree: number;
+    constrained: boolean;
+  };
+  load: {
+    avg: [number, number, number];
+    cpus: number;
+    processCores?: number;
+    eventLoopMeanMs: number;
+    eventLoopP99Ms: number;
+  };
+  sessions: {
+    running: number;
+    activeInWindow: number;
+  };
+  requests: {
+    inFlight: number;
+    oldestInFlightMs?: number;
+    completed: number;
+    failed: number;
+    p50Ms?: number;
+    p95Ms?: number;
+    byProvider: Array<{ provider: string; ok: number; failed: number }>;
+  };
+  cache: {
+    promptTokens: number;
+    cachedTokens: number;
+    writtenTokens: number;
+    hitRatio?: number;
+  };
+}
+
+export interface HealthVitals {
+  version: number;
+  pid: number;
+  node: string;
+  updatedAt: number;
+  intervalMs: number;
+  current: HealthSnapshot;
+}
+
+/** Response of `GET /health`; `vitals` is absent on older servers. */
+export interface HealthResponse {
+  status: string;
+  timestamp: string;
+  vitals?: HealthVitals;
+}

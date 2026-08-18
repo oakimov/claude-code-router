@@ -335,5 +335,29 @@
     "loading_config": "Loading configuration...",
     "error_prefix": "Error",
     "presets_installed": "{{count}} installed"
+  },
+  "health": {
+    "state_ok": "Healthy",
+    "state_warn": "Degraded",
+    "state_bad": "Under pressure",
+    "memory": "Memory",
+    "cpu": "CPU",
+    "event_loop": "Event loop",
+    "sessions": "Sessions",
+    "requests": "Requests",
+    "cache": "Cache",
+    "cores": "cores",
+    "system": "system",
+    "container": "container",
+    "memory_detail": "Heap {{heapUsed}} of {{heapTotal}} · {{scope}} {{used}} of {{total}} used",
+    "cpu_detail": "Process CPU over the window. Load average {{load}} across {{cpus}} CPUs",
+    "event_loop_detail": "p99 callback delay; mean {{mean}} ms. High values are what clients feel as a stalled response",
+    "sessions_detail": "{{active}} sessions seen in the last {{window}}",
+    "requests_value": "{{inFlight}} / {{completed}}",
+    "requests_detail": "In flight now / completed this window · {{failed}} failed ({{rate}}%) · p95 {{p95}} · oldest in flight {{oldest}}",
+    "cache_detail": "{{cached}} cached of {{prompt}} prompt tokens this window",
+    "process_detail": "pid {{pid}} · node {{node}} · up {{uptime}}",
+    "updated": "{{ago}} ago",
+    "refresh": "Refresh health"
   }
 }
