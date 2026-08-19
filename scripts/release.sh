@@ -212,9 +212,9 @@ publish_cli_npm() {
   prepare_publish_package "$pkg_dir" "@caeliq/claude-code-router" "packages/cli" "
     pkg.files = ['dist', 'README.md', 'LICENSE'];
     pkg.bin = { ccr: 'dist/cli.js' };
-    pkg.dependencies = { '@cursor/sdk': '${cursor_sdk}' };
+    pkg.dependencies = { ...pkg.dependencies, '@cursor/sdk': '${cursor_sdk}' };
     pkg.devDependencies = {};
-    pkg.engines = { node: '>=22.13.0' };
+    pkg.engines = { node: '>=22.19.0' };
   "
 
   npm_publish "$pkg_dir"

@@ -87,29 +87,46 @@ COPY --from=builder /app/packages/server/dist ./packages/server/dist
 # Copy locally pre-built UI assets to the same directory
 COPY --from=builder /app/packages/ui/dist/. ./packages/server/dist/
 
-# @cursor/sdk is externalized from the server/CLI bundles (native platform
-# packages). Workspace pnpm node_modules are symlink farms into
-# /app/node_modules/.pnpm, so copying only packages/server/node_modules leaves
-# those links broken in the runtime image. Install a real copy here instead
-# (into a clean prefix — do not use packages/server/package.json, which has
-# workspace:* deps that cannot resolve in the runtime stage).
-# Version is read from packages/server/package.json so it cannot silently drift
-# from the workspace declaration (still a separate npm install vs pnpm-lock).
+# Bundles externalize a few runtime packages (@cursor/sdk for native
+# platform bits; Mastra + ai + zod for the debug-chat playground). Workspace
+# pnpm node_modules are symlink farms into /app/node_modules/.pnpm, so copying
+# only packages/server/node_modules leaves those links broken in the runtime
+# image. Install real copies here instead (into a clean prefix — do not use
+# packages/server/package.json, which has workspace:* deps that cannot resolve
+# in the runtime stage).
+# Versions are read from packages/server/package.json so they cannot silently
+# drift from the workspace declaration (still a separate npm install vs pnpm-lock).
 COPY --from=builder /app/packages/server/package.json /tmp/server-package.json
-RUN mkdir -p /tmp/cursor-sdk-runtime /app/packages/server/node_modules && \
-    CURSOR_SDK_VERSION="$(node -p "String(require('/tmp/server-package.json').dependencies['@cursor/sdk']||'').replace(/^[^0-9]*/, '')")" && \
-    test -n "$CURSOR_SDK_VERSION" && \
-    cd /tmp/cursor-sdk-runtime && \
+RUN mkdir -p /tmp/runtime-externals /app/packages/server/node_modules && \
+    cd /tmp/runtime-externals && \
     npm init -y >/dev/null && \
-    npm install "@cursor/sdk@${CURSOR_SDK_VERSION}" --omit=dev && \
-    cp -a /tmp/cursor-sdk-runtime/node_modules/. /app/packages/server/node_modules/ && \
-    rm -rf /tmp/cursor-sdk-runtime /tmp/server-package.json /root/.npm
+    node -e "const fs=require('fs');const p=require('./package.json');p.overrides={'@ai-sdk/provider-utils@3.0.19':{undici:'^8.10.0'},'@ai-sdk/provider-utils@3.0.25':{undici:'^8.10.0'},'@ai-sdk/provider-utils@3.0.32':{undici:'^8.10.0'}};fs.writeFileSync('package.json',JSON.stringify(p));" && \
+    CURSOR_SDK="$(node -p "require('/tmp/server-package.json').dependencies['@cursor/sdk']")" && \
+    MASTRA_CORE="$(node -p "require('/tmp/server-package.json').dependencies['@mastra/core']")" && \
+    MASTRA_AI_SDK="$(node -p "require('/tmp/server-package.json').dependencies['@mastra/ai-sdk']")" && \
+    AI_SDK_ANTHROPIC="$(node -p "require('/tmp/server-package.json').dependencies['@ai-sdk/anthropic']")" && \
+    AI_SDK_OPENAI="$(node -p "require('/tmp/server-package.json').dependencies['@ai-sdk/openai']")" && \
+    BUF_PROTOBUF="$(node -p "require('/tmp/server-package.json').dependencies['@bufbuild/protobuf']")" && \
+    AI_SDK="$(node -p "require('/tmp/server-package.json').dependencies['ai']")" && \
+    ZOD="$(node -p "require('/tmp/server-package.json').dependencies['zod']")" && \
+    test -n "$CURSOR_SDK" && test -n "$MASTRA_CORE" && test -n "$MASTRA_AI_SDK" && test -n "$AI_SDK_ANTHROPIC" && test -n "$AI_SDK_OPENAI" && test -n "$BUF_PROTOBUF" && test -n "$AI_SDK" && test -n "$ZOD" && \
+    npm install "@cursor/sdk@${CURSOR_SDK}" "@mastra/core@${MASTRA_CORE}" "@mastra/ai-sdk@${MASTRA_AI_SDK}" "@ai-sdk/anthropic@${AI_SDK_ANTHROPIC}" "@ai-sdk/openai@${AI_SDK_OPENAI}" "@bufbuild/protobuf@${BUF_PROTOBUF}" "ai@${AI_SDK}" "zod@${ZOD}" --omit=dev && \
+    cp -a /tmp/runtime-externals/node_modules/. /app/packages/server/node_modules/ && \
+    rm -rf /tmp/runtime-externals /tmp/server-package.json /root/.npm
 
 # Expose the same install to the CLI bundle resolution path
 # (/app/packages/cli/dist → … → node_modules).
 RUN mkdir -p /app/packages/cli/node_modules /app/node_modules && \
     ln -sfn /app/packages/server/node_modules/@cursor /app/packages/cli/node_modules/@cursor && \
-    ln -sfn /app/packages/server/node_modules/@cursor /app/node_modules/@cursor
+    ln -sfn /app/packages/server/node_modules/@cursor /app/node_modules/@cursor && \
+    ln -sfn /app/packages/server/node_modules/@mastra /app/packages/cli/node_modules/@mastra && \
+    ln -sfn /app/packages/server/node_modules/@mastra /app/node_modules/@mastra && \
+    ln -sfn /app/packages/server/node_modules/@ai-sdk /app/packages/cli/node_modules/@ai-sdk && \
+    ln -sfn /app/packages/server/node_modules/@ai-sdk /app/node_modules/@ai-sdk && \
+    ln -sfn /app/packages/server/node_modules/ai /app/packages/cli/node_modules/ai && \
+    ln -sfn /app/packages/server/node_modules/ai /app/node_modules/ai && \
+    ln -sfn /app/packages/server/node_modules/zod /app/packages/cli/node_modules/zod && \
+    ln -sfn /app/packages/server/node_modules/zod /app/node_modules/zod
 
 # Copy PM2 configuration file
 COPY packages/server/ecosystem.config.cjs /app/

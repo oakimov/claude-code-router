@@ -39,6 +39,9 @@ import { registerQwenAuthRoutes } from "./routes/qwen-auth";
 import { registerClaudeAuthRoutes } from "./routes/claude-auth";
 import { registerAntigravityAuthRoutes } from "./routes/antigravity-auth";
 import { registerModelsRoutes } from "./routes/models";
+import { registerDebugChatRoutes } from "./routes/debug-chat";
+import { registerOAuthRefreshRoutes } from "./routes/oauth-refresh";
+import { installLlmCaptureFetch } from "./debug/llm-capture";
 import {
   apiKeysMatch,
   clearUiSessionCookie,
@@ -241,6 +244,11 @@ export const createServer = async (config: any): Promise<any> => {
 
   // OpenAI-compatible model listing (GET, so not a routed client protocol)
   await registerModelsRoutes(app, config);
+
+  installLlmCaptureFetch();
+  const getRuntimeConfig = () => server.configService.getAll();
+  await registerDebugChatRoutes(app, getRuntimeConfig);
+  await registerOAuthRefreshRoutes(app, getRuntimeConfig);
 
   app.post("/v1/messages/count_tokens", rateLimitOptions, async (req: any, reply: any) => {
     const { messages, tools, system, model } = req.body;

@@ -182,6 +182,10 @@ class ApiClient {
     return this.post<void>('/restart', {});
   }
 
+  async refreshOAuth(provider: string): Promise<{ success: boolean; provider: string; kind: string }> {
+    return this.post<{ success: boolean; provider: string; kind: string }>('/oauth/refresh', { provider });
+  }
+
   // Check for updates
   async checkForUpdates(): Promise<{ hasUpdate: boolean; latestVersion?: string; changelog?: string }> {
     return this.get<{ hasUpdate: boolean; latestVersion?: string; changelog?: string }>('/update/check');

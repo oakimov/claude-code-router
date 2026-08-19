@@ -186,3 +186,21 @@
 .dark .custom-scrollbar {
   scrollbar-color: oklch(0.708 0 0 / 0.4) transparent;
 }
+
+/* StickToBottom sets scrollbar-gutter: stable both-edges inline, which
+   reserves a gutter on both sides and fights overflow-y:auto during streaming. */
+.debug-conversation-scroll {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable !important;
+}
+
+.debug-response-error .monaco-editor .view-lines .view-line span {
+  color: #dc2626 !important;
+}
+
+.dark .debug-response-error .monaco-editor .view-lines .view-line span {
+  color: #f87171 !important;
+}

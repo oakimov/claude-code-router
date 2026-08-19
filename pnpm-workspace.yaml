@@ -48,6 +48,13 @@ minimumReleaseAgeExclude:
   - adm-zip@0.6.0
   - body-parser@1.20.6
   - find-my-way@9.6.1
+  - '@mastra/ai-sdk@1.9.0'
+  - '@mastra/core@1.60.0'
+peerDependencyRules:
+  allowedVersions:
+    # Mastra installs Chat SDK for an optional integration this project does
+    # not use. Keep the app's AI SDK v5 line for the debug UI.
+    'chat@4.38.0>ai': 5.0.112
 overrides:
   # Upstream parents are current but cannot reach these maintained children yet.
   # Keep every compatibility/security bridge scoped to the exact dependency edge.
@@ -63,6 +70,11 @@ overrides:
   # imports Headers (and only uses it on Node <18), so share core's direct
   # maintained undici 8 line instead of installing a second major.
   '@connectrpc/connect-node@1.7.0>undici': ^8.9.0
+  # AI SDK v5 provider-utils uses only undici's stable Agent + fetch surface.
+  # Keep its current v3 API while replacing the vulnerable undici 5 line.
+  '@ai-sdk/provider-utils@3.0.19>undici': ^8.10.0
+  '@ai-sdk/provider-utils@3.0.25>undici': ^8.10.0
+  '@ai-sdk/provider-utils@3.0.32>undici': ^8.10.0
   # Consolidate narrow patch/minor splits whose newer releases preserve the
   # APIs used by these exact parents. Keep exact edges so unrelated consumers
   # retain their declared compatibility boundaries.

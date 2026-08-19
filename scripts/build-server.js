@@ -31,7 +31,7 @@ try {
   console.log('Building server application...');
   // Use minify and tree-shaking to optimize size.
   // --target matches the package engines floor (>=22.19.0).
-  execSync('esbuild src/index.ts --bundle --platform=node --target=node22 --minify --tree-shaking=true --external:@cursor/sdk --external:@cursor/sdk/* --outfile=dist/index.js', {
+  execSync('esbuild src/index.ts --bundle --platform=node --target=node22 --minify --tree-shaking=true --external:@cursor/sdk --external:@cursor/sdk/* --external:@mastra/core --external:@mastra/core/* --external:@mastra/ai-sdk --external:@mastra/ai-sdk/* --external:ai --external:@ai-sdk/* --external:zod --outfile=dist/index.js', {
     stdio: 'inherit',
     cwd: serverDir,
     env: { ...process.env, PATH: pathEnv },

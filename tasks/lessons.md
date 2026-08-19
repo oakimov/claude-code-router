@@ -155,6 +155,9 @@
 - **Transformer naming**: Use the `name` field value (e.g., `"Anthropic"`), not the class name (`"AnthropicTransformer"`), in config arrays.
 - **Files modified**: `packages/core/src/api/routes.ts` (4 changes), `packages/core/src/services/provider.ts` (1 change)
 
+## OpenCode Zen — Chat Completions `[DONE]` cost trailer
+- **The terminator and the cost object must not share an SSE event**: OpenCode Zen (DeepSeek flash, etc.) appends `{"choices":[],"cost":"0"}` on the same event as `data: [DONE]` — either a second `data:` line without a blank separator, or `data: [DONE] {"choices":[],"cost":"0"}` on one line. EventSource concatenates those into `[DONE] {…}`, and OpenAI-compatible clients (`JSON.parse` in Mastra / the AI SDK) fail with `Unexpected token 'D'`. Exact-protocol passthrough skips `OpenAITransformer.transformResponseIn`, so the split cannot live only there. `withChatCompletionsDoneBoundary` runs in `formatResponse` for `openai_chat_completions` and drops everything after `[DONE]`. Guarded by `sse.done-boundary.ts` and `openai.inbound-chat.ts`.
+
 ## OpenCode Zen — Session-Hash Provider Routing (self-heal)
 - **Root cause**: Zen picks an upstream backend by hashing the **last 4 characters** of the `x-opencode-session` header (`packages/console/app/src/routes/zen/util/handler.ts` `selectProvider`: `for i in [len-4,len) h=h*31+charCodeAt(i); index=h%providers.length`). If a conversation's session hashes to a bad slot, **every** request in that conversation fails identically — deterministic, not transient. Two signatures, both from the routing/capacity layer:
   - HTTP **401** `{"error":{"type":"ModelError","message":"No provider available"}}` — hashed slot has no provider.

@@ -1,8 +1,12 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { homedir } from "os";
 
-const QWEN_AUTH_FILE = join(homedir(), ".claude-code-router", "qwen_auth.json");
+const DEFAULT_QWEN_AUTH_FILE = join(
+  homedir(),
+  ".claude-code-router",
+  "qwen_auth.json"
+);
 const QWEN_TARGET = "https://qwen.aikit.club";
 
 // Matches qwen-proxy.mjs: hard timeouts on upstream calls so a hung Qwen
@@ -19,10 +23,17 @@ interface QwenTokens {
   updatedAt: number;
 }
 
+let refreshPromise: Promise<QwenTokens> | null = null;
+
+function getQwenAuthFilePath(): string {
+  return process.env.CCR_QWEN_AUTH_FILE || DEFAULT_QWEN_AUTH_FILE;
+}
+
 function loadTokens(): QwenTokens | null {
   try {
-    if (!existsSync(QWEN_AUTH_FILE)) return null;
-    const tokens = JSON.parse(readFileSync(QWEN_AUTH_FILE, "utf-8"));
+    const authFile = getQwenAuthFilePath();
+    if (!existsSync(authFile)) return null;
+    const tokens = JSON.parse(readFileSync(authFile, "utf-8"));
     if (!tokens.token) return null;
     return tokens as QwenTokens;
   } catch {
@@ -31,11 +42,12 @@ function loadTokens(): QwenTokens | null {
 }
 
 function saveTokens(tokens: QwenTokens): void {
-  const dir = join(homedir(), ".claude-code-router");
+  const authFile = getQwenAuthFilePath();
+  const dir = dirname(authFile);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(QWEN_AUTH_FILE, JSON.stringify(tokens, null, 2), {
+  writeFileSync(authFile, JSON.stringify(tokens, null, 2), {
     mode: 0o600,
     encoding: "utf-8",
   });
@@ -83,7 +95,9 @@ async function refreshToken(token: string): Promise<string | null> {
  * expiry. Throws with an actionable message if no token is configured or if
  * the refresh attempt fails.
  */
-export async function getValidAccessToken(): Promise<QwenTokens> {
+export async function getValidAccessToken(
+  options?: { force?: boolean }
+): Promise<QwenTokens> {
   let tokens = loadTokens();
   if (!tokens) {
     throw new Error(
@@ -91,23 +105,35 @@ export async function getValidAccessToken(): Promise<QwenTokens> {
     );
   }
 
-  if (
-    tokens.expiresAt &&
-    Date.now() + EXPIRY_LEEWAY_SECONDS * 1000 >= tokens.expiresAt
-  ) {
-    const rotated = await refreshToken(tokens.token);
-    if (!rotated) {
-      throw new Error(
-        "Qwen token expired and refresh failed. Run `ccr qwen-auth` to re-authenticate."
-      );
+  const shouldRefresh =
+    Boolean(options?.force) ||
+    (tokens.expiresAt != null &&
+      Date.now() + EXPIRY_LEEWAY_SECONDS * 1000 >= tokens.expiresAt);
+
+  if (shouldRefresh) {
+    if (!refreshPromise) {
+      refreshPromise = (async () => {
+        const rotated = await refreshToken(tokens.token);
+        if (!rotated) {
+          throw new Error(
+            "Qwen token expired and refresh failed. Run `ccr qwen-auth` to re-authenticate."
+          );
+        }
+        const refreshed = {
+          token: rotated,
+          expiresAt: extractExpFromJwt(rotated),
+          updatedAt: Date.now(),
+        };
+        saveTokens(refreshed);
+        return refreshed;
+      })().finally(() => {
+        refreshPromise = null;
+      });
     }
-    tokens = {
-      token: rotated,
-      expiresAt: extractExpFromJwt(rotated),
-      updatedAt: Date.now(),
-    };
-    saveTokens(tokens);
+    tokens = await refreshPromise;
   }
 
   return tokens;
 }
+
+export { getQwenAuthFilePath };

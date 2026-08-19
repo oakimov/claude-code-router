@@ -32,6 +32,8 @@ export interface ClaudeTokens {
   last_refresh?: number;
 }
 
+let refreshPromise: Promise<ClaudeTokens> | null = null;
+
 export function loadTokens(): ClaudeTokens | null {
   try {
     const authFile = getClaudeAuthFilePath();
@@ -88,7 +90,9 @@ export async function refreshTokens(refreshToken: string): Promise<ClaudeTokens>
   };
 }
 
-export async function getValidAccessToken(): Promise<ClaudeTokens> {
+export async function getValidAccessToken(
+  options?: { force?: boolean }
+): Promise<ClaudeTokens> {
   let tokens = loadTokens();
   if (!tokens) {
     throw new Error(
@@ -96,14 +100,23 @@ export async function getValidAccessToken(): Promise<ClaudeTokens> {
     );
   }
 
-  if (isTokenExpired(tokens)) {
+  if (options?.force || isTokenExpired(tokens)) {
     if (!tokens.refresh_token) {
       throw new Error(
         "Claude OAuth token expired and no refresh token available. Run `ccr claude-auth` to re-authenticate."
       );
     }
-    tokens = await refreshTokens(tokens.refresh_token);
-    saveTokens(tokens);
+    if (!refreshPromise) {
+      refreshPromise = refreshTokens(tokens.refresh_token)
+        .then((refreshed) => {
+          saveTokens(refreshed);
+          return refreshed;
+        })
+        .finally(() => {
+          refreshPromise = null;
+        });
+    }
+    tokens = await refreshPromise;
   }
 
   return tokens;

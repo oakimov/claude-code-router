@@ -52,7 +52,7 @@ try {
   // Step 4: Build the CLI application
   console.log('Building CLI application...');
   // --target matches the package engines floor (>=22.19.0).
-  execSync('esbuild src/cli.ts --bundle --platform=node --target=node22 --minify --tree-shaking=true --external:@cursor/sdk --external:@cursor/sdk/* --outfile=dist/cli.js', {
+  execSync('esbuild src/cli.ts --bundle --platform=node --target=node22 --minify --tree-shaking=true --external:@cursor/sdk --external:@cursor/sdk/* --external:@mastra/core --external:@mastra/core/* --external:@mastra/ai-sdk --external:@mastra/ai-sdk/* --external:ai --external:@ai-sdk/* --external:zod --outfile=dist/cli.js', {
     stdio: 'inherit',
     cwd: cliDir,
     env: { ...process.env, PATH: pathEnv },

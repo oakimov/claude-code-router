@@ -60,7 +60,15 @@ signal to delete it, not to widen the selector.
 - **Scope**: the connect-node edge only; pnpm deduplicates it with `@caeliq/llms`'s direct `undici@^8.9.0`.
 - **Exit**: Cursor ships SDK on `@connectrpc/connect-node@2.x` (no undici dep) or connect-node 1.x raises its undici range; then delete the override and re-audit.
 
-### 2. Compatible transitive consolidation
+### 2. AI SDK v5 `provider-utils@3` → `undici@^8.10.0`
+- [ ] Drop the three scoped edges when AI SDK v5 no longer requests vulnerable `undici@5.x`.
+- **Why**: the current `ai@5`, `@ai-sdk/react@2`, and Mastra compatibility layer resolve `@ai-sdk/provider-utils` 3.0.19, 3.0.25, and 3.0.32. Those releases pin vulnerable Undici 5 and no patched `provider-utils@3` release is available.
+- **Compatibility**: `provider-utils@3` imports only Undici's stable package-root `Agent` and `fetch` APIs for its safe Node fetch wrapper; both remain available in Undici 8. The full typecheck, test, and build suites cover the affected debug-chat path.
+- **Scope**: only the three exact `provider-utils@3` → `undici` edges; unrelated consumers retain their declared majors.
+- **Residual advisory**: `GHSA-866g-f22w-33x8` still reports `provider-utils <=3.0.97` itself as low severity and names `>=3.0.98` as patched, but the registry currently publishes no `3.0.98` (the latest v3 is `3.0.32`). Upgrade as soon as a compatible patched v3 exists.
+- **Exit**: delete each edge once its parent moves to a patched provider-utils release that no longer depends on Undici 5.
+
+### 3. Compatible transitive consolidation
 - [ ] Drop each edge when its parent reaches the selected child naturally.
 - `@pnpm/network.ca-file@1.0.2>graceful-fs` → `4.2.11`: one-patch update adds `EBUSY` retry handling without changing the API.
 - `sitemap@7.1.3>@types/node` → `26.2.0` and `p-retry@4.6.2>@types/retry` → `0.12.2`: type-only dependencies; workspace typecheck passes against the unified definitions.
@@ -68,7 +76,12 @@ signal to delete it, not to widen the selector.
 - `readable-stream@2.3.8>safe-buffer` and `string_decoder@1.1.1>safe-buffer` → `5.2.1`: same-major Buffer compatibility release; both consumers pass the runtime/API smoke suite.
 - `@google/genai@2>google-auth-library` → `^11.0.2`: `@google/genai` pins auth 10 while core depends on 11, and that single split was duplicating `google-auth-library`, `gcp-metadata` and `google-logging-utils` at once. Fixing it at the source removes all three pairs, which is why the two former `google-auth-library@*>google-logging-utils` edges are gone rather than retargeted. **Compatibility**: auth 10.9.1 and 11.0.2 ship a byte-identical `build/src`; the major exists only to raise `engines.node` to `>=22` (already our floor) and to take `gcp-metadata` 9 / `google-logging-utils` 2, whose `.d.ts` are likewise unchanged. `@google/genai` uses only `GoogleAuth` with `.getClient()`, `.getRequestHeaders()` and `.request()`, all present in 11; loading `@google/genai@2.17.1` from its real `.pnpm` path resolves auth `11.0.2` and constructs `GoogleGenAI` successfully. **Exit**: drop when `@google/genai` widens its range to `^11`.
 
-### 3. Docs / UI toolchain bridges
+### 4. Mastra optional Chat SDK peer
+- [ ] Remove the `chat@4.38.0>ai` allowed-version rule when Mastra stops installing Chat SDK by default or the debug playground moves to AI SDK 6+.
+- **Why**: Mastra installs `chat@4.38.0`, whose optional `ai` integration declares AI SDK 6/7. This project does not use Chat SDK, while the debug transport intentionally remains on AI SDK 5.
+- **Scope**: the exact optional `chat@4.38.0>ai` peer edge only. It does not change package resolution or claim compatibility for any used integration; it suppresses an irrelevant optional-peer warning.
+
+### 5. Docs / UI toolchain bridges
 - [ ] Drop each when its parent ships a range that reaches the maintained child.
 - `copy-webpack-plugin@11>serialize-javascript` and `css-minimizer-webpack-plugin@5>serialize-javascript` → `^7.0.7`: Docusaurus 3.10.2 is current but its Webpack plugins still pin `serialize-javascript@6`.
 - `monaco-editor@0.56.0>dompurify` → `^3.4.13`: Monaco pins DOMPurify 3.4.8.

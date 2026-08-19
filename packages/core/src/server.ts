@@ -257,12 +257,19 @@ export {
   saveTokens,
   loadTokens,
   getValidAccessToken,
+  getValidAccessToken as getAntigravityAccessToken,
   ANTIGRAVITY_CLIENT_ID,
   ANTIGRAVITY_CLIENT_SECRET,
   ANTIGRAVITY_REDIRECT_URI,
   ANTIGRAVITY_SCOPES,
   type AntigravityTokens,
 } from "./utils/antigravity-auth";
+export { getValidAccessToken as getClaudeAccessToken } from "./utils/claude-auth";
+export {
+  getValidAccessToken as getCodexAccessToken,
+} from "./utils/codex-auth";
+export { getValidAccessToken as getQwenAccessToken } from "./utils/qwen-auth";
+export { getValidAccessToken as getXaiAccessToken } from "./utils/xai-auth";
 export {
   matchClientProtocol,
   isRoutedLlmPost,

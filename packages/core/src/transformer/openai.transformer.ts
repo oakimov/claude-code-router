@@ -2,6 +2,7 @@ import { Transformer, TransformerContext } from "@/types/transformer";
 import { UnifiedChatRequest } from "@/types/llm";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
 import { createApiError } from "@/api/middleware";
+import { splitChatCompletionsDoneLine } from "@/utils/sse/done-boundary";
 import {
   applyOpenAIChatReasoning,
   canonicalReasoning,
@@ -625,13 +626,22 @@ function ensureChatStreamDone(
     const lines = buffer.split(/\r?\n/);
     buffer = flush ? "" : lines.pop() || "";
     const out: string[] = [];
-    for (const line of lines) {
-      if (/^data:\s*\[DONE\]\s*$/.test(line)) sawDone = true;
-      out.push(rewriteDataLine(line));
-    }
+    const pushLine = (line: string) => {
+      if (sawDone) return;
+      for (const piece of splitChatCompletionsDoneLine(line)) {
+        if (sawDone) return;
+        if (/^data:\s*\[DONE\]\s*$/.test(piece)) {
+          sawDone = true;
+          out.push("data: [DONE]");
+          out.push("");
+          return;
+        }
+        out.push(rewriteDataLine(piece));
+      }
+    };
+    for (const line of lines) pushLine(line);
     if (flush && buffer) {
-      if (/^data:\s*\[DONE\]\s*$/.test(buffer)) sawDone = true;
-      out.push(rewriteDataLine(buffer));
+      pushLine(buffer);
       buffer = "";
     }
     return out.length ? `${out.join("\n")}\n` : "";

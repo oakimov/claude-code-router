@@ -38,6 +38,7 @@ import {
   tapUpstreamSSEDebug,
 } from "../utils/sse-debug-tap";
 import { withSSEClientKeepalive } from "@/utils/sse/client-keepalive";
+import { withChatCompletionsDoneBoundary } from "@/utils/sse/done-boundary";
 import { sendWithUnauthorizedAuthRecovery } from "@/utils/auth-recovery";
 import {
   canonicalizeOutboundHeaders,
@@ -49,6 +50,7 @@ import { TokenizerService } from "@/services/tokenizer";
 import {
   listClientRouteRegistrations,
   matchClientProtocol,
+  type ClientProtocol,
 } from "@/routing/protocol-endpoints";
 import {
   cloneProtocolBody,
@@ -229,7 +231,8 @@ async function handleTransformerEndpoint(
       reply,
       prepared.originalBody,
       clientSignal,
-      prepared.protocolContext.stream
+      prepared.protocolContext.stream,
+      prepared.protocolContext.protocol
     );
   } catch (error: any) {
     if (isClientAbortError(error)) {
@@ -465,7 +468,8 @@ async function handleFallback(
         reply,
         prepared?.originalBody ?? req.body,
         clientSignal,
-        fallbackProtocolContext?.stream
+        fallbackProtocolContext?.stream,
+        fallbackProtocolContext?.protocol
       );
     } catch (fallbackError: any) {
       if (isClientAbortError(fallbackError)) {
@@ -1065,7 +1069,8 @@ async function formatResponse(
   reply: FastifyReply,
   body: any,
   clientSignal?: AbortSignal,
-  streamIntent?: boolean
+  streamIntent?: boolean,
+  protocol?: ClientProtocol
 ) {
   // Set HTTP status code
   if (!response.ok) {
@@ -1094,7 +1099,14 @@ async function formatResponse(
       // Keepalive comments every 10s of upstream silence so Claude Code's 20s
       // byte-idle spinner ("Waiting for API response · check your network")
       // does not abort-and-retry during Anthropic's ~25–30s ping gaps.
-      const clientBody = withSSEClientKeepalive(response.body);
+      // Passthrough skips OpenAITransformer.transformResponseIn, so the
+      // [DONE]/cost-trailer split has to live here — Chat Completions clients
+      // JSON.parse the concatenated payload.
+      const framed =
+        protocol === "openai_chat_completions"
+          ? withChatCompletionsDoneBoundary(response.body)
+          : response.body;
+      const clientBody = withSSEClientKeepalive(framed);
       const nodeStream = Readable.fromWeb(clientBody as any);
       let cleanedUp = false;
 

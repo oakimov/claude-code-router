@@ -514,6 +514,48 @@ async function testChatClientStreamAliasesReasoningContent() {
   assert.equal((text.match(/data: \[DONE\]/g) || []).length, 1);
 }
 
+async function testStreamSplitsDoneFromCostTrailer() {
+  const tf = new OpenAITransformer();
+  const sse = [
+    'data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}',
+    "",
+    "data: [DONE]",
+    'data: {"choices":[],"cost":"0"}',
+    "",
+  ].join("\n");
+  const out = await tf.transformResponseIn(
+    new Response(sse, {
+      headers: { "Content-Type": "text/event-stream" },
+    })
+  );
+  const text = await out.text();
+  assert.ok(text.includes("data: [DONE]\n\n"));
+  assert.equal(
+    text.includes('"cost":"0"'),
+    false,
+    "cost trailer after [DONE] is not a chat.completion.chunk"
+  );
+}
+
+async function testStreamSplitsSameLineDoneAndCost() {
+  const tf = new OpenAITransformer();
+  const sse = [
+    'data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}',
+    "",
+    'data: [DONE] {"choices":[],"cost":"0"}',
+    "",
+  ].join("\n");
+  const out = await tf.transformResponseIn(
+    new Response(sse, {
+      headers: { "Content-Type": "text/event-stream" },
+    })
+  );
+  const text = await out.text();
+  assert.ok(text.includes("data: [DONE]\n\n"));
+  assert.equal(text.includes("[DONE] {"), false);
+  assert.equal(text.includes('"cost":"0"'), false);
+}
+
 async function main() {
   await testSupportedFields();
   await testUnsupportedFields();
@@ -524,6 +566,8 @@ async function main() {
   await testStreamPreservesExistingDone();
   await testDoneTextDoesNotSuppressTerminator();
   await testStreamFailureEmitsErrorAndDone();
+  await testStreamSplitsDoneFromCostTrailer();
+  await testStreamSplitsSameLineDoneAndCost();
   await testMissingMessages();
   await testResponsesOriginForwardsChatNativeFields();
   await testChatInboundReasoningContentBecomesThinking();
