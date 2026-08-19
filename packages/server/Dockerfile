@@ -88,7 +88,7 @@ COPY --from=builder /app/packages/server/dist ./packages/server/dist
 COPY --from=builder /app/packages/ui/dist/. ./packages/server/dist/
 
 # Bundles externalize a few runtime packages (@cursor/sdk for native
-# platform bits; Mastra + ai + zod for the debug-chat playground). Workspace
+# platform bits; AI SDK + zod for the debug-chat playground). Workspace
 # pnpm node_modules are symlink farms into /app/node_modules/.pnpm, so copying
 # only packages/server/node_modules leaves those links broken in the runtime
 # image. Install real copies here instead (into a clean prefix — do not use
@@ -100,17 +100,13 @@ COPY --from=builder /app/packages/server/package.json /tmp/server-package.json
 RUN mkdir -p /tmp/runtime-externals /app/packages/server/node_modules && \
     cd /tmp/runtime-externals && \
     npm init -y >/dev/null && \
-    node -e "const fs=require('fs');const p=require('./package.json');p.overrides={'@ai-sdk/provider-utils@3.0.19':{undici:'^8.10.0'},'@ai-sdk/provider-utils@3.0.25':{undici:'^8.10.0'},'@ai-sdk/provider-utils@3.0.32':{undici:'^8.10.0'}};fs.writeFileSync('package.json',JSON.stringify(p));" && \
     CURSOR_SDK="$(node -p "require('/tmp/server-package.json').dependencies['@cursor/sdk']")" && \
-    MASTRA_CORE="$(node -p "require('/tmp/server-package.json').dependencies['@mastra/core']")" && \
-    MASTRA_AI_SDK="$(node -p "require('/tmp/server-package.json').dependencies['@mastra/ai-sdk']")" && \
     AI_SDK_ANTHROPIC="$(node -p "require('/tmp/server-package.json').dependencies['@ai-sdk/anthropic']")" && \
     AI_SDK_OPENAI="$(node -p "require('/tmp/server-package.json').dependencies['@ai-sdk/openai']")" && \
-    BUF_PROTOBUF="$(node -p "require('/tmp/server-package.json').dependencies['@bufbuild/protobuf']")" && \
     AI_SDK="$(node -p "require('/tmp/server-package.json').dependencies['ai']")" && \
     ZOD="$(node -p "require('/tmp/server-package.json').dependencies['zod']")" && \
-    test -n "$CURSOR_SDK" && test -n "$MASTRA_CORE" && test -n "$MASTRA_AI_SDK" && test -n "$AI_SDK_ANTHROPIC" && test -n "$AI_SDK_OPENAI" && test -n "$BUF_PROTOBUF" && test -n "$AI_SDK" && test -n "$ZOD" && \
-    npm install "@cursor/sdk@${CURSOR_SDK}" "@mastra/core@${MASTRA_CORE}" "@mastra/ai-sdk@${MASTRA_AI_SDK}" "@ai-sdk/anthropic@${AI_SDK_ANTHROPIC}" "@ai-sdk/openai@${AI_SDK_OPENAI}" "@bufbuild/protobuf@${BUF_PROTOBUF}" "ai@${AI_SDK}" "zod@${ZOD}" --omit=dev && \
+    test -n "$CURSOR_SDK" && test -n "$AI_SDK_ANTHROPIC" && test -n "$AI_SDK_OPENAI" && test -n "$AI_SDK" && test -n "$ZOD" && \
+    npm install "@cursor/sdk@${CURSOR_SDK}" "@ai-sdk/anthropic@${AI_SDK_ANTHROPIC}" "@ai-sdk/openai@${AI_SDK_OPENAI}" "ai@${AI_SDK}" "zod@${ZOD}" --omit=dev && \
     cp -a /tmp/runtime-externals/node_modules/. /app/packages/server/node_modules/ && \
     rm -rf /tmp/runtime-externals /tmp/server-package.json /root/.npm
 
@@ -119,8 +115,6 @@ RUN mkdir -p /tmp/runtime-externals /app/packages/server/node_modules && \
 RUN mkdir -p /app/packages/cli/node_modules /app/node_modules && \
     ln -sfn /app/packages/server/node_modules/@cursor /app/packages/cli/node_modules/@cursor && \
     ln -sfn /app/packages/server/node_modules/@cursor /app/node_modules/@cursor && \
-    ln -sfn /app/packages/server/node_modules/@mastra /app/packages/cli/node_modules/@mastra && \
-    ln -sfn /app/packages/server/node_modules/@mastra /app/node_modules/@mastra && \
     ln -sfn /app/packages/server/node_modules/@ai-sdk /app/packages/cli/node_modules/@ai-sdk && \
     ln -sfn /app/packages/server/node_modules/@ai-sdk /app/node_modules/@ai-sdk && \
     ln -sfn /app/packages/server/node_modules/ai /app/packages/cli/node_modules/ai && \

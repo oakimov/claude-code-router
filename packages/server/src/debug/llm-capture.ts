@@ -192,8 +192,8 @@ export function reasoningTextFromDelta(delta: unknown): string {
 }
 
 /**
- * Copy `thinking.content` onto `reasoning_content` so Mastra's OpenAI-compatible
- * parser (which only reads `reasoning_content` / `reasoning`) emits reasoning parts.
+ * Copy `thinking.content` onto `reasoning_content` so the AI SDK's
+ * OpenAI-compatible parser emits reasoning parts.
  */
 export function normalizeChatCompletionReasoningChunk(parsed: unknown): unknown {
   if (!parsed || typeof parsed !== "object") return parsed;

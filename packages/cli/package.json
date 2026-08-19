@@ -20,13 +20,10 @@
   "author": "caeliq",
   "license": "MIT",
   "dependencies": {
-    "@ai-sdk/anthropic": "2.0.95",
-    "@ai-sdk/openai": "2.0.118",
-    "@bufbuild/protobuf": "2.10.2",
+    "@ai-sdk/anthropic": "3.0.111",
+    "@ai-sdk/openai": "3.0.97",
     "@cursor/sdk": "^1.0.28",
-    "@mastra/ai-sdk": "1.9.0",
-    "@mastra/core": "1.60.0",
-    "ai": "5.0.112",
+    "ai": "6.0.258",
     "json5": "^2.2.3",
     "zod": "4.4.3"
   },

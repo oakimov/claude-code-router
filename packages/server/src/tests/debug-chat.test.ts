@@ -23,7 +23,10 @@ import {
   readCapturedBody,
 } from "../debug/llm-capture";
 import { errorExchangeFromMessage } from "../debug/types";
-import { setStreamDebugChatForTests } from "../debug/mastra-agent";
+import {
+  setStreamDebugChatForTests,
+  streamDebugChat,
+} from "../debug/ai-sdk-agent";
 import { createServer } from "../server";
 
 const PROVIDERS = [
@@ -448,6 +451,47 @@ function testParseBodyDefaults(): void {
   assert.equal((responsesBody.reasoning as any).effort, "max");
 }
 
+async function testDirectAiSdkStream(): Promise<void> {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      [
+        'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"pong"},"finish_reason":null}]}',
+        "",
+        'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+  try {
+    const response = await streamDebugChat(
+      {
+        messages: [
+          {
+            id: "user-1",
+            role: "user",
+            parts: [{ type: "text", text: "ping" }],
+          },
+        ],
+        target: "direct",
+        protocol: "chat_completions",
+        provider: "openai",
+        model: "gpt-4o",
+        system: "",
+        tools: [],
+        stream: true,
+      },
+      { Providers: PROVIDERS }
+    );
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /pong/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 async function testDebugChatRouteStubbed(): Promise<void> {
   setStreamDebugChatForTests(async (input) => {
     assert.equal(input.provider, "openai");
@@ -601,6 +645,7 @@ async function main(): Promise<void> {
   await testResolveCcrAndDirect();
   testProtocolAndOauthKind();
   testParseBodyDefaults();
+  await testDirectAiSdkStream();
   await testDebugChatRouteStubbed();
   await testOauthRefreshValidation();
   await testOauthRefreshSuccess();

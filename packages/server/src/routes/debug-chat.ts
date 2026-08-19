@@ -4,7 +4,7 @@ import {
   parseDebugChatBody,
   sendWebResponse,
   streamDebugChat,
-} from "../debug/mastra-agent";
+} from "../debug/ai-sdk-agent";
 import { executeDebugRequest } from "../debug/model";
 import type { InboundProtocol } from "../debug/types";
 

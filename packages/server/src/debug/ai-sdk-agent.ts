@@ -56,22 +56,20 @@ async function defaultStreamDebugChat(
   config: any,
   signal?: AbortSignal
 ): Promise<Response> {
-  const [
-    { Agent },
-    { createTool },
-    { toAISdkStream },
-    ai,
-    { createOpenAI },
-    { createAnthropic },
-  ] = await Promise.all([
-    import("@mastra/core/agent"),
-    import("@mastra/core/tools"),
-    import("@mastra/ai-sdk"),
+  const [ai, { createOpenAI }, { createAnthropic }] = await Promise.all([
     import("ai"),
     import("@ai-sdk/openai"),
     import("@ai-sdk/anthropic"),
   ]);
-  const { createUIMessageStream, createUIMessageStreamResponse } = ai;
+  const {
+    convertToModelMessages,
+    createUIMessageStream,
+    createUIMessageStreamResponse,
+    jsonSchema,
+    stepCountIs,
+    streamText,
+    tool,
+  } = ai;
 
   const model = await resolveDebugModel(input, config);
   const instructions = input.system.trim() || DEFAULT_DEBUG_INSTRUCTIONS;
@@ -82,17 +80,16 @@ async function defaultStreamDebugChat(
       spec.parameters && typeof spec.parameters === "object"
         ? spec.parameters
         : { type: "object", properties: {} };
-    tools[spec.id] = createTool({
-      id: spec.id,
+    tools[spec.id] = tool({
       description: spec.description,
-      inputSchema: parameters as any,
+      inputSchema: jsonSchema(parameters),
       execute: async (args: unknown) => stubToolExecute(args),
     });
   }
 
-  const [providerId, ...modelIdParts] = model.id.split("/");
+  const [, ...modelIdParts] = model.id.split("/");
   const modelId = modelIdParts.join("/") || model.id;
-  const agentModel =
+  const languageModel =
     input.protocol === "messages"
       ? createAnthropic({
           baseURL: model.url,
@@ -111,27 +108,22 @@ async function defaultStreamDebugChat(
               ? { fetch: createCodexFetch() }
               : {}),
           }).responses(modelId)
-        : {
-            providerId: providerId || "openai",
-            modelId,
-            url: model.url,
+        : createOpenAI({
+            baseURL: model.url,
             apiKey: model.apiKey,
             headers: model.headers,
-          };
-
-  const agent = new Agent({
-    id: "ccr-debug",
-    name: "Debug agent",
-    instructions,
-    model: agentModel,
-    ...(Object.keys(tools).length > 0 ? { tools: tools as any } : {}),
-  });
+          }).chat(modelId);
 
   const messages = input.messages.length > 0 ? input.messages : [];
   const streamOptions: Record<string, unknown> = {
-    instructions,
-    maxSteps: 1,
+    model: languageModel,
+    system: instructions,
+    messages: await convertToModelMessages(messages as any, {
+      ...(Object.keys(tools).length > 0 ? { tools: tools as any } : {}),
+    }),
+    stopWhen: stepCountIs(1),
     ...(signal ? { abortSignal: signal } : {}),
+    ...(Object.keys(tools).length > 0 ? { tools: tools as any } : {}),
   };
   if (input.protocol === "chat_completions" && input.stream) {
     streamOptions.providerOptions = {
@@ -158,9 +150,7 @@ async function defaultStreamDebugChat(
   }
 
   const { result, last, finalize, error } = await runWithLlmCapture(
-    async () => {
-      return agent.stream(messages as any, streamOptions as any);
-    },
+    async () => streamText(streamOptions as any),
     {
       patchRequestBody: (body) =>
         applyReasoningEffortToBody(body, input.protocol, input.reasoningEffort),
@@ -188,10 +178,10 @@ async function defaultStreamDebugChat(
       }
 
       await writeExchange(last);
-      for await (const part of toAISdkStream(result as any, {
-        from: "agent",
+      for await (const part of result.toUIMessageStream({
+        originalMessages: messages as any,
         sendReasoning: true,
-      })) {
+      }) as any) {
         await writer.write(part);
       }
       const captured = await finalize();
