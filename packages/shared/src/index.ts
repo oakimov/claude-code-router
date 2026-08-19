@@ -2,6 +2,7 @@ export * from "./constants";
 export * from "./codex-auth";
 export * from "./xai-auth";
 export * from "./model-alias";
+export * from "./update";
 
 // Export preset-related functionality
 export * from './preset/types';

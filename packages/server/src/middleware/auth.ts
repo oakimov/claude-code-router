@@ -32,7 +32,7 @@ export const apiKeyAuth =
   (config: any) =>
     async (req: FastifyRequest, reply: FastifyReply, done: () => void) => {
       // Public endpoints that don't require authentication
-      const publicPaths = ["/", "/health", "/api/auth/login", "/callback", "/auth/callback", "/oauth-callback", "/qwen/auth", "/qwen/forget", "/qwen/status"];
+      const publicPaths = ["/", "/health", "/favicon.ico", "/api/auth/login", "/callback", "/auth/callback", "/oauth-callback", "/qwen/auth", "/qwen/forget", "/qwen/status"];
       // Match on the path alone — OAuth callbacks arrive as
       // /oauth-callback?code=…&state=… — and keep /oauth-callback an exact match
       // so a lookalike path cannot slip past the API key check.

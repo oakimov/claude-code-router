@@ -146,6 +146,19 @@ function testRewriteSseReasoningLine(): void {
   );
 }
 
+function concatenatedDataPayloads(sse: string): string[] {
+  return sse
+    .split(/\r?\n\r?\n/)
+    .map((event) =>
+      event
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).replace(/^ /, ""))
+        .join("\n")
+    )
+    .filter(Boolean);
+}
+
 async function testStreamSplitsDoneFromCostTrailer(): Promise<void> {
   const sse = [
     'data: {"choices":[{"delta":{"content":"hi"}}]}',
@@ -160,6 +173,24 @@ async function testStreamSplitsDoneFromCostTrailer(): Promise<void> {
   const text = await new Response(transformed).text();
   assert.ok(text.includes("data: [DONE]\n\n"));
   assert.equal(text.includes('"cost":"0"'), false, "cost trailer must not follow [DONE]");
+}
+
+async function testStreamSeparatesUsageChunkFromDone(): Promise<void> {
+  const usage =
+    '{"id":"f4c3037970f54888bdc6f7e95d7216a9","object":"chat.completion.chunk","created":1787139553,"model":"deepseek-v4-flash-free","choices":[],"usage":{"prompt_tokens":386,"completion_tokens":42,"total_tokens":428,"prompt_tokens_details":{}}}';
+  const sse = `data: ${usage}\ndata: [DONE]\n`;
+  const transformed = new Response(sse).body!.pipeThrough(
+    createReasoningNormalizeTransform()
+  );
+  const text = await new Response(transformed).text();
+  const payloads = concatenatedDataPayloads(text);
+  assert.ok(payloads.includes(usage));
+  assert.ok(payloads.includes("[DONE]"));
+  assert.equal(
+    payloads.some((p) => p.includes("{") && p.includes("[DONE]")),
+    false,
+    `usage chunk and [DONE] must not share an SSE event: ${JSON.stringify(payloads)}`
+  );
 }
 
 async function testCapturedBodyCancellation(): Promise<void> {
@@ -640,6 +671,7 @@ async function main(): Promise<void> {
   testParseTokenUsage();
   testRewriteSseReasoningLine();
   await testStreamSplitsDoneFromCostTrailer();
+  await testStreamSeparatesUsageChunkFromDone();
   await testCapturedBodyCancellation();
   testErrorExchangeFromMessage();
   await testResolveCcrAndDirect();

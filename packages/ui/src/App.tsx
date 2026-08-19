@@ -118,10 +118,15 @@ function App() {
 
         setHasCheckedUpdate(true);
       } catch (err) {
-        console.error("Failed to check for updates:", err);
+        const message = err instanceof Error ? err.message : String(err);
+        const unavailable =
+          message === "Unauthorized" || /not found/i.test(message);
+        if (!unavailable) {
+          console.error("Failed to check for updates:", err);
+        }
         setIsUpdateFeatureAvailable(false);
-        if (showDialog) {
-          showToast(t("app.update_check_failed") + ": " + (err as Error).message, "error");
+        if (showDialog && !unavailable) {
+          showToast(t("app.update_check_failed") + ": " + message, "error");
         }
       } finally {
         setIsCheckingUpdate(false);
@@ -144,16 +149,15 @@ function App() {
       try {
         await api.getConfig();
       } catch (err) {
-        console.error("Error checking auth:", err);
-        if ((err as Error).message === "Unauthorized") {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message !== "Unauthorized") {
+          console.error("Error checking auth:", err);
+        }
+        if (message === "Unauthorized") {
           navigate("/login");
         }
       } finally {
         setIsCheckingAuth(false);
-        if (!hasCheckedUpdate && !hasAutoCheckedUpdate.current) {
-          hasAutoCheckedUpdate.current = true;
-          checkForUpdates(false);
-        }
       }
     };
 

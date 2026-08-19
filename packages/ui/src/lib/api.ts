@@ -72,7 +72,9 @@ class ApiClient {
       return text ? JSON.parse(text) : ({} as T);
 
     } catch (error) {
-      console.error('API request error:', error);
+      if (!(error instanceof Error && error.message === "Unauthorized")) {
+        console.error("API request error:", error);
+      }
       throw error;
     }
   }

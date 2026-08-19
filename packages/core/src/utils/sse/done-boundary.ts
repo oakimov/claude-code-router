@@ -1,30 +1,65 @@
 /**
- * OpenCode Zen (DeepSeek flash, etc.) appends a cost trailer in the same SSE
- * event as the Chat Completions terminator:
+ * OpenCode Zen (DeepSeek flash, etc.) glues extra SSE `data:` fields onto the
+ * Chat Completions terminator without a blank event separator:
  *
  *   data: [DONE]
  *   data: {"choices":[],"cost":"0"}
  *
- * or on one line:
- *
  *   data: [DONE] {"choices":[],"cost":"0"}
  *
- * EventSource parsers concatenate those into one payload
- * `[DONE]\n{"choices":[],"cost":"0"}` (or with a space), which JSON.parse
- * rejects. Close `[DONE]` as its own event and drop the trailer — it is not a
- * `chat.completion.chunk`, and Chat Completions streams end at `[DONE]`.
+ *   data: {"choices":[],"usage":{...}}
+ *   data: [DONE]
+ *
+ * EventSource / AI SDK concatenate those fields with `\n` and JSON.parse the
+ * result (`[DONE]\n{…}` or `{…}\n[DONE]`). Close `[DONE]` as its own event and
+ * drop anything after it — Chat Completions streams end there.
  */
 export function splitChatCompletionsDoneLine(line: string): string[] {
+  if (/^\s*\[DONE\]/.test(line) && !line.includes("data:")) {
+    return ["data: [DONE]", ""];
+  }
   const idx = line.indexOf("data:");
   if (idx < 0) return [line];
   const prefix = line.slice(0, idx);
   const payload = line.slice(idx + 5).trim();
-  if (!payload.startsWith("[DONE]")) return [line];
-  return [`${prefix}data: [DONE]`, ""];
+  if (!payload) return [line];
+  if (payload.startsWith("[DONE]")) {
+    return [`${prefix}data: [DONE]`, ""];
+  }
+  const doneAt = doneTrailerIndex(payload);
+  if (doneAt < 0) return [line];
+  const json = payload.slice(0, doneAt).trimEnd();
+  if (!json) return [`${prefix}data: [DONE]`, ""];
+  return [`${prefix}data: ${json}`, "", `${prefix}data: [DONE]`, ""];
 }
 
-function isDoneLine(line: string): boolean {
-  return /^data:\s*\[DONE\]\s*$/.test(line);
+function doneTrailerIndex(payload: string): number {
+  const marker = "[DONE]";
+  let from = 0;
+  while (from < payload.length) {
+    const i = payload.indexOf(marker, from);
+    if (i < 0) return -1;
+    const before = payload.slice(0, i).trimEnd();
+    if (!before) return i;
+    try {
+      JSON.parse(before);
+      return i;
+    } catch {
+      from = i + marker.length;
+    }
+  }
+  return -1;
+}
+
+export function isChatCompletionsDoneLine(line: string): boolean {
+  return /^data:\s*\[DONE\]\s*$/.test(line) || /^\s*\[DONE\]\s*$/.test(line);
+}
+
+/** Always close the previous SSE event before emitting the terminator. */
+export function pushChatCompletionsDone(out: string[]): void {
+  out.push("");
+  out.push("data: [DONE]");
+  out.push("");
 }
 
 /**
@@ -50,9 +85,8 @@ export function withChatCompletionsDoneBoundary(
       if (sawDone) return;
       for (const piece of splitChatCompletionsDoneLine(line)) {
         if (sawDone) return;
-        if (isDoneLine(piece)) {
-          out.push("data: [DONE]");
-          out.push("");
+        if (isChatCompletionsDoneLine(piece)) {
+          pushChatCompletionsDone(out);
           sawDone = true;
           return;
         }

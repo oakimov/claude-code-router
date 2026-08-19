@@ -41,6 +41,7 @@ import { registerAntigravityAuthRoutes } from "./routes/antigravity-auth";
 import { registerModelsRoutes } from "./routes/models";
 import { registerDebugChatRoutes } from "./routes/debug-chat";
 import { registerOAuthRefreshRoutes } from "./routes/oauth-refresh";
+import { registerUpdateRoutes } from "./routes/update";
 import { installLlmCaptureFetch } from "./debug/llm-capture";
 import {
   apiKeysMatch,
@@ -249,6 +250,7 @@ export const createServer = async (config: any): Promise<any> => {
   const getRuntimeConfig = () => server.configService.getAll();
   await registerDebugChatRoutes(app, getRuntimeConfig);
   await registerOAuthRefreshRoutes(app, getRuntimeConfig);
+  await registerUpdateRoutes(app);
 
   app.post("/v1/messages/count_tokens", rateLimitOptions, async (req: any, reply: any) => {
     const { messages, tools, system, model } = req.body;

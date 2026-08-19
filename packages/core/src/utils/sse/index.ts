@@ -3,6 +3,8 @@ export { SSESerializerTransform } from './SSESerializer.transform';
 export { rewriteStream } from './rewriteStream';
 export {
   splitChatCompletionsDoneLine,
+  isChatCompletionsDoneLine,
+  pushChatCompletionsDone,
   withChatCompletionsDoneBoundary,
 } from './done-boundary';
 export {

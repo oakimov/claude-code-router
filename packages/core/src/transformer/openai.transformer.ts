@@ -2,7 +2,11 @@ import { Transformer, TransformerContext } from "@/types/transformer";
 import { UnifiedChatRequest } from "@/types/llm";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
 import { createApiError } from "@/api/middleware";
-import { splitChatCompletionsDoneLine } from "@/utils/sse/done-boundary";
+import {
+  isChatCompletionsDoneLine,
+  pushChatCompletionsDone,
+  splitChatCompletionsDoneLine,
+} from "@/utils/sse/done-boundary";
 import {
   applyOpenAIChatReasoning,
   canonicalReasoning,
@@ -630,10 +634,9 @@ function ensureChatStreamDone(
       if (sawDone) return;
       for (const piece of splitChatCompletionsDoneLine(line)) {
         if (sawDone) return;
-        if (/^data:\s*\[DONE\]\s*$/.test(piece)) {
+        if (isChatCompletionsDoneLine(piece)) {
           sawDone = true;
-          out.push("data: [DONE]");
-          out.push("");
+          pushChatCompletionsDone(out);
           return;
         }
         out.push(rewriteDataLine(piece));
@@ -655,7 +658,7 @@ function ensureChatStreamDone(
           const tail = emitText(decoder.decode(), true);
           if (tail) controller.enqueue(encoder.encode(tail));
           if (!sawDone) {
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.enqueue(encoder.encode("\ndata: [DONE]\n\n"));
           }
           controller.close();
           return;
@@ -676,7 +679,7 @@ function ensureChatStreamDone(
               })}\n\n`
             )
           );
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.enqueue(encoder.encode("\ndata: [DONE]\n\n"));
         }
         controller.close();
       }

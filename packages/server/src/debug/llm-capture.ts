@@ -226,17 +226,49 @@ export function rewriteSseReasoningLine(line: string): string {
 }
 
 /**
- * OpenCode Zen appends a cost trailer in the same SSE event as `data: [DONE]`.
- * Close `[DONE]` as its own event and drop the trailer — Chat Completions
- * streams end there, and JSON.parse of `[DONE] {…}` fails.
+ * Keep in sync with packages/core/src/utils/sse/done-boundary.ts.
+ * Direct debug-chat captures skip CCR's formatResponse boundary, so this
+ * transform must close `[DONE]` as its own SSE event as well.
  */
 export function splitChatCompletionsDoneLine(line: string): string[] {
+  if (/^\s*\[DONE\]/.test(line) && !line.includes("data:")) {
+    return ["data: [DONE]", ""];
+  }
   const idx = line.indexOf("data:");
   if (idx < 0) return [line];
   const prefix = line.slice(0, idx);
   const payload = line.slice(idx + 5).trim();
-  if (!payload.startsWith("[DONE]")) return [line];
-  return [`${prefix}data: [DONE]`, ""];
+  if (!payload) return [line];
+  if (payload.startsWith("[DONE]")) {
+    return [`${prefix}data: [DONE]`, ""];
+  }
+  const doneAt = doneTrailerIndex(payload);
+  if (doneAt < 0) return [line];
+  const json = payload.slice(0, doneAt).trimEnd();
+  if (!json) return [`${prefix}data: [DONE]`, ""];
+  return [`${prefix}data: ${json}`, "", `${prefix}data: [DONE]`, ""];
+}
+
+function doneTrailerIndex(payload: string): number {
+  const marker = "[DONE]";
+  let from = 0;
+  while (from < payload.length) {
+    const i = payload.indexOf(marker, from);
+    if (i < 0) return -1;
+    const before = payload.slice(0, i).trimEnd();
+    if (!before) return i;
+    try {
+      JSON.parse(before);
+      return i;
+    } catch {
+      from = i + marker.length;
+    }
+  }
+  return -1;
+}
+
+function isChatCompletionsDoneLine(line: string): boolean {
+  return /^data:\s*\[DONE\]\s*$/.test(line) || /^\s*\[DONE\]\s*$/.test(line);
 }
 
 export function createReasoningNormalizeTransform(): TransformStream<Uint8Array, Uint8Array> {
@@ -244,6 +276,22 @@ export function createReasoningNormalizeTransform(): TransformStream<Uint8Array,
   const decoder = new TextDecoder();
   let buffer = "";
   let sawDone = false;
+  const emitPiece = (
+    piece: string,
+    controller: TransformStreamDefaultController<Uint8Array>
+  ) => {
+    if (sawDone) return;
+    if (piece === "") {
+      controller.enqueue(encoder.encode("\n"));
+      return;
+    }
+    if (isChatCompletionsDoneLine(piece)) {
+      sawDone = true;
+      controller.enqueue(encoder.encode("\ndata: [DONE]\n\n"));
+      return;
+    }
+    controller.enqueue(encoder.encode(`${piece}\n`));
+  };
   return new TransformStream({
     transform(chunk, controller) {
       if (sawDone) return;
@@ -253,26 +301,14 @@ export function createReasoningNormalizeTransform(): TransformStream<Uint8Array,
       for (const line of lines) {
         if (sawDone) return;
         for (const piece of splitChatCompletionsDoneLine(rewriteSseReasoningLine(line))) {
-          if (sawDone) return;
-          if (/^data:\s*\[DONE\]\s*$/.test(piece)) {
-            sawDone = true;
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            return;
-          }
-          controller.enqueue(encoder.encode(`${piece}\n`));
+          emitPiece(piece, controller);
         }
       }
     },
     flush(controller) {
       if (sawDone || !buffer) return;
       for (const piece of splitChatCompletionsDoneLine(rewriteSseReasoningLine(buffer))) {
-        if (sawDone) return;
-        if (/^data:\s*\[DONE\]\s*$/.test(piece)) {
-          sawDone = true;
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          return;
-        }
-        controller.enqueue(encoder.encode(`${piece}\n`));
+        emitPiece(piece, controller);
       }
     },
   });

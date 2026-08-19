@@ -514,6 +514,23 @@ async function testChatClientStreamAliasesReasoningContent() {
   assert.equal((text.match(/data: \[DONE\]/g) || []).length, 1);
 }
 
+async function testStreamSeparatesUsageChunkFromDone() {
+  const tf = new OpenAITransformer();
+  const usage =
+    '{"id":"c","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}';
+  const sse = `data: ${usage}\ndata: [DONE]\n`;
+  const out = await tf.transformResponseIn(
+    new Response(sse, {
+      headers: { "Content-Type": "text/event-stream" },
+    })
+  );
+  const text = await out.text();
+  assert.ok(text.includes(usage));
+  assert.ok(text.includes("data: [DONE]\n\n"));
+  assert.equal(text.includes(`${usage}\ndata: [DONE]`), false);
+  assert.equal(text.includes(`${usage}\n[DONE]`), false);
+}
+
 async function testStreamSplitsDoneFromCostTrailer() {
   const tf = new OpenAITransformer();
   const sse = [
@@ -568,6 +585,7 @@ async function main() {
   await testStreamFailureEmitsErrorAndDone();
   await testStreamSplitsDoneFromCostTrailer();
   await testStreamSplitsSameLineDoneAndCost();
+  await testStreamSeparatesUsageChunkFromDone();
   await testMissingMessages();
   await testResponsesOriginForwardsChatNativeFields();
   await testChatInboundReasoningContentBecomesThinking();

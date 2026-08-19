@@ -14,10 +14,8 @@ import {
 } from "@caeliq/ccr-shared";
 import { getServer } from "@caeliq/ccr-server";
 import { writeFileSync, existsSync, readFileSync } from "fs";
-import { checkForUpdates, performUpdate } from "./update";
-import { version } from "../../package.json";
 import { spawn } from "child_process";
-import {cleanupPidFile, isServiceRunning} from "./processCheck";
+import { cleanupPidFile, isServiceRunning} from "./processCheck";
 
 // Function to interpolate environment variables in config values
 const interpolateEnvVars = (obj: any): any => {
@@ -191,14 +189,6 @@ export const run = async (args: string[] = []) => {
   const app = server.app;
   // Save the PID of the background process
   writeFileSync(PID_FILE, process.pid.toString());
-
-  app.post('/api/update/perform', async () => {
-    return await performUpdate();
-  })
-
-  app.get('/api/update/check', async () => {
-    return await checkForUpdates(version);
-  })
 
   app.post("/api/restart", async () => {
     setTimeout(async () => {
