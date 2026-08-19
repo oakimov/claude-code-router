@@ -41,7 +41,23 @@ export function errorExchangeFromMessage(
   message: string,
   last?: CapturedLlmExchange
 ): CapturedLlmExchange {
-  if (last && (last.status > 0 || last.responseBody)) return last;
+  if (last?.responseBody?.trim()) return last;
+  if (last && last.status > 0) {
+    return {
+      ...last,
+      responseBody: JSON.stringify(
+        {
+          error: {
+            message,
+            type: "api_error",
+            code: "provider_response_error",
+          },
+        },
+        null,
+        2
+      ),
+    };
+  }
   return {
     url: last?.url || "",
     method: last?.method || "POST",

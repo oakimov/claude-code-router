@@ -172,6 +172,212 @@ export function prettyJsonOrText(value: unknown): string {
   }
 }
 
+export type ParsedDebugResponseError = {
+  status: number;
+  code?: string;
+  message: string;
+};
+
+function parseNestedProviderDetail(message: string): {
+  status?: number;
+  detail?: string;
+} {
+  const idx = message.indexOf("): ");
+  if (idx < 0) return {};
+  let tail = message.slice(idx + 3).trim();
+  if (!tail.startsWith("{")) return {};
+  // Some upstream errors embed JSON with backslash-escaped quotes in the message string.
+  if (tail.includes('\\"')) {
+    tail = tail.replace(/\\"/g, '"');
+  }
+  try {
+    const nested = JSON.parse(tail) as Record<string, unknown>;
+    const detail =
+      typeof nested.detail === "string"
+        ? nested.detail
+        : typeof nested.title === "string"
+          ? nested.title
+          : typeof nested.message === "string"
+            ? nested.message
+            : undefined;
+    return {
+      status: typeof nested.status === "number" ? nested.status : undefined,
+      detail,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function enrichFromProviderMessage(
+  message: string,
+  httpStatus: number,
+  code?: string,
+  explicitStatus?: number
+): ParsedDebugResponseError {
+  let status = explicitStatus ?? httpStatus;
+  const providerStatusMatch = message.match(/:\s*(\d{3})\)\s*:/);
+  if (providerStatusMatch) {
+    status = Number(providerStatusMatch[1]);
+  }
+
+  const nested = parseNestedProviderDetail(message);
+  if (nested.status != null && !providerStatusMatch) status = nested.status;
+
+  const summary =
+    nested.detail ||
+    (providerStatusMatch && message.includes("): ")
+      ? message.slice(message.indexOf("): ") + 3).trim()
+      : "") ||
+    message ||
+    "Request failed";
+
+  return {
+    status: status || httpStatus || 0,
+    code,
+    message: summary,
+  };
+}
+
+/** Extract HTTP status, error code, and human-readable message from any debug response body. */
+export function parseDebugResponseError(
+  body: string,
+  httpStatus = 0
+): ParsedDebugResponseError | null {
+  const trimmed = body.trim();
+  if (!trimmed) {
+    return httpStatus >= 400 ? { status: httpStatus, message: `HTTP ${httpStatus}` } : null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return httpStatus >= 400 || httpStatus === 0
+      ? { status: httpStatus, message: trimmed }
+      : null;
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    return httpStatus >= 400 ? { status: httpStatus, message: trimmed } : null;
+  }
+
+  const rec = parsed as Record<string, unknown>;
+
+  if (typeof rec.error === "string" && rec.error.trim()) {
+    return enrichFromProviderMessage(rec.error.trim(), httpStatus);
+  }
+
+  const errObj =
+    rec.error && typeof rec.error === "object"
+      ? (rec.error as Record<string, unknown>)
+      : null;
+
+  if (errObj) {
+    const message = typeof errObj.message === "string" ? errObj.message : "";
+    const code =
+      typeof errObj.code === "string"
+        ? errObj.code
+        : typeof errObj.type === "string"
+          ? errObj.type
+          : undefined;
+    if (!message && !code && httpStatus < 400) return null;
+    const explicitStatus = typeof errObj.status === "number" ? errObj.status : undefined;
+    return enrichFromProviderMessage(message || trimmed, httpStatus, code, explicitStatus);
+  }
+
+  if (rec.type === "error" && typeof rec.message === "string" && rec.message) {
+    return enrichFromProviderMessage(
+      rec.message,
+      httpStatus,
+      typeof rec.code === "string" ? rec.code : undefined
+    );
+  }
+
+  if (httpStatus >= 400 && typeof rec.message === "string") {
+    return {
+      status: httpStatus,
+      code: typeof rec.code === "string" ? rec.code : undefined,
+      message: rec.message,
+    };
+  }
+
+  return httpStatus >= 400 ? { status: httpStatus, message: trimmed } : null;
+}
+
+export function isDebugResponseError(body: string, httpStatus = 0): boolean {
+  if (httpStatus >= 400) return true;
+  return parseDebugResponseError(body, httpStatus) != null;
+}
+
+/** Fallback exchange when useChat errors and no captured upstream body arrived. */
+export function exchangeFromChatError(message: string): CapturedExchange {
+  return {
+    url: "",
+    method: "POST",
+    requestHeaders: {},
+    requestBody: undefined,
+    status: 0,
+    responseHeaders: {},
+    responseBody: prettyJsonOrText({ error: message }),
+    streaming: false,
+  };
+}
+
+export function formatDebugResponseNotice(error: ParsedDebugResponseError): string {
+  const code = error.code ? ` · ${error.code}` : "";
+  return `${error.status}${code}: ${error.message}`;
+}
+
+export function readDebugExchangeFromSseLine(line: string): CapturedExchange | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("data:")) return null;
+  const payload = trimmed.slice(5).trim();
+  if (!payload || payload === "[DONE]") return null;
+  try {
+    const json = JSON.parse(payload) as { type?: string; data?: unknown };
+    if (json.type === "data-llm-exchange" && json.data && typeof json.data === "object") {
+      return json.data as CapturedExchange;
+    }
+  } catch {
+    // Ignore non-JSON SSE lines.
+  }
+  return null;
+}
+
+/** Read AI SDK UI message SSE for `data-llm-exchange` parts. Resolves when the stream ends. */
+export async function tapDebugExchangeStream(
+  stream: ReadableStream<Uint8Array>,
+  onExchange: (exchange: CapturedExchange) => void
+): Promise<void> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const exchange = readDebugExchangeFromSseLine(line);
+        if (exchange) onExchange(exchange);
+      }
+    }
+    const tail = readDebugExchangeFromSseLine(buffer + decoder.decode());
+    if (tail) onExchange(tail);
+  } catch {
+    // Stream closed or cancelled — exchange may already have been applied.
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released.
+    }
+  }
+}
+
 export const EXAMPLE_TOOLS_JSON = `[
   {
     "type": "function",
@@ -459,7 +665,9 @@ export function buildEndpointBody(args: {
     messages,
     stream: args.stream,
   };
-  if (args.stream) body.stream_options = { include_usage: true };
+  if (args.stream) {
+    body.stream_options = { include_usage: true };
+  }
   if (tools.length) body.tools = tools;
   return applyReasoningEffortToBody(body, args.protocol, effort);
 }

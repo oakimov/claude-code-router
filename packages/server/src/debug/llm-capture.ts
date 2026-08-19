@@ -71,12 +71,21 @@ function shouldCapture(url: string, method: string): boolean {
 }
 
 function isStreamingResponse(res: Response, requestBody: unknown): boolean {
+  // Error responses are JSON blobs — capture synchronously even when stream:true.
+  if (!res.ok) return false;
   const contentType = res.headers.get("content-type") || "";
   if (contentType.includes("text/event-stream")) return true;
   if (requestBody && typeof requestBody === "object" && (requestBody as any).stream === true) {
     return true;
   }
   return false;
+}
+
+export function isStreamingCaptureResponse(
+  res: Response,
+  requestBody: unknown
+): boolean {
+  return isStreamingResponse(res, requestBody);
 }
 
 function mergeUsage(a?: TokenUsage, b?: TokenUsage): TokenUsage | undefined {
@@ -429,84 +438,109 @@ export async function runWithLlmCapture<T>(
   }
 }
 
-let captureInstalled = false;
+type FetchWithInner = typeof fetch & { __inner?: typeof fetch };
+
+let wrappedFetch: FetchWithInner | undefined;
+
+function captureInnerFetch(): typeof fetch {
+  if (wrappedFetch && globalThis.fetch !== wrappedFetch) {
+    // Tests or other code replaced global.fetch — wrap the new handler.
+    return globalThis.fetch;
+  }
+  if (wrappedFetch) {
+    return wrappedFetch.__inner ?? globalThis.fetch;
+  }
+  return globalThis.fetch;
+}
+
+/** Test hook: unwrap global.fetch if we wrapped it, then allow a fresh install. */
+export function resetLlmCaptureFetchForTests(): void {
+  if (wrappedFetch && globalThis.fetch === wrappedFetch && wrappedFetch.__inner) {
+    globalThis.fetch = wrappedFetch.__inner;
+  }
+  wrappedFetch = undefined;
+}
 
 /**
  * Wrap global.fetch so debug-chat can record the last upstream LLM exchange.
  * Must run after the server's logging interceptor so this wrap is outermost.
  */
 export function installLlmCaptureFetch(): void {
-  if (captureInstalled) return;
-  captureInstalled = true;
-  const inner = global.fetch;
-  global.fetch = async (...args: Parameters<typeof fetch>) => {
-    const store = llmCaptureAls.getStore();
-    if (!store) {
-      return inner(...args);
-    }
+  const inner = captureInnerFetch();
+  if (wrappedFetch && globalThis.fetch === wrappedFetch) return;
 
-    const inputArg = args[0] as RequestInfo | URL;
-    const initArg = args[1];
-    let input = inputArg;
-    let init = initArg;
-    const url = urlFromFetchArgs(input);
-    const method = methodFromFetchArgs(input, init);
-    if (!shouldCapture(url, method)) {
-      return inner(...args);
-    }
-
-    let requestBody = bodyFromFetchArgs(input, init);
-    if (
-      store.patchRequestBody &&
-      requestBody &&
-      typeof requestBody === "object" &&
-      !Array.isArray(requestBody)
-    ) {
-      requestBody = store.patchRequestBody(
-        { ...(requestBody as Record<string, unknown>) },
-        url
-      );
-      const rewritten = rewriteJsonInit(input, init, requestBody as Record<string, unknown>);
-      input = rewritten.input;
-      init = rewritten.init;
-    }
-    const requestHeaders = redactCapturedHeaders(headersFromFetchArgs(input, init));
-    const res = await inner(input as RequestInfo | URL, init);
-    const streaming = isStreamingResponse(res, requestBody);
-    const responseHeaders = redactCapturedHeaders(res.headers);
-
-    let responseBody = "";
-    let usage: TokenUsage | undefined;
-    let outbound: Response = res;
-    if (!streaming) {
-      try {
-        responseBody = await res.clone().text();
-        usage = parseTokenUsageFromPayload(responseBody);
-        responseBody = prettyIfJson(responseBody);
-      } catch {
-        responseBody = "<body not captured>";
+  wrappedFetch = Object.assign(
+    async (...args: Parameters<typeof fetch>) => {
+      const store = llmCaptureAls.getStore();
+      if (!store) {
+        return inner(...args);
       }
-    } else if (res.body) {
-      const [live, copy] = res.body.tee();
-      store.captureBody = readCapturedBody(copy, store.signal);
-      outbound = new Response(live.pipeThrough(createReasoningNormalizeTransform()), {
-        status: res.status,
-        statusText: res.statusText,
-        headers: res.headers,
-      });
-    }
 
-    store.last = {
-      url,
-      method: method.toUpperCase(),
-      requestHeaders,
-      requestBody,
-      status: res.status,
-      responseHeaders,
-      responseBody,
-      streaming,
-      usage,
-    };
-    return outbound;
-  };
+      const inputArg = args[0] as RequestInfo | URL;
+      const initArg = args[1];
+      let input = inputArg;
+      let init = initArg;
+      const url = urlFromFetchArgs(input);
+      const method = methodFromFetchArgs(input, init);
+      if (!shouldCapture(url, method)) {
+        return inner(...args);
+      }
+
+      let requestBody = bodyFromFetchArgs(input, init);
+      if (
+        store.patchRequestBody &&
+        requestBody &&
+        typeof requestBody === "object" &&
+        !Array.isArray(requestBody)
+      ) {
+        requestBody = store.patchRequestBody(
+          { ...(requestBody as Record<string, unknown>) },
+          url
+        );
+        const rewritten = rewriteJsonInit(input, init, requestBody as Record<string, unknown>);
+        input = rewritten.input;
+        init = rewritten.init;
+      }
+      const requestHeaders = redactCapturedHeaders(headersFromFetchArgs(input, init));
+      const res = await inner(input as RequestInfo | URL, init);
+      const streaming = isStreamingResponse(res, requestBody);
+      const responseHeaders = redactCapturedHeaders(res.headers);
+
+      let responseBody = "";
+      let usage: TokenUsage | undefined;
+      let outbound: Response = res;
+      if (!streaming) {
+        try {
+          responseBody = await res.clone().text();
+          usage = parseTokenUsageFromPayload(responseBody);
+          responseBody = prettyIfJson(responseBody);
+        } catch {
+          responseBody = "<body not captured>";
+        }
+      } else if (res.body) {
+        const [live, copy] = res.body.tee();
+        store.captureBody = readCapturedBody(copy, store.signal);
+        outbound = new Response(live.pipeThrough(createReasoningNormalizeTransform()), {
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers,
+        });
+      }
+
+      store.last = {
+        url,
+        method: method.toUpperCase(),
+        requestHeaders,
+        requestBody,
+        status: res.status,
+        responseHeaders,
+        responseBody,
+        streaming,
+        usage,
+      };
+      return outbound;
+    },
+    { __inner: inner }
+  ) as FetchWithInner;
+  globalThis.fetch = wrappedFetch;
 }

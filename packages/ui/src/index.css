@@ -192,7 +192,8 @@
 .debug-conversation-scroll {
   min-height: 0;
   overflow-x: hidden;
-  overflow-y: auto;
+  /* Always show the track so token streaming does not toggle gutter width. */
+  overflow-y: scroll;
   overscroll-behavior: contain;
   scrollbar-gutter: stable !important;
 }

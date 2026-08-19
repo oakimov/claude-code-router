@@ -7,8 +7,20 @@ import {
   resolveDebugModel,
 } from "./model";
 import { parseOpenAiTools, stubToolExecute } from "./tools";
-import { runWithLlmCapture } from "./llm-capture";
+import {
+  installLlmCaptureFetch,
+  resetLlmCaptureFetchForTests,
+  runWithLlmCapture,
+} from "./llm-capture";
 import { errorExchangeFromMessage, type CapturedLlmExchange, type DebugChatInput } from "./types";
+
+function ensureLlmCaptureInstalled(): void {
+  installLlmCaptureFetch();
+}
+
+export function resetDebugCaptureForTests(): void {
+  resetLlmCaptureFetchForTests();
+}
 
 export type StreamDebugChat = (
   input: DebugChatInput,
@@ -56,6 +68,7 @@ async function defaultStreamDebugChat(
   config: any,
   signal?: AbortSignal
 ): Promise<Response> {
+  ensureLlmCaptureInstalled();
   const [ai, { createOpenAI }, { createAnthropic }] = await Promise.all([
     import("ai"),
     import("@ai-sdk/openai"),
@@ -122,6 +135,7 @@ async function defaultStreamDebugChat(
       ...(Object.keys(tools).length > 0 ? { tools: tools as any } : {}),
     }),
     stopWhen: stepCountIs(1),
+    maxRetries: 0,
     ...(signal ? { abortSignal: signal } : {}),
     ...(Object.keys(tools).length > 0 ? { tools: tools as any } : {}),
   };
@@ -149,17 +163,9 @@ async function defaultStreamDebugChat(
     }
   }
 
-  const { result, last, finalize, error } = await runWithLlmCapture(
-    async () => streamText(streamOptions as any),
-    {
-      patchRequestBody: (body) =>
-        applyReasoningEffortToBody(body, input.protocol, input.reasoningEffort),
-      signal,
-    }
-  );
-
   const uiMessageStream = createUIMessageStream({
     originalMessages: messages as any,
+    onError: (err) => (err instanceof Error ? err.message : String(err)),
     execute: async ({ writer }) => {
       const writeExchange = async (exchange?: CapturedLlmExchange) => {
         if (!exchange) return;
@@ -169,21 +175,55 @@ async function defaultStreamDebugChat(
         } as any);
       };
 
+      let streamError: unknown;
+      const { result, last, finalize, error } = await runWithLlmCapture(
+        async () => {
+          const streamResult = await streamText(streamOptions as any);
+          try {
+            for await (const part of streamResult.toUIMessageStream({
+              originalMessages: messages as any,
+              sendReasoning: true,
+            }) as any) {
+              // AI SDK emits generic error parts on provider failures — skip them;
+              // the debug panel reads the captured upstream exchange instead.
+              if (part?.type === "error") {
+                streamError =
+                  streamError ??
+                  new Error(
+                    typeof part.errorText === "string" ? part.errorText : "Stream error"
+                  );
+                continue;
+              }
+              await writer.write(part);
+            }
+          } catch (err) {
+            streamError = streamError ?? err;
+          }
+          return streamResult;
+        },
+        {
+          patchRequestBody: (body) =>
+            applyReasoningEffortToBody(body, input.protocol, input.reasoningEffort),
+          signal,
+        }
+      );
+
       if (error || !result) {
         const captured = await finalize();
         const message =
           error instanceof Error ? error.message : String(error || "Debug chat failed");
         await writeExchange(errorExchangeFromMessage(message, captured || last));
-        throw error instanceof Error ? error : new Error(message);
+        return;
       }
 
-      await writeExchange(last);
-      for await (const part of result.toUIMessageStream({
-        originalMessages: messages as any,
-        sendReasoning: true,
-      }) as any) {
-        await writer.write(part);
+      if (streamError) {
+        const captured = await finalize();
+        const message =
+          streamError instanceof Error ? streamError.message : String(streamError);
+        await writeExchange(errorExchangeFromMessage(message, captured || last));
+        return;
       }
+
       const captured = await finalize();
       if (captured) {
         await writeExchange(captured);

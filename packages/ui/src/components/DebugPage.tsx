@@ -85,6 +85,9 @@ import {
   saveDebugChat,
   saveDebugSystem,
   uiMessagesToWire,
+  parseDebugResponseError,
+  isDebugResponseError,
+  exchangeFromChatError,
   REASONING_EFFORTS,
   type CapturedExchange,
   type DebugTarget,
@@ -113,12 +116,22 @@ function isToolPart(part: DebugUIMessage["parts"][number]): part is ToolUIPart {
 
 function statusTone(status: number): string {
   if (status >= 200 && status < 300) return "text-emerald-600 dark:text-emerald-400";
-  if (status >= 400) return "text-red-600 dark:text-red-400";
+  if (status >= 500) return "text-red-600 dark:text-red-400";
+  if (status >= 400) return "text-amber-600 dark:text-amber-400";
   return "text-muted-foreground";
 }
 
 function isErrorStatus(status: number, body?: string): boolean {
-  return status >= 400 || (status === 0 && Boolean(body));
+  return isDebugResponseError(body || "", status);
+}
+
+function responseFromExchange(exchange: CapturedExchange) {
+  const body = prettyJsonOrText(exchange.responseBody || "");
+  const headers = prettyJsonOrText(exchange.responseHeaders ?? {});
+  const parsed = parseDebugResponseError(body, exchange.status);
+  // Keep the captured HTTP status; only borrow a parsed status when the capture lacks one.
+  const status = exchange.status > 0 ? exchange.status : parsed?.status || 0;
+  return { status, body, headers, parsed };
 }
 
 export function DebugPage() {
@@ -168,6 +181,9 @@ export function DebugPage() {
   const responseHeadersEditorRef = useRef<any>(null);
   const pendingUsageRef = useRef<DebugTokenUsage | null>(null);
   const messagesRef = useRef<DebugUIMessage[]>([]);
+  const lastExchangeRef = useRef<CapturedExchange | null>(null);
+  const pendingExchangeRef = useRef<CapturedExchange | null>(null);
+  const chatBusyRef = useRef(false);
   const protocolTouched = useRef(false);
 
   const provider = useMemo(
@@ -245,15 +261,40 @@ export function DebugPage() {
     setUsageByMessage((current) => ({ ...current, [lastAssistant.id]: usage }));
   }, []);
 
-  const applyExchange = useCallback((exchange: CapturedExchange) => {
-    setResponseData({
-      status: exchange.status,
-      responseTime: 0,
-      body: prettyJsonOrText(exchange.responseBody || ""),
-      headers: prettyJsonOrText(exchange.responseHeaders ?? {}),
-    });
-    if (exchange.usage) attachUsage(exchange.usage);
-  }, [attachUsage]);
+  const commitExchange = useCallback(
+    (exchange: CapturedExchange) => {
+      const next = responseFromExchange(exchange);
+      setResponseData((current) => {
+        if (
+          current.status === next.status &&
+          current.body === next.body &&
+          current.headers === next.headers
+        ) {
+          return current;
+        }
+        return {
+          status: next.status,
+          responseTime: 0,
+          body: next.body,
+          headers: next.headers,
+        };
+      });
+      if (exchange.usage) attachUsage(exchange.usage);
+    },
+    [attachUsage]
+  );
+
+  const applyExchange = useCallback(
+    (exchange: CapturedExchange) => {
+      lastExchangeRef.current = exchange;
+      if (chatBusyRef.current) {
+        pendingExchangeRef.current = exchange;
+        return;
+      }
+      commitExchange(exchange);
+    },
+    [commitExchange]
+  );
   const applyExchangeRef = useRef(applyExchange);
   applyExchangeRef.current = applyExchange;
 
@@ -353,19 +394,26 @@ export function DebugPage() {
       }
     },
     onError: (err) => {
-      setResponseData((current) => {
-        if (current.body) return current;
-        return {
-          status: current.status || 0,
-          responseTime: current.responseTime,
-          body: prettyJsonOrText({ error: err.message }),
-          headers: current.headers || "{}",
-        };
+      queueMicrotask(() => {
+        if (lastExchangeRef.current) {
+          commitExchange(lastExchangeRef.current);
+          return;
+        }
+        commitExchange(exchangeFromChatError(err.message));
       });
     },
   });
 
   messagesRef.current = messages;
+
+  useEffect(() => {
+    const busy = status === "submitted" || status === "streaming";
+    chatBusyRef.current = busy;
+    if (!busy && pendingExchangeRef.current) {
+      commitExchange(pendingExchangeRef.current);
+      pendingExchangeRef.current = null;
+    }
+  }, [status, commitExchange]);
 
   useEffect(() => {
     saveDebugSystem(system);
@@ -425,6 +473,12 @@ export function DebugPage() {
 
   const busy = status === "submitted" || status === "streaming" || rawLoading;
 
+  const parsedResponseError = useMemo(
+    () => parseDebugResponseError(responseData.body, responseData.status),
+    [responseData.body, responseData.status]
+  );
+  const displayStatus = responseData.status > 0 ? responseData.status : parsedResponseError?.status || 0;
+
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const logDataParam = params.get("logData");
@@ -477,6 +531,7 @@ export function DebugPage() {
     if (!providerName) return;
     try {
       setRawLoading(true);
+      setNotice((current) => (current?.tone === "error" ? null : current));
       setResponseData({ status: 0, responseTime: 0, body: "", headers: "{}" });
       const headers = rowsToHeaders(headerRows);
       let body: unknown;
@@ -536,10 +591,12 @@ export function DebugPage() {
             : upstreamStatus >= 400 || !response.ok
               ? prettyJsonOrText({ error: `Request failed: ${upstreamStatus || response.status}` })
               : "";
+      const responseBodyText = prettyJsonOrText(responseBody);
+      const parsed = parseDebugResponseError(responseBodyText, upstreamStatus);
       setResponseData({
-        status: upstreamStatus,
+        status: parsed?.status || upstreamStatus,
         responseTime,
-        body: prettyJsonOrText(responseBody),
+        body: responseBodyText,
         headers: prettyJsonOrText(responseHeaders),
       });
     } catch (err) {
@@ -561,6 +618,9 @@ export function DebugPage() {
     if (status === "submitted" || status === "streaming") return;
     const payload = (text ?? input).trim();
     if (!payload || !providerName || !modelName) return;
+    lastExchangeRef.current = null;
+    pendingExchangeRef.current = null;
+    setNotice((current) => (current?.tone === "error" ? null : current));
     setResponseData({ status: 0, responseTime: 0, body: "", headers: "{}" });
     sendMessage({ text: payload });
     setInput("");
@@ -799,9 +859,9 @@ export function DebugPage() {
         <p className="truncate px-1 text-[11px] text-muted-foreground">
           {t("debug.url_hint")}: {requestUrl || "—"}
         </p>
-        {notice && (
+        {notice ? (
           <p
-            className={`px-1 text-[11px] ${
+            className={`min-h-[1.25rem] px-1 text-[11px] ${
               notice.tone === "error"
                 ? "text-destructive"
                 : "text-emerald-600 dark:text-emerald-400"
@@ -809,6 +869,8 @@ export function DebugPage() {
           >
             {notice.text}
           </p>
+        ) : (
+          <div className="min-h-[1.25rem]" aria-hidden />
         )}
         {providers.length === 0 && (
           <p className="px-1 text-[11px] text-muted-foreground">{t("debug.no_providers")}</p>
@@ -927,7 +989,11 @@ export function DebugPage() {
                         </Message>
                       );
                     })}
-                    {status === "submitted" && <Loader />}
+                    {status === "submitted" || status === "streaming" ? (
+                      <div className="flex h-4 shrink-0 items-center">
+                        {status === "submitted" ? <Loader /> : null}
+                      </div>
+                    ) : null}
                   </ConversationContent>
                   <ConversationScrollButton />
                 </Conversation>
@@ -1098,12 +1164,26 @@ export function DebugPage() {
                   </TabsTrigger>
                 </TabsList>
                 <span className="text-[11px] font-medium text-muted-foreground">{t("debug.response")}</span>
-                {responseData.status > 0 ? (
-                  <span className={`font-mono text-[11px] font-semibold ${statusTone(responseData.status)}`}>
-                    {responseData.status}
+                {displayStatus > 0 ? (
+                  <span className={`font-mono text-[11px] font-semibold ${statusTone(displayStatus)}`}>
+                    {displayStatus}
+                    {parsedResponseError?.code ? (
+                      <span className="ml-1 font-normal text-muted-foreground">
+                        · {parsedResponseError.code}
+                      </span>
+                    ) : null}
                     {responseData.responseTime > 0 ? (
                       <span className="ml-1 font-normal text-muted-foreground">
                         · {responseData.responseTime}ms
+                      </span>
+                    ) : null}
+                  </span>
+                ) : parsedResponseError ? (
+                  <span className={`font-mono text-[11px] font-semibold ${statusTone(parsedResponseError.status)}`}>
+                    {parsedResponseError.status}
+                    {parsedResponseError.code ? (
+                      <span className="ml-1 font-normal text-muted-foreground">
+                        · {parsedResponseError.code}
                       </span>
                     ) : null}
                   </span>

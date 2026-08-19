@@ -21,9 +21,13 @@ import {
   splitChatCompletionsDoneLine,
   createReasoningNormalizeTransform,
   readCapturedBody,
+  isStreamingCaptureResponse,
+  installLlmCaptureFetch,
+  resetLlmCaptureFetchForTests,
 } from "../debug/llm-capture";
 import { errorExchangeFromMessage } from "../debug/types";
 import {
+  resetDebugCaptureForTests,
   setStreamDebugChatForTests,
   streamDebugChat,
 } from "../debug/ai-sdk-agent";
@@ -102,6 +106,41 @@ function testRedactCapturedHeaders(): void {
   assert.doesNotMatch(JSON.stringify(redacted), /sk-secret|abc-secret/);
 }
 
+function testStreamingCaptureSkipsErrorResponses(): void {
+  const errorBody =
+    '{"error":{"message":"Error from provider(nvidia,z-ai/glm-5.2: 429): {\\"status\\":429,\\"title\\":\\"Too Many Requests\\"}","type":"api_error","code":"provider_response_error"}}';
+  const res = new Response(errorBody, {
+    status: 429,
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(isStreamingCaptureResponse(res, { stream: true }), false);
+  assert.equal(isStreamingCaptureResponse(res, { stream: false }), false);
+  const okStream = new Response("data: {}\n\n", {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+  assert.equal(isStreamingCaptureResponse(okStream, { stream: true }), true);
+}
+
+async function testCaptureResetUnwrapsFetch(): Promise<void> {
+  const originalFetch = globalThis.fetch;
+  const mock: typeof fetch = async () => new Response("{}", { status: 200 });
+  globalThis.fetch = mock;
+  try {
+    resetLlmCaptureFetchForTests();
+    installLlmCaptureFetch();
+    assert.notEqual(globalThis.fetch, mock, "install should wrap the mock");
+    resetLlmCaptureFetchForTests();
+    assert.equal(globalThis.fetch, mock, "reset should restore the inner fetch");
+    installLlmCaptureFetch();
+    resetLlmCaptureFetchForTests();
+    assert.equal(globalThis.fetch, mock, "a second install/reset cycle must not nest wrappers");
+  } finally {
+    resetLlmCaptureFetchForTests();
+    globalThis.fetch = originalFetch;
+  }
+}
+
 function testErrorExchangeFromMessage(): void {
   const fallback = errorExchangeFromMessage("provider failed");
   assert.equal(fallback.status, 0);
@@ -120,6 +159,20 @@ function testErrorExchangeFromMessage(): void {
   assert.equal(captured.status, 429);
   assert.equal(captured.responseHeaders["retry-after"], "2");
   assert.match(captured.responseBody, /rate limited/);
+
+  const statusOnly = errorExchangeFromMessage("upstream failed", {
+    url: "http://example/v1/chat/completions",
+    method: "POST",
+    requestHeaders: {},
+    requestBody: {},
+    status: 410,
+    responseHeaders: {},
+    responseBody: "",
+    streaming: false,
+  });
+  assert.equal(statusOnly.status, 410);
+  assert.match(statusOnly.responseBody, /upstream failed/);
+  assert.match(statusOnly.responseBody, /provider_response_error/);
 }
 
 function testRewriteSseReasoningLine(): void {
@@ -389,6 +442,11 @@ async function testResolveCcrAndDirect(): Promise<void> {
 function testProtocolAndOauthKind(): void {
   assert.equal(guessInboundProtocol(PROVIDERS[0]), "chat_completions");
   assert.equal(guessInboundProtocol(PROVIDERS[1]), "messages");
+  assert.equal(
+    guessInboundProtocol({ transformer: { use: ["codex", "openai-responses"] } }),
+    "responses"
+  );
+  assert.equal(guessInboundProtocol({ transformer: { use: ["openai-responses"] } }), "responses");
   assert.equal(oauthKindForProvider(PROVIDERS[1]), "claude-auth");
   assert.equal(oauthKindForProvider(PROVIDERS[0]), null);
   assert.equal(oauthKindForProvider(PROVIDERS[3]), null);
@@ -480,6 +538,67 @@ function testParseBodyDefaults(): void {
     "max"
   );
   assert.equal((responsesBody.reasoning as any).effort, "max");
+}
+
+async function testDebugChatStreamSurfacesProviderError(): Promise<void> {
+  const errorBody = JSON.stringify({
+    error: {
+      message:
+        'Error from provider(nvidia,z-ai/glm-5.2: 429): {"status":429,"title":"Too Many Requests"}',
+      type: "api_error",
+      code: "provider_response_error",
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    if (url.includes("/v1/chat/completions")) {
+      return new Response(errorBody, {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return originalFetch(input as RequestInfo, init);
+  };
+  resetDebugCaptureForTests();
+  try {
+    const response = await streamDebugChat(
+      {
+        messages: [
+          {
+            id: "user-1",
+            role: "user",
+            parts: [{ type: "text", text: "ping" }],
+          },
+        ],
+        target: "ccr",
+        protocol: "chat_completions",
+        provider: "openai",
+        model: "gpt-4o",
+        system: "",
+        tools: [],
+        stream: true,
+      },
+      {
+        APIKEY: "test-key",
+        PORT: 3456,
+        Providers: PROVIDERS,
+      }
+    );
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.match(text, /data-llm-exchange|llm-exchange/);
+    assert.match(text, /Too Many Requests/);
+    assert.match(text, /429/);
+    assert.doesNotMatch(text, /An error occurred\./);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 }
 
 async function testDirectAiSdkStream(): Promise<void> {
@@ -673,11 +792,14 @@ async function main(): Promise<void> {
   await testStreamSplitsDoneFromCostTrailer();
   await testStreamSeparatesUsageChunkFromDone();
   await testCapturedBodyCancellation();
+  testStreamingCaptureSkipsErrorResponses();
+  await testCaptureResetUnwrapsFetch();
   testErrorExchangeFromMessage();
   await testResolveCcrAndDirect();
   testProtocolAndOauthKind();
   testParseBodyDefaults();
   await testDirectAiSdkStream();
+  await testDebugChatStreamSurfacesProviderError();
   await testDebugChatRouteStubbed();
   await testOauthRefreshValidation();
   await testOauthRefreshSuccess();

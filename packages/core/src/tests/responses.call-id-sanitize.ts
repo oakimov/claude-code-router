@@ -115,6 +115,21 @@ async function codexRequestIsSanitized() {
   assertPairedInput((result.body as any).input);
 }
 
+async function openAIResponsesRequestStripsStreamOptions() {
+  const transformer = new OpenAIResponsesTransformer();
+  const result = await transformer.transformRequestIn(
+    {
+      model: "gpt-5.4-mini",
+      stream: true,
+      stream_options: { include_usage: true },
+      messages: [{ role: "user", content: "ping" }],
+    } as any,
+    {},
+    {}
+  );
+  assert.equal((result as any).stream_options, undefined);
+}
+
 async function openAIResponsesRequestIsSanitized() {
   const transformer = new OpenAIResponsesTransformer();
   const result = await transformer.transformRequestIn(
@@ -792,6 +807,7 @@ async function main() {
   redosAdversarialInputIsLinear();
   await perTurnMapAvoidsSanitizedCollisions();
   await codexRequestIsSanitized();
+  await openAIResponsesRequestStripsStreamOptions();
   await openAIResponsesRequestIsSanitized();
   await openAIResponsesProviderRequestPreservesAssistantText();
   await streamingResponsesAreSanitized();
