@@ -365,7 +365,13 @@ export class OpenAIResponsesTransformer implements Transformer {
     const tokenLimit =
       request.max_tokens ?? (request as any).max_completion_tokens;
     if (tokenLimit != null) {
-      (request as any).max_output_tokens = tokenLimit;
+      // Responses enforces max_output_tokens >= 16; Anthropic clients may
+      // legitimately send smaller max_tokens values, so clamp to the floor.
+      const MIN_OUTPUT_TOKENS = 16;
+      (request as any).max_output_tokens = Math.max(
+        MIN_OUTPUT_TOKENS,
+        Number(tokenLimit)
+      );
     }
     delete request.max_tokens;
     delete (request as any).max_completion_tokens;

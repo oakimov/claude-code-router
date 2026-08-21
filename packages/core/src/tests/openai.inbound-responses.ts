@@ -2102,6 +2102,33 @@ async function testClientTransformRequestOut() {
   assert.equal(json.output[0].input, "echo hello");
 }
 
+async function testMaxOutputTokensClampedToApiFloor() {
+  const tf = new OpenAIResponsesTransformer();
+  // Anthropic clients may send max_tokens < 16, which Responses rejects.
+  const small = await tf.transformRequestIn(
+    {
+      model: "muse-spark-1.2",
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 4,
+    } as any,
+    {},
+    {}
+  );
+  assert.equal((small as any).max_output_tokens, 16);
+  assert.equal((small as any).max_tokens, undefined);
+
+  const normal = await tf.transformRequestIn(
+    {
+      model: "muse-spark-1.2",
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 1024,
+    } as any,
+    {},
+    {}
+  );
+  assert.equal((normal as any).max_output_tokens, 1024);
+}
+
 async function main() {
   await testStringAndMessageInput();
   await testFunctionCallRoundTrip();
@@ -2144,6 +2171,7 @@ async function main() {
   await testChatReasoningContentHistoryBecomesResponsesReasoning();
   await testStreamedThinkingLandsOnCompletedReasoningItem();
   await testClientTransformRequestOut();
+  await testMaxOutputTokensClampedToApiFloor();
   console.log("openai.inbound-responses: PASS");
 }
 
