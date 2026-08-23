@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
+import { setTimeout as sleep } from "node:timers/promises";
 import { OpencodeHeadersTransformer } from "../transformer/opencode-headers.transformer";
 
-// Verifies the opencode session self-heal: a Zen `No provider available` 401
-// triggers a session re-roll + retry (contained in the transformer), while any
-// other non-ok response is surfaced as a normal provider_response_error.
+type Captured = {
+  headers: Record<string, string>;
+  url: string;
+};
 
-type Captured = { headers: Record<string, string>; url: string };
-
-function makeContext() {
+function makeContext(signal?: AbortSignal) {
   return {
+    signal,
     req: {
       sessionId: "conv-1",
       log: { warn() {}, info() {}, debug() {} },
@@ -29,11 +30,11 @@ const UPSTREAM_FAILED_BODY = JSON.stringify({
   },
 });
 
-function installFetch(sequence: Array<() => Response>): Captured[] {
+function installFetch(sequence: Array<() => Response | Promise<Response>>): Captured[] {
   const calls: Captured[] = [];
   (globalThis as any).fetch = async (url: any, init: any) => {
     const headers: Record<string, string> = {};
-    new Headers(init?.headers).forEach((v, k) => (headers[k] = v));
+    new Headers(init?.headers).forEach((value, key) => (headers[key] = value));
     calls.push({ headers, url: String(url) });
     return sequence[Math.min(calls.length - 1, sequence.length - 1)]();
   };
@@ -51,191 +52,276 @@ const body = {
   messages: [{ role: "user", content: "hi" }],
 };
 
-async function main() {
-  const originalFetch = (globalThis as any).fetch;
+function okResponse() {
+  return new Response(JSON.stringify({ id: "ok", choices: [] }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
-  try {
-    // --- Case 1: recover after two "No provider available" 401s ---
+function assertIdentityHeaders(calls: Captured[]) {
+  for (const call of calls) {
+    assert.equal(call.headers["x-api-key"], "test-key");
+    assert.equal(call.headers["x-opencode-project"], "global");
+    assert.equal(call.headers["x-opencode-client"], "cli");
+    assert.equal(call.headers["user-agent"], "opencode/1.18.21");
+    assert.match(call.headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+    assert.match(call.headers["x-opencode-request"], /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+    assert.equal(call.headers["x-session-affinity"], undefined);
+    assert.equal(call.headers["x-session-id"], undefined);
+    assert.equal(call.headers["x-parent-session-id"], undefined);
+    assert.equal(call.headers.authorization, undefined);
+  }
+}
+
+async function recoverRoutingFailures() {
+  const calls = installFetch([
+    () => new Response(NO_PROVIDER_BODY, { status: 401 }),
+    () => new Response(NO_PROVIDER_BODY, { status: 401 }),
+    okResponse,
+  ]);
+
+  const result = await new OpencodeHeadersTransformer().transformRequestIn(
+    body,
+    provider,
+    makeContext()
+  );
+
+  assert.equal(result.config.__providerResponse.status, 200);
+  assert.equal(calls.length, 3);
+  assertIdentityHeaders(calls);
+  assert.notEqual(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
+  assert.notEqual(calls[1].headers["x-opencode-session"], calls[2].headers["x-opencode-session"]);
+  assert.equal(calls[0].headers["x-opencode-request"], calls[1].headers["x-opencode-request"]);
+}
+
+async function recoverWrappedRoutingFailure() {
+  const calls = installFetch([
+    () => new Response(UPSTREAM_FAILED_BODY, { status: 400 }),
+    okResponse,
+  ]);
+
+  const result = await new OpencodeHeadersTransformer().transformRequestIn(
+    body,
+    provider,
+    makeContext()
+  );
+
+  assert.equal(result.config.__providerResponse.status, 200);
+  assert.equal(calls.length, 2);
+  assert.notEqual(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
+}
+
+async function retryTransientStatusesWithAffinity() {
+  for (const status of [429, 529]) {
+    const calls = installFetch([
+      () =>
+        new Response(JSON.stringify({ error: { message: "temporary" } }), {
+          status,
+          headers: { "retry-after-ms": "0" },
+        }),
+      okResponse,
+    ]);
+
+    const result = await new OpencodeHeadersTransformer().transformRequestIn(
+      body,
+      provider,
+      makeContext()
+    );
+
+    assert.equal(result.config.__providerResponse.status, 200);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
+    assert.equal(calls[0].headers["x-opencode-request"], calls[1].headers["x-opencode-request"]);
+  }
+}
+
+async function preserveTerminalErrors() {
+  for (const fixture of [
     {
-      const calls = installFetch([
-        () => new Response(NO_PROVIDER_BODY, { status: 401 }),
-        () => new Response(NO_PROVIDER_BODY, { status: 401 }),
-        () =>
-          new Response(JSON.stringify({ id: "ok", choices: [] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-      ]);
-
-      const t = new OpencodeHeadersTransformer();
-      const result = await t.transformRequestIn(body, provider, makeContext());
-      const response: Response = result.config.__providerResponse;
-
-      assert.equal(response.status, 200, "should recover to a 200 after retries");
-      assert.equal(calls.length, 3, "should have attempted 3 upstream calls");
-
-      const sessions = calls.map((c) => c.headers["x-opencode-session"]);
-      assert.ok(
-        sessions[0] && sessions[1] && sessions[2],
-        "every attempt sends a session header"
-      );
-      assert.notEqual(
-        sessions[0],
-        sessions[1],
-        "session must be re-rolled between attempt 1 and 2"
-      );
-      assert.notEqual(
-        sessions[1],
-        sessions[2],
-        "session must be re-rolled between attempt 2 and 3"
-      );
-      // Auth + client identity preserved on every attempt.
-      for (const c of calls) {
-        assert.equal(c.headers["x-api-key"], "test-key");
-        assert.equal(c.headers["user-agent"], "opencode/1.18.4");
-        assert.equal(c.headers["x-opencode-client"], "cli");
-        // sendUnifiedRequest drops falsy header values, so authorization is
-        // never sent upstream (the "undefined" string is filtered out).
-        assert.notEqual(c.headers.authorization, "Bearer test-key");
-      }
-      console.log("✓ case 1: recovers after No provider available with new sessions");
-    }
-
-    // --- Case 2: a genuine 401 (bad key) is NOT retried, surfaces as error ---
+      status: 401,
+      body: JSON.stringify({ error: { message: "Invalid API key" } }),
+    },
     {
-      const calls = installFetch([
-        () =>
-          new Response(
-            JSON.stringify({ error: { message: "Invalid API key" } }),
-            { status: 401 }
-          ),
-      ]);
-
-      const t = new OpencodeHeadersTransformer();
-      await assert.rejects(
-        () => t.transformRequestIn(body, provider, makeContext()),
-        (err: any) => {
-          assert.equal(err.statusCode, 401);
-          assert.equal(err.code, "provider_response_error");
-          return true;
-        },
-        "genuine 401 must throw provider_response_error"
-      );
-      assert.equal(calls.length, 1, "genuine 401 must NOT be retried");
-      console.log("✓ case 2: genuine 401 is not retried and surfaces normally");
-    }
-
-    // --- Case 2b: 400 "Upstream request failed" is treated as routing failure ---
+      status: 400,
+      body: JSON.stringify({
+        error: { message: "max_tokens is required", type: "invalid_request_error" },
+      }),
+    },
     {
-      const calls = installFetch([
-        () => new Response(UPSTREAM_FAILED_BODY, { status: 400 }),
-        () =>
-          new Response(JSON.stringify({ id: "ok", choices: [] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-      ]);
-
-      const t = new OpencodeHeadersTransformer();
-      const result = await t.transformRequestIn(body, provider, makeContext());
-      const response: Response = result.config.__providerResponse;
-
-      assert.equal(response.status, 200, "400 upstream-failed should recover");
-      assert.equal(calls.length, 2, "should retry once after the 400 routing failure");
-      assert.notEqual(
-        calls[0].headers["x-opencode-session"],
-        calls[1].headers["x-opencode-session"],
-        "session must be re-rolled after a 400 routing failure"
-      );
-      console.log("✓ case 2b: 400 'Upstream request failed' re-rolls and recovers");
-    }
-
-    // --- Case 2c: a genuine 400 (validation) is NOT retried ---
+      status: 403,
+      body: JSON.stringify({ error: { message: "Workspace is blocked" } }),
+    },
     {
-      const calls = installFetch([
-        () =>
-          new Response(
-            JSON.stringify({
-              error: { message: "max_tokens is required", type: "invalid_request_error" },
-            }),
-            { status: 400 }
-          ),
-      ]);
-
-      const t = new OpencodeHeadersTransformer();
-      await assert.rejects(
-        () => t.transformRequestIn(body, provider, makeContext()),
-        (err: any) => {
-          assert.equal(err.statusCode, 400);
-          assert.equal(err.code, "provider_response_error");
-          return true;
-        },
-        "genuine 400 must throw provider_response_error"
-      );
-      assert.equal(calls.length, 1, "genuine 400 must NOT be retried");
-      console.log("✓ case 2c: genuine 400 validation error is not retried");
-    }
-
-    // --- Case 2d: Zen-wrapped request validation must NOT be retried ---
-    {
-      const validationWrapped = JSON.stringify({
+      status: 400,
+      body: JSON.stringify({
         error: {
           message:
-            "Error from provider (Console): Upstream request failed: [400] 6 validation errors:\n  {'type': 'missing', 'loc': ('body', 'response_format', 'ResponseFormat', 'json_schema', 'name'), 'msg': 'Field required'}",
+            "Error from provider (Console): Upstream request failed: [400] 6 validation errors: Field required",
           type: "invalid_request_error",
         },
-      });
-      const calls = installFetch([
-        () => new Response(validationWrapped, { status: 400 }),
-      ]);
+      }),
+    },
+  ]) {
+    const calls = installFetch([
+      () => new Response(fixture.body, { status: fixture.status }),
+    ]);
+    await assert.rejects(
+      () =>
+        new OpencodeHeadersTransformer().transformRequestIn(
+          body,
+          provider,
+          makeContext()
+        ),
+      (error: any) => {
+        assert.equal(error.statusCode, fixture.status);
+        assert.equal(error.code, "provider_response_error");
+        return true;
+      }
+    );
+    assert.equal(calls.length, 1);
+  }
+}
 
-      const t = new OpencodeHeadersTransformer();
-      await assert.rejects(
-        () => t.transformRequestIn(body, provider, makeContext()),
-        (err: any) => {
-          assert.equal(err.statusCode, 400);
-          assert.equal(err.code, "provider_response_error");
-          return true;
-        },
-        "validation 400 wrapped as Upstream request failed must not re-roll"
-      );
-      assert.equal(
-        calls.length,
-        1,
-        "validation errors must NOT be treated as Zen routing failures"
-      );
-      console.log(
-        "✓ case 2d: Zen-wrapped validation 400 is not retried"
-      );
+async function preserveFinalRetryHeaders() {
+  const calls = installFetch([
+    () =>
+      new Response(JSON.stringify({ error: { message: "busy" } }), {
+        status: 529,
+        headers: { "retry-after-ms": "0" },
+      }),
+  ]);
+
+  await assert.rejects(
+    () =>
+      new OpencodeHeadersTransformer().transformRequestIn(
+        body,
+        provider,
+        makeContext()
+      ),
+    (error: any) => {
+      assert.equal(error.statusCode, 529);
+      assert.equal(error.code, "provider_response_error");
+      assert.equal(error.headers["Retry-After-Ms"], "0");
+      return true;
     }
+  );
+  assert.equal(calls.length, 3);
+  assert.equal(new Set(calls.map((call) => call.headers["x-opencode-session"])).size, 1);
+}
 
-    // --- Case 3: persistent No provider available exhausts retries then throws ---
-    {
-      const calls = installFetch([
-        () => new Response(NO_PROVIDER_BODY, { status: 401 }),
-      ]);
+async function abortsPendingBackoff() {
+  const controller = new AbortController();
+  const calls = installFetch([
+    () =>
+      new Response(JSON.stringify({ error: { message: "busy" } }), {
+        status: 429,
+        headers: { "retry-after": "30" },
+      }),
+  ]);
 
-      const t = new OpencodeHeadersTransformer();
-      await assert.rejects(
-        () => t.transformRequestIn(body, provider, makeContext()),
-        (err: any) => {
-          assert.equal(err.statusCode, 401);
-          assert.equal(err.code, "provider_response_error");
-          return true;
-        },
-        "exhausted retries must throw"
-      );
-      assert.equal(calls.length, 3, "should try exactly MAX_NO_PROVIDER_RETRIES times");
-      console.log("✓ case 3: persistent failure exhausts retries then errors");
+  const pending = new OpencodeHeadersTransformer().transformRequestIn(
+    body,
+    provider,
+    makeContext(controller.signal)
+  );
+  await sleep(10);
+  controller.abort("client disconnected");
+  await assert.rejects(pending, (error: any) => error?.name === "AbortError");
+  assert.equal(calls.length, 1);
+}
+
+async function retriesTransportFailureWithAffinity() {
+  const calls = installFetch([
+    async () => {
+      throw Object.assign(new Error("fetch failed"), { code: "ECONNRESET" });
+    },
+    okResponse,
+  ]);
+
+  const result = await new OpencodeHeadersTransformer().transformRequestIn(
+    body,
+    provider,
+    makeContext()
+  );
+  assert.equal(result.config.__providerResponse.status, 200);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
+  assert.equal(calls[0].headers["x-opencode-request"], calls[1].headers["x-opencode-request"]);
+}
+
+async function streamFailuresAreErrors() {
+  for (const finishReason of ["network error", "network-error", "network_error"]) {
+    const transformer = new OpencodeHeadersTransformer();
+    const response = await transformer.transformResponseOut(
+      new Response(
+        `data: ${JSON.stringify({
+          id: "c",
+          choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+        })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } }
+      )
+    );
+    await assert.rejects(
+      () => response.text(),
+      (error: any) => {
+        assert.equal(error.code, "provider_network_error");
+        assert.match(error.message, /finish_reason/);
+        return true;
+      }
+    );
+  }
+
+  const structured = await new OpencodeHeadersTransformer().transformResponseOut(
+    new Response(
+      'data: {"error":{"message":"The model is temporarily at capacity"}}\n\n',
+      { headers: { "content-type": "text/event-stream" } }
+    )
+  );
+  await assert.rejects(
+    () => structured.text(),
+    (error: any) => {
+      assert.equal(error.code, "provider_network_error");
+      assert.match(error.message, /temporarily at capacity/);
+      return true;
     }
+  );
+}
 
-    console.log("\nAll opencode no-provider retry tests passed.");
+async function streamCancellationPropagates() {
+  let cancelled = false;
+  const upstream = new ReadableStream<Uint8Array>({
+    pull() {},
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const response = await new OpencodeHeadersTransformer().transformResponseOut(
+    new Response(upstream, { headers: { "content-type": "text/event-stream" } })
+  );
+  await response.body!.cancel("stop");
+  assert.equal(cancelled, true);
+}
+
+async function main() {
+  const originalFetch = (globalThis as any).fetch;
+  try {
+    await recoverRoutingFailures();
+    await recoverWrappedRoutingFailure();
+    await retryTransientStatusesWithAffinity();
+    await preserveTerminalErrors();
+    await preserveFinalRetryHeaders();
+    await abortsPendingBackoff();
+    await retriesTransportFailureWithAffinity();
+    await streamFailuresAreErrors();
+    await streamCancellationPropagates();
+    console.log("opencode-headers reliability: PASS");
   } finally {
     (globalThis as any).fetch = originalFetch;
   }
 }
 
-main().catch((err) => {
-  console.error(err);
+main().catch((error) => {
+  console.error(error);
   process.exit(1);
 });

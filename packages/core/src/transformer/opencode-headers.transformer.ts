@@ -3,8 +3,16 @@ import { Transformer } from "@/types/transformer";
 import { sendUnifiedRequest } from "@/utils/request";
 import { createApiError } from "@/api/middleware";
 import { sanitizeUpstreamErrorText } from "@/utils/redact";
+import {
+  delay,
+  isClientAbortError,
+  isFallbackEligibleStatus,
+  isProviderNetworkError,
+} from "@/utils/retry";
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const OPENCODE_VERSION = "1.18.21";
+const OPENCODE_USER_AGENT = `opencode/${OPENCODE_VERSION}`;
 
 // OpenCode Zen selects an upstream backend by hashing the last 4 characters of
 // the `x-opencode-session` header (see zen handler selectProvider). When a
@@ -21,7 +29,12 @@ const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 // it owns its upstream call via `config.__providerResponse` so no
 // opencode-specific status-code semantics leak into the generic provider error
 // path (which correctly treats 400/401 as terminal for every other provider).
-const MAX_ZEN_ROUTING_RETRIES = 3;
+const MAX_ZEN_ATTEMPTS = 3;
+const ZEN_RETRY_BACKOFF_BASE_MS = 500;
+const ZEN_RETRY_BACKOFF_MAX_MS = 2_000;
+const ZEN_RETRY_AFTER_MAX_MS = 30_000;
+// Matches OpenCode's RETRY_JITTER_FACTOR in session/retry.ts.
+const ZEN_RETRY_JITTER_FACTOR = 0.25;
 
 export class OpencodeHeadersTransformer implements Transformer {
   name = "opencode-headers";
@@ -40,13 +53,18 @@ export class OpencodeHeadersTransformer implements Transformer {
       context?.req?.sessionId || this.fingerprintConversation(request, context);
     const body = request.body || request;
     const baseConfig = request.config || {};
+    // OpenCode identifies one logical user turn with the user-message id. Keep
+    // this stable across transport retries; only the session changes when Zen's
+    // deterministic provider bucket must be re-rolled.
+    const requestId = this.generateId("msg");
 
     const response = await this.sendWithSessionRetry(
       body,
       baseConfig,
       provider,
       context,
-      conversationId
+      conversationId,
+      requestId
     );
 
     return {
@@ -61,6 +79,15 @@ export class OpencodeHeadersTransformer implements Transformer {
     };
   }
 
+  async transformResponseOut(response: Response): Promise<Response> {
+    const contentType = response.headers.get("content-type") || "";
+    if (!response.body || !contentType.includes("text/event-stream")) {
+      return response;
+    }
+
+    return this.preserveZenStreamErrors(response);
+  }
+
   /**
    * Own the full upstream call so a `No provider available` 401 can be retried
    * with a fresh session in isolation. Any other non-ok response is re-thrown in
@@ -73,28 +100,59 @@ export class OpencodeHeadersTransformer implements Transformer {
     baseConfig: any,
     provider: any,
     context: any,
-    conversationId: string
+    conversationId: string,
+    requestId: string
   ): Promise<Response> {
     const url = provider?.baseUrl || provider?.api_base_url;
     const httpsProxy = context?.req?.server?.configService?.getHttpsProxy?.();
     const logger = context?.req?.log ?? context?.req?.server?.log;
     const model = body?.model;
+    const signal = context?.signal ?? baseConfig?.signal;
 
-    for (let attempt = 0; attempt < MAX_ZEN_ROUTING_RETRIES; attempt++) {
-      const headers = this.buildHeaders(baseConfig, provider, conversationId);
-
-      const response = await sendUnifiedRequest(
-        url,
-        body,
-        {
-          httpsProxy,
-          ...baseConfig,
-          headers,
-          signal: context?.signal ?? baseConfig?.signal,
-        },
-        context,
-        logger
+    for (let attempt = 0; attempt < MAX_ZEN_ATTEMPTS; attempt++) {
+      const headers = this.buildHeaders(
+        baseConfig,
+        provider,
+        conversationId,
+        requestId
       );
+
+      let response: Response;
+      try {
+        response = await sendUnifiedRequest(
+          url,
+          body,
+          {
+            httpsProxy,
+            ...baseConfig,
+            headers,
+            signal,
+          },
+          context,
+          logger
+        );
+      } catch (error) {
+        const isLastAttempt = attempt === MAX_ZEN_ATTEMPTS - 1;
+        if (
+          isLastAttempt ||
+          isClientAbortError(error) ||
+          !isProviderNetworkError(error)
+        ) {
+          throw error;
+        }
+        const waitMs = this.exponentialRetryDelayMs(attempt);
+        logger?.warn?.(
+          {
+            provider: provider?.name,
+            model,
+            attempt: attempt + 1,
+            waitMs,
+          },
+          "opencode: Zen network failure — preserving session and retrying"
+        );
+        await delay(waitMs, signal);
+        continue;
+      }
 
       if (response.ok) {
         return response;
@@ -103,21 +161,42 @@ export class OpencodeHeadersTransformer implements Transformer {
       // Non-ok: read the body once to classify. Error responses are small JSON,
       // never a stream, so buffering here is safe (success is never buffered).
       const errorText = await response.text();
-      const isLastAttempt = attempt === MAX_ZEN_ROUTING_RETRIES - 1;
+      const isLastAttempt = attempt === MAX_ZEN_ATTEMPTS - 1;
+      const routingFailure = this.isZenRoutingFailure(
+        response.status,
+        errorText
+      );
+      const transientFailure = this.isZenTransientStatus(response.status);
 
-      if (!isLastAttempt && this.isZenRoutingFailure(response.status, errorText)) {
-        // Drop the pinned session so the next attempt generates a new suffix and
-        // lands on a different Zen provider bucket.
-        this.invalidateSession(conversationId);
+      if (!isLastAttempt && (routingFailure || transientFailure)) {
+        if (routingFailure) {
+          // A deterministic bad Zen bucket needs a new sticky session. Transient
+          // failures stay on the same session to preserve provider/cache affinity.
+          this.invalidateSession(conversationId);
+        }
+        const waitMs = transientFailure
+          ? this.retryDelayMs(response, attempt)
+          : 0;
         logger?.warn?.(
-          { provider: provider?.name, model, status: response.status, attempt: attempt + 1 },
-          "opencode: Zen provider-routing failure — re-rolling session and retrying"
+          {
+            provider: provider?.name,
+            model,
+            status: response.status,
+            attempt: attempt + 1,
+            waitMs,
+            sessionRerolled: routingFailure,
+          },
+          routingFailure
+            ? "opencode: Zen provider-routing failure — re-rolling session and retrying"
+            : "opencode: transient Zen failure — preserving session and retrying"
         );
+        if (waitMs > 0) await delay(waitMs, signal);
         continue;
       }
 
       // Not retryable, or retries exhausted: reproduce the generic provider
-      // error so 401(bad key)/429/5xx behave exactly as before.
+      // error so auth, validation, permissions, and final transient failures
+      // keep flowing through CCR's normal error and fallback handling.
       const safeErrorText =
         sanitizeUpstreamErrorText(errorText) || errorText.slice(0, 240);
       throw createApiError(
@@ -131,19 +210,122 @@ export class OpencodeHeadersTransformer implements Transformer {
 
     // Unreachable: the final attempt either returns ok or throws above.
     throw createApiError(
-      `Error from provider(${provider?.name},${model}): Zen provider-routing retries exhausted`,
+      `Error from provider(${provider?.name},${model}): Zen retries exhausted`,
       503,
       "provider_response_error"
     );
   }
 
+  private preserveZenStreamErrors(response: Response): Response {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let buffer = "";
+    let terminated = false;
+
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          while (!terminated) {
+            const { done, value } = await reader.read();
+            if (done) {
+              const tail = buffer + decoder.decode();
+              buffer = "";
+              const failure = tail
+                ? OpencodeHeadersTransformer.zenStreamFailure(tail)
+                : undefined;
+              if (failure) {
+                const error = Object.assign(new Error(failure), {
+                  code: "provider_network_error",
+                });
+                terminated = true;
+                controller.error(error);
+                return;
+              }
+              if (tail) controller.enqueue(encoder.encode(tail));
+              controller.close();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split(/\r?\n\r?\n/);
+            buffer = events.pop() || "";
+            if (!events.length) continue;
+
+            const output: string[] = [];
+            let failure: string | undefined;
+            for (const event of events) {
+              failure = OpencodeHeadersTransformer.zenStreamFailure(event);
+              if (failure) {
+                terminated = true;
+                break;
+              }
+              output.push(event);
+            }
+            if (output.length) {
+              controller.enqueue(encoder.encode(`${output.join("\n\n")}\n\n`));
+            }
+            if (failure) {
+              const error = Object.assign(new Error(failure), {
+                code: "provider_network_error",
+              });
+              await reader.cancel(error).catch(() => {});
+              controller.error(error);
+            }
+            return;
+          }
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      cancel(reason) {
+        terminated = true;
+        return reader.cancel(reason);
+      },
+    });
+
+    return new Response(stream, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+
+  private static zenStreamFailure(event: string): string | undefined {
+    for (const line of event.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      let parsed: any;
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      const finishReason = String(parsed?.choices?.[0]?.finish_reason || "");
+      if (/^network[-_\s]error$/i.test(finishReason)) {
+        return `Provider finish_reason: ${finishReason}`;
+      }
+      if (parsed?.error) {
+        const message =
+          typeof parsed.error?.message === "string"
+            ? parsed.error.message
+            : typeof parsed.error === "string"
+              ? parsed.error
+              : "OpenCode provider stream error";
+        return sanitizeUpstreamErrorText(message) || "OpenCode provider stream error";
+      }
+    }
+    return undefined;
+  }
+
   private buildHeaders(
     baseConfig: any,
     provider: any,
-    conversationId: string
+    conversationId: string,
+    requestId: string
   ): Record<string, any> {
     const sessionId = this.getOrCreateSessionId(conversationId);
-    const requestId = this.generateId("msg");
     return {
       ...baseConfig?.headers,
       "x-api-key": provider.apiKey || "",
@@ -151,7 +333,7 @@ export class OpencodeHeadersTransformer implements Transformer {
       "x-opencode-session": sessionId,
       "x-opencode-request": requestId,
       "x-opencode-client": "cli",
-      "user-agent": "opencode/1.18.4",
+      "user-agent": OPENCODE_USER_AGENT,
       authorization: undefined,
     };
   }
@@ -193,11 +375,57 @@ export class OpencodeHeadersTransformer implements Transformer {
     return false;
   }
 
+  private isZenTransientStatus(status: number): boolean {
+    return isFallbackEligibleStatus(status);
+  }
+
+  private retryDelayMs(response: Response, failedAttemptIndex: number): number {
+    const retryAfterMs = response.headers.get("retry-after-ms");
+    if (retryAfterMs) {
+      const parsed = Number.parseFloat(retryAfterMs);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.min(parsed, ZEN_RETRY_AFTER_MAX_MS);
+      }
+    }
+
+    const retryAfter = response.headers.get("retry-after");
+    if (retryAfter) {
+      const seconds = Number.parseFloat(retryAfter);
+      if (Number.isFinite(seconds) && seconds >= 0) {
+        return Math.min(seconds * 1_000, ZEN_RETRY_AFTER_MAX_MS);
+      }
+      const dateMs = Date.parse(retryAfter);
+      if (Number.isFinite(dateMs)) {
+        return Math.min(
+          Math.max(0, dateMs - Date.now()),
+          ZEN_RETRY_AFTER_MAX_MS
+        );
+      }
+    }
+
+    return this.exponentialRetryDelayMs(failedAttemptIndex);
+  }
+
+  private exponentialRetryDelayMs(failedAttemptIndex: number): number {
+    // Jitter mirrors OpenCode's RETRY_JITTER_FACTOR (25%) so concurrent CCR
+    // clients do not re-strike Zen in lockstep after a shared 429 wave.
+    const jittered =
+      ZEN_RETRY_BACKOFF_BASE_MS *
+      2 ** failedAttemptIndex *
+      (1 + Math.random() * ZEN_RETRY_JITTER_FACTOR);
+    return Math.min(jittered, ZEN_RETRY_BACKOFF_MAX_MS);
+  }
+
   private retryAfterHeaders(
     response: Response
   ): Record<string, string> | undefined {
     const retryAfter = response.headers.get("retry-after");
-    return retryAfter ? { "Retry-After": retryAfter } : undefined;
+    const retryAfterMs = response.headers.get("retry-after-ms");
+    if (!retryAfter && !retryAfterMs) return undefined;
+    return {
+      ...(retryAfter ? { "Retry-After": retryAfter } : {}),
+      ...(retryAfterMs ? { "Retry-After-Ms": retryAfterMs } : {}),
+    };
   }
 
   private fingerprintConversation(request: any, context: any): string {

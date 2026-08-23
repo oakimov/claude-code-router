@@ -898,7 +898,7 @@ DeepSeek models require previous assistant reasoning content to be replayed in s
   "api_key": "$OPENCODE_API_KEY",
   "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
   "transformer": {
-    "use": ["OpenAI"],
+    "use": ["OpenAI", "opencode-headers"],
     "deepseek-v4-pro": {
       "use": ["reasoning"]
     },
@@ -909,7 +909,7 @@ DeepSeek models require previous assistant reasoning content to be replayed in s
 }
 ```
 
-> **Note**: The `reasoning` transformer must be applied specifically to DeepSeek models (not provider-wide). It replays the assistant's reasoning output from previous turns as required by the DeepSeek API.
+> **Note**: `opencode-headers` mirrors the OpenCode client identity headers and owns bounded Zen retries while preserving session affinity. Keep it provider-wide. Apply `reasoning` specifically to DeepSeek models (not provider-wide) so previous assistant reasoning is replayed as required by the DeepSeek API.
 
 **Custom Transformers:**
 
