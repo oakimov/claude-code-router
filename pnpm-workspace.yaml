@@ -65,6 +65,10 @@ overrides:
   # imports Headers (and only uses it on Node <18), so share core's direct
   # maintained undici 8 line instead of installing a second major.
   '@connectrpc/connect-node@1.7.0>undici': ^8.9.0
+  # @ai-sdk/provider-utils@4.0.46 declares undici ^6.28.0 but never imports it
+  # (its fetch path uses globalThis.fetch / safe-node-fetch). Collapse the
+  # declared major onto core's maintained undici 8 line to drop the 6.x major.
+  '@ai-sdk/provider-utils@4.0.46>undici': ^8.9.0
   # Consolidate narrow patch/minor splits whose newer releases preserve the
   # APIs used by these exact parents. Keep exact edges so unrelated consumers
   # retain their declared compatibility boundaries.

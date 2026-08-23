@@ -60,6 +60,13 @@ signal to delete it, not to widen the selector.
 - **Scope**: the connect-node edge only; pnpm deduplicates it with `@caeliq/llms`'s direct `undici@^8.9.0`.
 - **Exit**: Cursor ships SDK on `@connectrpc/connect-node@2.x` (no undici dep) or connect-node 1.x raises its undici range; then delete the override and re-audit.
 
+### 1b. `@ai-sdk/provider-utils@4.0.46>undici` → `^8.9.0`
+- [ ] Drop when `@ai-sdk/provider-utils` raises its `undici` range to `^8` (or removes the declared dep).
+- **Why**: `@ai-sdk/provider-utils@4.0.46` declares `undici: ^6.28.0`, creating a second undici major alongside core's direct `undici@^8.9.0`. It never imports undici at runtime — its fetch path uses `globalThis.fetch` / `safe-node-fetch` (verified: zero `require("undici")` in the compiled bundle; the only `undici` string is a code comment). The declared-major collision is collapsed onto core's maintained 8 line.
+- **Compatibility**: undici 8 still exports the `Headers`/`fetch`/`Response` surface; provider-utils does not consume it, so the AI SDK test suite passes with the package resolving to undici 8. `pnpm why undici` now shows a single `undici@8.10.0`.
+- **Scope**: the provider-utils edge only; pnpm deduplicates it with `@caeliq/llms`'s direct `undici@^8.9.0`.
+- **Exit**: provider-utils widens its range to `^8` (or drops the dep); then delete the override and re-audit.
+
 ### 2. Compatible transitive consolidation
 - [ ] Drop each edge when its parent reaches the selected child naturally.
 - `@pnpm/network.ca-file@1.0.2>graceful-fs` → `4.2.11`: one-patch update adds `EBUSY` retry handling without changing the API.
