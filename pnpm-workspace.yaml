@@ -95,7 +95,7 @@ overrides:
   '@docusaurus/mdx-loader@3.10.2>image-size': link:packages/docusaurus-image-size
   # PostCSS already permits the patched Nano ID release; keep an explicit
   # floor so an existing lockfile cannot retain the vulnerable version.
-  'postcss@8.5.25>nanoid': ^3.3.17
+  'postcss@8.5.26>nanoid': ^3.3.17
   # serve-handler 6.1.7 is current and pins minimatch 3, whose brace-expansion
   # range cannot reach the patched major. Scope the compatibility bridge.
   'minimatch@3.1.5>brace-expansion': ^5.0.8

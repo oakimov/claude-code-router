@@ -1,6 +1,6 @@
 {
   "name": "@caeliq/ccr-server",
-  "version": "2.1.6",
+  "version": "2.1.7",
   "description": "Server for Claude Code Router",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -35,7 +35,7 @@
     "rotating-file-stream": "^3.2.10",
     "shell-quote": "^1.10.0",
     "tiktoken": "^1.0.22",
-    "uuid": "^14.0.1",
+    "uuid": "^14.0.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -43,7 +43,7 @@
     "@types/adm-zip": "^0.5.8",
     "@types/node": "^26.2.0",
     "esbuild": "^0.28.2",
-    "fastify": "^5.12.0",
+    "fastify": "^5.12.1",
     "tsx": "^4.23.12",
     "typescript": "^6.0.3"
   },
