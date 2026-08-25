@@ -1,4 +1,5 @@
 import { ThinkLevel, UnifiedChatRequest } from "../types/llm";
+import { resolveOutboundReasoningSummary } from "./reasoning-effort";
 
 /**
  * Translate Claude Code's effort setting into the thinking dialect each Gemini
@@ -151,9 +152,13 @@ export function buildGeminiThinkingConfig(
   // disable thinking outright, so ask for the family's floor and stop
   // requesting thought parts.
   const off = effort === "none" || reasoning.enabled === false;
+  // Shared opt-in: reasoning.summary / REASONING_AUTO_SUMMARY / provider
+  // reasoningSummary request visible thoughts. summary:"none" hides them.
+  const summary = resolveOutboundReasoningSummary(request);
+  const wantThoughts = reasoning.summary === "none" ? false : summary ? true : !off;
 
   if (dialect.kind === "includeOnly") {
-    return off ? undefined : { includeThoughts: true };
+    return off ? undefined : { includeThoughts: wantThoughts };
   }
 
   if (dialect.kind === "level") {
@@ -166,9 +171,9 @@ export function buildGeminiThinkingConfig(
     // Effort absent (some clients send `thinking` without an effort): keep the
     // model default level but still ask for thought parts, since Antigravity
     // only streams them when includeThoughts is set.
-    if (!effort) return { includeThoughts: true };
+    if (!effort) return { includeThoughts: wantThoughts };
     return {
-      includeThoughts: true,
+      includeThoughts: wantThoughts,
       thinkingLevel: translateThinkingLevel(effort, dialect.levels),
     };
   }
@@ -192,7 +197,9 @@ export function buildGeminiThinkingConfig(
         : undefined;
 
   // Effort absent and no budget: ask for thought parts at the model default.
-  if (typeof requested !== "number") return { includeThoughts: true };
+  if (typeof requested !== "number") {
+    return { includeThoughts: wantThoughts };
+  }
 
   let budget = clamp(requested, dialect.min, dialect.max);
 
@@ -208,5 +215,5 @@ export function buildGeminiThinkingConfig(
     budget = dialect.min;
   }
 
-  return { includeThoughts: true, thinkingBudget: budget };
+  return { includeThoughts: wantThoughts, thinkingBudget: budget };
 }

@@ -28,6 +28,7 @@ import {
 import { protocolErrorBody } from "./protocol-errors";
 import { stripOneMillionContextMarker } from "@/utils/claude-model-catalog";
 import { decodeClaudeModelAlias } from "@caeliq/ccr-shared";
+import { applyReasoningAutoSummary } from "@/utils/reasoning-effort";
 
 export interface PreparedInboundRequest {
   match: ProtocolRouteMatch;
@@ -136,6 +137,14 @@ export async function prepareInboundRequest(
     normalizationInput,
     endpointTransformer,
     transformerContext
+  );
+
+  // Opt-in readable thinking for every client → provider direction: stamp
+  // Unified reasoning.summary so Responses/Codex/Anthropic/Gemini outbound
+  // can request visible thought text when the client only sent effort.
+  applyReasoningAutoSummary(
+    unifiedBody,
+    fastify.configService.get("REASONING_AUTO_SUMMARY")
   );
 
   unifiedBody.model = resolveConfiguredClaudeModelAlias(

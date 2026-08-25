@@ -139,6 +139,11 @@ export interface UnifiedChatRequest {
   reasoning?: {
     // OpenAI-style
     effort?: ThinkLevel;
+    /**
+     * Request readable reasoning text from destinations that gate it
+     * (Responses `reasoning.summary`, Codex, etc.). `"none"` opts out.
+     */
+    summary?: "auto" | "detailed" | "concise" | "none";
 
     // Anthropic-style
     max_tokens?: number;

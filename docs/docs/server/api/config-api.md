@@ -77,6 +77,7 @@ curl -X POST http://localhost:3456/api/config \
 | `APIKEY` | string | No | API key |
 | `LOG` | boolean | No | Enable logging (default true) |
 | `LOG_LEVEL` | string | No | Log level (debug/info/warn/error) |
+| `REASONING_AUTO_SUMMARY` | boolean \| string | No | When true (or `"auto"` / `"detailed"` / `"concise"`), inject `reasoning.summary` on Unified requests that enable reasoning effort but omit a summary. Applies to every client protocol and every destination (Responses, Codex, Anthropic, Gemini, …). Per-provider override: `Providers[].reasoningSummary`. Explicit client `reasoning.summary` (including `"none"`) wins. |
 
 #### Providers Configuration
 

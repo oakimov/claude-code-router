@@ -73,6 +73,7 @@ curl -X POST http://localhost:3456/api/config \
 | `APIKEY` | string | 否 | API 密钥 |
 | `LOG` | boolean | 否 | 是否启用日志（默认 true） |
 | `LOG_LEVEL` | string | 否 | 日志级别（debug/info/warn/error） |
+| `REASONING_AUTO_SUMMARY` | boolean \| string | 否 | 为 true（或 `"auto"` / `"detailed"` / `"concise"`）时，在客户端开启 reasoning effort 但未带 `reasoning.summary` 时自动注入。对所有客户端协议与目标提供商生效。可用 `Providers[].reasoningSummary` 按提供商覆盖；客户端显式 `reasoning.summary`（含 `"none"`）优先。 |
 
 #### Providers 配置
 

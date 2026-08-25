@@ -114,6 +114,27 @@ and `GET /v1/models/{id}`:
 
 Inbound requests always accept both canonical and masked IDs regardless of this setting.
 
+### Readable reasoning summaries
+
+Hosts such as OpenAI Responses / OpenCode Zen only return readable thinking when
+`reasoning.summary` is set. Chat Completions clients often send
+`reasoning_effort` alone. Opt in globally:
+
+```json
+{
+  "REASONING_AUTO_SUMMARY": true
+}
+```
+
+- `true` / `"detailed"` → inject `reasoning.summary: "detailed"`
+- `"auto"` / `"concise"` → inject that level instead
+- Per provider: `"Providers": [{ "name": "…", "reasoningSummary": "detailed" }]`
+- Explicit client `reasoning.summary` (including `"none"`) always wins
+
+This applies after Unified normalization for every client protocol
+(Chat Completions, Responses, Anthropic Messages) and every destination
+(Responses, Codex, Anthropic, Gemini, …).
+
 ## Complete Example
 
 ```json

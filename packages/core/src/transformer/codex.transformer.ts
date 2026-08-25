@@ -17,6 +17,7 @@ import {
 import {
   isReasoningDisabled,
   normalizeReasoningEffort,
+  resolveOutboundReasoningSummary,
 } from "../utils/reasoning-effort";
 import {
   CUSTOM_TOOL_INPUT_KEY,
@@ -407,19 +408,12 @@ export class CodexTransformer implements Transformer {
         normalizeReasoningEffort(provider?.reasoningEffort);
     if (effort) {
       const reasoning: Record<string, any> = { effort };
-      const VALID_SUMMARIES = ["auto", "detailed", "none"];
-      const summary = provider?.reasoningSummary;
       if (effort !== "none") {
-        if (summary && VALID_SUMMARIES.includes(summary)) {
-          if (summary !== "none") {
-            reasoning.summary = summary;
-          }
-        } else {
-          // Default to detailed reasoning summaries when effort is enabled so
-          // Claude Code reliably receives visible thinking unless the provider
-          // explicitly disables them with reasoningSummary: "none".
-          reasoning.summary = "detailed";
-        }
+        // Same opt-in as Responses: Unified reasoning.summary (from the client
+        // or REASONING_AUTO_SUMMARY) → provider.reasoningSummary. No hard
+        // default — visible summaries are opt-in across all destinations.
+        const summary = resolveOutboundReasoningSummary(request, provider);
+        if (summary) reasoning.summary = summary;
       }
       (request as any).reasoning = reasoning;
     } else {

@@ -37,6 +37,7 @@ import {
   canonicalReasoning,
   isReasoningDisabled,
   normalizeReasoningEffort,
+  resolveOutboundReasoningSummary,
   toAnthropicReasoningEffort,
 } from "@/utils/reasoning-effort";
 // Relative path, not the "@/" alias: esbuild's alias resolver treats the
@@ -130,7 +131,10 @@ export class AnthropicTransformer implements Transformer {
     const anthropicBody = AnthropicTransformer.buildAnthropicBody(
       request,
       this.logger,
-      _context
+      {
+        ...(_context || {}),
+        provider,
+      } as TransformerContext
     );
 
     anthropicBody.model = stripOneMillionContextMarker(anthropicBody.model).modelId;
@@ -435,6 +439,17 @@ export class AnthropicTransformer implements Transformer {
         ? request.thinking.type === "enabled" ||
           request.thinking.type === "adaptive"
         : true;
+      const thinkingSummary =
+        typeof (request.thinking as any)?.summary === "string"
+          ? ((request.thinking as any).summary as string).trim().toLowerCase()
+          : undefined;
+      const preservedSummary =
+        thinkingSummary === "auto" ||
+        thinkingSummary === "detailed" ||
+        thinkingSummary === "concise" ||
+        thinkingSummary === "none"
+          ? thinkingSummary
+          : undefined;
       result.reasoning = {
         // Claude Code sends effort in output_config (observed: `thinking:
         // {type:"adaptive"}` + `output_config: {effort:"high"}` and no budget).
@@ -445,6 +460,9 @@ export class AnthropicTransformer implements Transformer {
         ...(typeof request.thinking?.budget_tokens === "number"
           ? { max_tokens: request.thinking.budget_tokens }
           : {}),
+        // Preserve Anthropic thinking.summary when present so Responses /
+        // REASONING_AUTO_SUMMARY destinations see an explicit preference.
+        ...(preservedSummary ? { summary: preservedSummary } : {}),
       };
     }
 
@@ -810,7 +828,16 @@ export class AnthropicTransformer implements Transformer {
     } else if (request.anthropic_thinking) {
       body.thinking = request.anthropic_thinking;
     } else if (request.reasoning?.enabled || request.reasoning?.effort) {
-      body.thinking = { type: "adaptive" };
+      // Prefer adaptive + summarized display when the shared auto-summary /
+      // reasoning.summary opt-in asked for readable thinking (Claude Code
+      // uses display:"summarized"; "omitted" yields signature-only deltas).
+      const summary = resolveOutboundReasoningSummary(
+        request,
+        (context as any)?.provider
+      );
+      body.thinking = summary
+        ? { type: "adaptive", display: "summarized" }
+        : { type: "adaptive" };
     }
     const outputConfigSource = source?.outputConfig
       ? source.outputConfig

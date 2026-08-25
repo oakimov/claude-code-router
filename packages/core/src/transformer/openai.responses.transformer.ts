@@ -11,6 +11,7 @@ import {
 import {
   isReasoningDisabled,
   normalizeReasoningEffort,
+  resolveOutboundReasoningSummary,
 } from "@/utils/reasoning-effort";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
 import {
@@ -380,11 +381,13 @@ export class OpenAIResponsesTransformer implements Transformer {
       const effort = isReasoningDisabled(request.reasoning, request.thinking)
         ? "none"
         : normalizeReasoningEffort(request.reasoning.effort);
+      const summary =
+        effort !== "none"
+          ? resolveOutboundReasoningSummary(request, provider)
+          : undefined;
       request.reasoning = {
         ...(effort ? { effort } : {}),
-        ...(effort !== "none" && (request.reasoning as any).summary
-          ? { summary: (request.reasoning as any).summary }
-          : {}),
+        ...(summary ? { summary } : {}),
       };
     }
     // Chat/Anthropic stop sequences have no Responses equivalent. Omit
