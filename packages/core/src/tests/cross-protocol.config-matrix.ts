@@ -593,7 +593,7 @@ async function testPathBackAndReplay() {
   const chatReasoning = chatChunks
     .map((c) => c.choices?.[0]?.delta?.reasoning_content || "")
     .join("");
-  assert.equal(chatThinking, PLAN);
+  assert.equal(chatThinking, "", "Chat Completions clients must not see Unified thinking");
   assert.equal(chatReasoning, PLAN);
 
   const geminiUnified = await geminiResponseOut(
@@ -660,7 +660,7 @@ async function testPathBackAndReplay() {
   const mistralChat: any = await (
     await chatClient.transformResponseIn(mistralUnified.clone(), {} as any)
   ).json();
-  assert.equal(mistralChat.choices[0].message.thinking.content, PLAN);
+  assert.equal(mistralChat.choices[0].message.thinking, undefined);
   assert.equal(mistralChat.choices[0].message.reasoning_content, PLAN);
 
   const responsesReplay = await responsesClient.transformRequestOut({

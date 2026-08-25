@@ -748,6 +748,11 @@ function testCatalogDrivenGating() {
         catalogEntryHasCapability(entry, "adaptive_thinking") ? "adaptive" : "enabled",
         `thinking shape mismatch for ${modelId}`
       );
+      assert.equal(
+        body.thinking.display,
+        "summarized",
+        `thinking display must be summarized for ${modelId} (not omitted)`
+      );
     }
   }
 

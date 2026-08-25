@@ -192,14 +192,18 @@ export function applyClaudeModelCapabilityAdjustments(
     typeof anthropicBody.thinking === "object" &&
     anthropicBody.thinking.type !== "disabled"
   ) {
+    // Claude Code uses display:"summarized". "omitted" returns signature-only
+    // empty thinking blocks — Chat Completions / OpenAI-compatible clients then
+    // see no reasoning_content. Keep summarized so OAuth-proxied third parties
+    // receive visible thinking text.
     anthropicBody.thinking = cap("adaptive_thinking")
-      ? { type: "adaptive", display: "omitted" }
+      ? { type: "adaptive", display: "summarized" }
       : {
           type: "enabled",
           ...(anthropicBody.thinking.budget_tokens !== undefined
             ? { budget_tokens: anthropicBody.thinking.budget_tokens }
             : {}),
-          display: "omitted",
+          display: "summarized",
         };
   }
 

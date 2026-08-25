@@ -36,7 +36,7 @@ import {
  *     Client → POST /v1/chat/completions
  *       → OpenAITransformer.transformRequestOut()           // validate → Unified
  *       → provider.transformer.use[].transformRequestIn()
- *       → … → OpenAITransformer.transformResponseIn()       // identity / light normalize
+ *       → … → OpenAITransformer.transformResponseIn()       // reasoning_content; strip Unified thinking
  */
 export class OpenAITransformer implements Transformer {
   name = "OpenAI";
@@ -82,7 +82,8 @@ export class OpenAITransformer implements Transformer {
     }
     if (contentType.includes("application/json")) {
       const json = await response.json();
-      return new Response(JSON.stringify(applyChatThinkingToCompletion(json)), {
+      const shaped = applyChatThinkingToCompletion(structuredClone(json));
+      return new Response(JSON.stringify(shaped ?? json), {
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
@@ -514,14 +515,20 @@ function normalizeChatMessage(msg: any): any {
   return normalized;
 }
 
-/** Chat-native `reasoning_content` and Unified `thinking` are the same history. */
+/**
+ * Bidirectional alias for Unified / Chat history: `reasoning_content`,
+ * `reasoning`, and `thinking.content` are the same text. Used on inbound
+ * Chat messages.
+ */
 function syncAssistantThinkingFields(message: any): void {
   if (!message || typeof message !== "object") return;
   const thinkingText =
     typeof message.thinking?.content === "string" ? message.thinking.content : "";
-  const reasoningText =
+  const reasoningContentText =
     typeof message.reasoning_content === "string" ? message.reasoning_content : "";
-  const content = thinkingText || reasoningText;
+  const reasoningText =
+    typeof message.reasoning === "string" ? message.reasoning : "";
+  const content = thinkingText || reasoningContentText || reasoningText;
   if (
     !content &&
     !message.thinking?.signature &&
@@ -530,9 +537,41 @@ function syncAssistantThinkingFields(message: any): void {
   ) {
     return;
   }
-  if (content) message.reasoning_content = content;
+  if (content) {
+    message.reasoning_content = content;
+    message.reasoning = content;
+  }
   if (!message.thinking) message.thinking = { content };
   else if (!thinkingText && content) message.thinking.content = content;
+}
+
+/**
+ * Chat Completions *client* wire: emit string `reasoning_content` and
+ * `reasoning` (DeepSeek-era vs OpenAI gpt-oss / OpenRouter / Groq aliases).
+ * Drop CCR Unified `thinking`.
+ */
+function projectChatClientAssistantThinking(message: any): void {
+  if (!message || typeof message !== "object") return;
+  syncAssistantThinkingFields(message);
+  delete message.thinking;
+}
+
+/**
+ * Chat Completions *provider* wire: emit `reasoning_content` only.
+ * Providers speak reasoning_content; `reasoning` is a client-facing alias
+ * (OpenRouter/Groq gpt-oss) and must not be forwarded upstream.
+ */
+function projectChatProviderAssistantThinking(message: any): void {
+  if (!message || typeof message !== "object") return;
+  syncAssistantThinkingFields(message);
+  delete message.thinking;
+  delete message.reasoning;
+}
+
+/** True when a Chat Completions delta has nothing left after thinking strip. */
+function isEmptyChatDelta(delta: any): boolean {
+  if (!delta || typeof delta !== "object") return true;
+  return Object.keys(delta).length === 0;
 }
 
 function applyChatReasoningHistory(messages: any[] | undefined): any[] {
@@ -540,20 +579,32 @@ function applyChatReasoningHistory(messages: any[] | undefined): any[] {
     if (message?.role !== "assistant") return message;
     const next = { ...message };
     if (next.thinking) next.thinking = { ...next.thinking };
-    syncAssistantThinkingFields(next);
-    // Chat Completions providers speak reasoning_content. Drop the Unified
-    // thinking object so it is not forwarded as an unknown message field.
-    delete next.thinking;
+    projectChatProviderAssistantThinking(next);
     return next;
   });
 }
 
-function applyChatThinkingToCompletion(payload: any): any {
+/**
+ * Shape a Chat Completions JSON/SSE payload for clients. Returns null when a
+ * stream chunk becomes empty after dropping signature-only / empty thinking.
+ */
+function applyChatThinkingToCompletion(payload: any): any | null {
   if (!payload || typeof payload !== "object") return payload;
-  const message = payload.choices?.[0]?.message;
-  if (message) syncAssistantThinkingFields(message);
-  const delta = payload.choices?.[0]?.delta;
-  if (delta) syncAssistantThinkingFields(delta);
+  const choice = payload.choices?.[0];
+  if (!choice) return payload;
+  if (choice.message) projectChatClientAssistantThinking(choice.message);
+  if (choice.delta) {
+    projectChatClientAssistantThinking(choice.delta);
+    // Signature-only or empty thinking_delta chunks leave `{}` — drop them so
+    // OpenAI-compatible clients never see Unified `thinking`.
+    if (
+      isEmptyChatDelta(choice.delta) &&
+      choice.finish_reason == null &&
+      payload.usage == null
+    ) {
+      return null;
+    }
+  }
   return payload;
 }
 
@@ -614,12 +665,14 @@ function ensureChatStreamDone(
   let sawDone = false;
   const aliasThinking = options?.aliasThinking === true;
 
-  const rewriteDataLine = (line: string): string => {
+  const rewriteDataLine = (line: string): string | null => {
     if (!aliasThinking || !line.startsWith("data:")) return line;
     const payload = line.slice(5).trim();
     if (!payload || payload === "[DONE]") return line;
     try {
-      return `data: ${JSON.stringify(applyChatThinkingToCompletion(JSON.parse(payload)))}`;
+      const shaped = applyChatThinkingToCompletion(JSON.parse(payload));
+      if (shaped == null) return null;
+      return `data: ${JSON.stringify(shaped)}`;
     } catch {
       return line;
     }
@@ -639,7 +692,8 @@ function ensureChatStreamDone(
           pushChatCompletionsDone(out);
           return;
         }
-        out.push(rewriteDataLine(piece));
+        const rewritten = rewriteDataLine(piece);
+        if (rewritten != null) out.push(rewritten);
       }
     };
     for (const line of lines) pushLine(line);

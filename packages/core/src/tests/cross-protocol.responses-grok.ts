@@ -471,13 +471,21 @@ async function testResponsesProviderReasoningReachesChatClientOnce() {
   const text = chunks
     .map((chunk) => chunk.choices?.[0]?.delta?.content || "")
     .join("");
-  assert.equal(thinking, PLAN);
-  assert.equal(reasoning, PLAN, "Chat client must see reasoning_content aliased once");
+  assert.equal(
+    thinking,
+    "",
+    "Chat Completions clients must not see Unified thinking"
+  );
+  assert.equal(reasoning, PLAN, "Chat client must see reasoning_content");
   assert.equal(text, ANSWER);
   const cipher = chunks
     .map((chunk) => chunk.choices?.[0]?.delta?.thinking?.encrypted_content)
     .find(Boolean);
-  assert.equal(cipher, CIPHER);
+  assert.equal(
+    cipher,
+    undefined,
+    "Chat Completions clients must not see Responses ciphertext"
+  );
 }
 
 async function testAnthropicProviderThinkingReachesChatAndResponsesClients() {
@@ -505,7 +513,7 @@ async function testAnthropicProviderThinkingReachesChatAndResponsesClients() {
   const chatJson: any = await (
     await chat.transformResponseIn(unified.clone(), {} as any)
   ).json();
-  assert.equal(chatJson.choices[0].message.thinking.content, PLAN);
+  assert.equal(chatJson.choices[0].message.thinking, undefined);
   assert.equal(chatJson.choices[0].message.reasoning_content, PLAN);
   assert.equal(chatJson.choices[0].message.content, ANSWER);
 

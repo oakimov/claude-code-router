@@ -492,7 +492,12 @@ async function testChatClientResponseAliasesThinking() {
   );
   const json = await out.json();
   assert.equal(json.choices[0].message.reasoning_content, "hmm");
-  assert.equal(json.choices[0].message.thinking.content, "hmm");
+  assert.equal(json.choices[0].message.reasoning, "hmm");
+  assert.equal(
+    json.choices[0].message.thinking,
+    undefined,
+    "Chat Completions clients must not see Unified thinking"
+  );
 }
 
 async function testChatClientStreamAliasesReasoningContent() {
@@ -510,8 +515,34 @@ async function testChatClientStreamAliasesReasoningContent() {
   );
   const text = await out.text();
   assert.ok(text.includes('"reasoning_content":"hmm"'));
-  assert.ok(text.includes('"thinking":{"content":"hmm"}'));
+  assert.ok(text.includes('"reasoning":"hmm"'));
+  assert.equal(text.includes('"thinking"'), false);
   assert.equal((text.match(/data: \[DONE\]/g) || []).length, 1);
+}
+
+async function testChatClientStreamProjectsThinkingToReasoningContent() {
+  const tf = new OpenAITransformer();
+  const sse = [
+    'data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"thinking":{"content":"plan"}},"finish_reason":null}]}',
+    "",
+    'data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"thinking":{"signature":"sig"}},"finish_reason":null}]}',
+    "",
+    'data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"thinking":{"content":""}},"finish_reason":null}]}',
+    "",
+    'data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const out = await tf.transformResponseIn(
+    new Response(sse, { headers: { "Content-Type": "text/event-stream" } })
+  );
+  const text = await out.text();
+  assert.ok(text.includes('"reasoning_content":"plan"'));
+  assert.ok(text.includes('"reasoning":"plan"'));
+  assert.equal(text.includes('"thinking"'), false);
+  assert.equal(text.includes('"signature"'), false);
+  assert.ok(text.includes('"content":"hi"'));
 }
 
 async function testStreamSeparatesUsageChunkFromDone() {
@@ -592,6 +623,7 @@ async function main() {
   await testChatOutboundThinkingBecomesReasoningContent();
   await testChatClientResponseAliasesThinking();
   await testChatClientStreamAliasesReasoningContent();
+  await testChatClientStreamProjectsThinkingToReasoningContent();
   console.log("openai.inbound-chat: PASS");
 }
 

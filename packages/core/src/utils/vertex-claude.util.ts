@@ -493,12 +493,16 @@ export async function transformResponseOut(
               chunk.type === "content_block_delta" &&
               chunk.delta?.type === "thinking_delta"
             ) {
+              const thinkingText = chunk.delta.thinking || "";
+              // display:"omitted" (and similar) yields empty thinking_delta —
+              // skip rather than emit a useless Unified thinking chunk.
+              if (!thinkingText) return;
               const res = {
                 choices: [
                   {
                     delta: {
                       thinking: {
-                        content: chunk.delta.thinking || "",
+                        content: thinkingText,
                       },
                     },
                     finish_reason: null,

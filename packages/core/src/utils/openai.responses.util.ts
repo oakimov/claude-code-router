@@ -504,9 +504,11 @@ export function thinkingFromUnifiedAssistant(
   if (!message || typeof message !== "object") return undefined;
   const fromThinking =
     typeof message.thinking?.content === "string" ? message.thinking.content : "";
-  const fromReasoning =
+  const fromReasoningContent =
     typeof message.reasoning_content === "string" ? message.reasoning_content : "";
-  const content = fromThinking || fromReasoning;
+  const fromReasoning =
+    typeof message.reasoning === "string" ? message.reasoning : "";
+  const content = fromThinking || fromReasoningContent || fromReasoning;
   const rawSignature =
     typeof message.thinking?.signature === "string" && message.thinking.signature
       ? message.thinking.signature
