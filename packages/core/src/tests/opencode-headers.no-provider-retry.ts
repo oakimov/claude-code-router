@@ -64,7 +64,7 @@ function assertIdentityHeaders(calls: Captured[]) {
     assert.equal(call.headers["x-api-key"], "test-key");
     assert.equal(call.headers["x-opencode-project"], "global");
     assert.equal(call.headers["x-opencode-client"], "cli");
-    assert.equal(call.headers["user-agent"], "opencode/1.18.21");
+    assert.equal(call.headers["user-agent"], "opencode/1.18.23");
     assert.match(call.headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
     assert.match(call.headers["x-opencode-request"], /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
     assert.equal(call.headers["x-session-affinity"], undefined);
@@ -206,7 +206,7 @@ async function preserveFinalRetryHeaders() {
       return true;
     }
   );
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 5);
   assert.equal(new Set(calls.map((call) => call.headers["x-opencode-session"])).size, 1);
 }
 
@@ -303,6 +303,60 @@ async function streamCancellationPropagates() {
   assert.equal(cancelled, true);
 }
 
+async function zenModelIsNeverSent() {
+  // The real opencode client never emits x-zen-model; Zen's edge worker derives
+  // it from the request body after backend selection and overwrites/deletes any
+  // inbound value. Wire fidelity means we must not send it either.
+  const calls = installFetch([okResponse]);
+  const result = await new OpencodeHeadersTransformer().transformRequestIn(
+    body,
+    provider,
+    makeContext()
+  );
+  assert.equal(result.config.__providerResponse.status, 200);
+  for (const c of calls) assert.equal(c.headers["x-zen-model"], undefined);
+}
+
+async function forwardsParentSessionIdWhenPresent() {
+  const parentId = "ses_parent_abc123";
+  const withParent = {
+    signal: undefined,
+    req: {
+      sessionId: "conv-1",
+      headers: { "x-parent-session-id": parentId },
+      log: { warn() {}, info() {}, debug() {} },
+      server: { configService: { getHttpsProxy: () => undefined } },
+    },
+  };
+  const calls = installFetch([okResponse]);
+  const result = await new OpencodeHeadersTransformer().transformRequestIn(body, provider, withParent);
+  assert.equal(result.config.__providerResponse.status, 200);
+  assert.equal(calls[0].headers["x-parent-session-id"], parentId);
+}
+
+async function parentIsPreservedAcrossZenRetries() {
+  const parentId = "ses_parent_xyz";
+  const withParent = {
+    signal: undefined,
+    req: {
+      sessionId: "conv-parent-retry",
+      headers: { "x-parent-session-id": parentId },
+      log: { warn() {}, info() {}, debug() {} },
+      server: { configService: { getHttpsProxy: () => undefined } },
+    },
+  };
+  const calls = installFetch([
+    () => new Response(NO_PROVIDER_BODY, { status: 401 }),
+    okResponse,
+  ]);
+  const result = await new OpencodeHeadersTransformer().transformRequestIn(body, provider, withParent);
+  assert.equal(result.config.__providerResponse.status, 200);
+  assert.equal(calls.length, 2);
+  for (const c of calls) assert.equal(c.headers["x-parent-session-id"], parentId);
+  assert.notEqual(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
+  assert.equal(calls[0].headers["x-opencode-request"], calls[1].headers["x-opencode-request"]);
+}
+
 async function main() {
   const originalFetch = (globalThis as any).fetch;
   try {
@@ -315,6 +369,9 @@ async function main() {
     await retriesTransportFailureWithAffinity();
     await streamFailuresAreErrors();
     await streamCancellationPropagates();
+    await zenModelIsNeverSent();
+    await forwardsParentSessionIdWhenPresent();
+    await parentIsPreservedAcrossZenRetries();
     console.log("opencode-headers reliability: PASS");
   } finally {
     (globalThis as any).fetch = originalFetch;

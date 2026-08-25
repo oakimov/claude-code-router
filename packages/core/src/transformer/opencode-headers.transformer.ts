@@ -11,7 +11,7 @@ import {
 } from "@/utils/retry";
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-const OPENCODE_VERSION = "1.18.21";
+const OPENCODE_VERSION = "1.18.23";
 const OPENCODE_USER_AGENT = `opencode/${OPENCODE_VERSION}`;
 
 // OpenCode Zen selects an upstream backend by hashing the last 4 characters of
@@ -29,10 +29,10 @@ const OPENCODE_USER_AGENT = `opencode/${OPENCODE_VERSION}`;
 // it owns its upstream call via `config.__providerResponse` so no
 // opencode-specific status-code semantics leak into the generic provider error
 // path (which correctly treats 400/401 as terminal for every other provider).
-const MAX_ZEN_ATTEMPTS = 3;
-const ZEN_RETRY_BACKOFF_BASE_MS = 500;
-const ZEN_RETRY_BACKOFF_MAX_MS = 2_000;
-const ZEN_RETRY_AFTER_MAX_MS = 30_000;
+const MAX_ZEN_ATTEMPTS = 5;
+const ZEN_RETRY_BACKOFF_BASE_MS = 2_000;
+const ZEN_RETRY_BACKOFF_MAX_MS = 30_000;
+const ZEN_RETRY_AFTER_MAX_MS = 2_147_483_647;
 // Matches OpenCode's RETRY_JITTER_FACTOR in session/retry.ts.
 const ZEN_RETRY_JITTER_FACTOR = 0.25;
 
@@ -114,7 +114,9 @@ export class OpencodeHeadersTransformer implements Transformer {
         baseConfig,
         provider,
         conversationId,
-        requestId
+        requestId,
+        model,
+        context
       );
 
       let response: Response;
@@ -323,9 +325,12 @@ export class OpencodeHeadersTransformer implements Transformer {
     baseConfig: any,
     provider: any,
     conversationId: string,
-    requestId: string
+    requestId: string,
+    model?: string,
+    context?: any
   ): Record<string, any> {
     const sessionId = this.getOrCreateSessionId(conversationId);
+    const parentSessionId = this.resolveParentSessionId(context);
     return {
       ...baseConfig?.headers,
       "x-api-key": provider.apiKey || "",
@@ -333,9 +338,37 @@ export class OpencodeHeadersTransformer implements Transformer {
       "x-opencode-session": sessionId,
       "x-opencode-request": requestId,
       "x-opencode-client": "cli",
+      // `x-zen-model` is intentionally NOT sent. Research (2026-08-25, verified
+      // against opencode-research git history AND the shipped
+      // opencode-darwin-arm64@1.18.23 binary): the real client never emits this
+      // header — it exists only inside Zen's edge worker
+      // (console/app/src/routes/zen/util/handler.ts), where selectProvider()
+      // picks a backend from the private ZEN_MODELS* SST secrets and then either
+      // sets x-zen-model itself (new-inference backends: console./console-go./
+      // inf./inf-go.) or deletes it (legacy). The value comes from the request
+      // body, so anything we send is overwritten server-side anyway. Revisit only
+      // if Zen ever documents honoring an inbound x-zen-model.
+      ...(parentSessionId ? { "x-parent-session-id": parentSessionId } : {}),
       "user-agent": OPENCODE_USER_AGENT,
       authorization: undefined,
     };
+  }
+
+  private resolveParentSessionId(context: any): string | undefined {
+    if (!context) return undefined;
+    const h = context?.req?.headers;
+    if (h && typeof h === "object") {
+      for (const [k, v] of Object.entries(h as Record<string, unknown>)) {
+        if (k.toLowerCase() === "x-parent-session-id" && typeof v === "string" && v) return v;
+      }
+    }
+    const direct =
+      (context as any)?.req?.parentSessionId ??
+      (context as any)?.req?.parentSessionID ??
+      (context as any)?.parentSessionId ??
+      (context as any)?.parentSessionID;
+    if (typeof direct === "string" && direct) return direct;
+    return undefined;
   }
 
   /**
@@ -392,12 +425,12 @@ export class OpencodeHeadersTransformer implements Transformer {
     if (retryAfter) {
       const seconds = Number.parseFloat(retryAfter);
       if (Number.isFinite(seconds) && seconds >= 0) {
-        return Math.min(seconds * 1_000, ZEN_RETRY_AFTER_MAX_MS);
+        return Math.min(Math.ceil(seconds * 1_000), ZEN_RETRY_AFTER_MAX_MS);
       }
       const dateMs = Date.parse(retryAfter);
       if (Number.isFinite(dateMs)) {
         return Math.min(
-          Math.max(0, dateMs - Date.now()),
+          Math.max(0, Math.ceil(dateMs - Date.now())),
           ZEN_RETRY_AFTER_MAX_MS
         );
       }
@@ -407,13 +440,11 @@ export class OpencodeHeadersTransformer implements Transformer {
   }
 
   private exponentialRetryDelayMs(failedAttemptIndex: number): number {
-    // Jitter mirrors OpenCode's RETRY_JITTER_FACTOR (25%) so concurrent CCR
-    // clients do not re-strike Zen in lockstep after a shared 429 wave.
-    const jittered =
-      ZEN_RETRY_BACKOFF_BASE_MS *
-      2 ** failedAttemptIndex *
-      (1 + Math.random() * ZEN_RETRY_JITTER_FACTOR);
-    return Math.min(jittered, ZEN_RETRY_BACKOFF_MAX_MS);
+    // Mirrors OpenCode session/retry.ts exponential(): base * 2^(attempt-1) with
+    // 25% jitter, capped at ZEN_RETRY_BACKOFF_MAX_MS (30s without headers).
+    const base = ZEN_RETRY_BACKOFF_BASE_MS * 2 ** failedAttemptIndex;
+    const jittered = base + base * ZEN_RETRY_JITTER_FACTOR * Math.random();
+    return Math.min(Math.ceil(jittered), ZEN_RETRY_BACKOFF_MAX_MS);
   }
 
   private retryAfterHeaders(
