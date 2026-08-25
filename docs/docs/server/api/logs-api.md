@@ -151,7 +151,10 @@ curl -X DELETE "http://localhost:3456/api/logs?file=/home/user/.claude-code-rout
 
 Location: `~/.claude-code-router/logs/`
 
-File naming: `ccr-{YYYYMMDD}{HH}{MM}{SS}.log`
+File naming:
+
+- Active: `ccr.log`
+- Rotated: `ccr-{YYYYMMDD}{HH}{MM}{SS}.log`
 
 Content: HTTP requests, API calls, server events
 
@@ -163,8 +166,13 @@ Content: Routing decisions, business logic events
 
 ## Log Rotation
 
-Server logs use rotating-file-stream for automatic rotation:
+Server logs use `rotating-file-stream` plus a daily retention sweeper:
 
-- **maxFiles**: 3 - Keep last 3 log files
-- **interval**: 1d - Rotate daily
-- **maxSize**: 50M - Maximum 50MB per file
+- **Active file**: `logs/ccr.log` (stable name across restarts)
+- **Rotated files**: `logs/ccr-YYYYMMDDHHmmss.log`
+- **History**: `logs/ccr-history.txt` (stable; required for `maxFiles` across restarts)
+- **maxFiles**: 3 — keep last 3 rotated files
+- **size**: 50M — rotate the active file when it exceeds 50MB
+- **maxSize**: 150M — cap total size of rotated files
+- **interval**: 1d — also rotate daily
+- **Daily prune**: on listen and every 24h, delete orphaned `ccr-*.log` (and legacy `ccr-*.log.txt` history) beyond 3 files / 150MB total. The active `ccr.log` is never deleted.

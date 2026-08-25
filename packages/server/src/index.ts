@@ -8,6 +8,13 @@ import {
   HealthHeartbeat,
   resolveHeartbeatIntervalMs,
 } from "./utils/health-heartbeat";
+import {
+  ACTIVE_SERVER_LOG_NAME,
+  DEFAULT_LOG_MAX_FILES,
+  DEFAULT_LOG_MAX_TOTAL_BYTES,
+  LogRetentionScheduler,
+  SERVER_LOG_HISTORY_NAME,
+} from "./utils/log-retention";
 import { createServer } from "./server";
 import { apiKeyAuth, detectClientProtocol } from "./middleware/auth";
 import {
@@ -124,22 +131,18 @@ async function getServer(options: RunOptions = {}) {
 
   // Configure logger based on config settings or external options
   const pad = (num: number) => (num > 9 ? "" : "0") + num;
+  // Stable active name + timestamped rotated names so RFS history survives
+  // restarts. Daily LogRetentionScheduler also prunes orphaned ccr-*.log files.
   const generator = (time: number | Date | undefined, index: number | undefined) => {
-    let date: Date;
-    if (!time) {
-      date = new Date();
-    } else if (typeof time === 'number') {
-      date = new Date(time);
-    } else {
-      date = time;
-    }
+    if (!time) return `./logs/${ACTIVE_SERVER_LOG_NAME}`;
 
+    const date = typeof time === "number" ? new Date(time) : time;
     const month = date.getFullYear() + "" + pad(date.getMonth() + 1);
     const day = pad(date.getDate());
     const hour = pad(date.getHours());
     const minute = pad(date.getMinutes());
-
-    return `./logs/ccr-${month}${day}${hour}${minute}${pad(date.getSeconds())}${index ? `_${index}` : ''}.log`;
+    const seconds = pad(date.getSeconds());
+    return `./logs/ccr-${month}${day}${hour}${minute}${seconds}${index ? `_${index}` : ""}.log`;
   };
 
   let loggerConfig: any;
@@ -158,10 +161,13 @@ async function getServer(options: RunOptions = {}) {
         level: config.LOG_LEVEL || "debug",
         stream: createStream(generator, {
           path: HOME_DIR,
-          maxFiles: 3,
+          history: `./logs/${SERVER_LOG_HISTORY_NAME}`,
+          // `size` rotates the *active* file; `maxSize` caps total rotated bytes.
+          size: "50M",
+          maxSize: "150M",
+          maxFiles: DEFAULT_LOG_MAX_FILES,
           interval: "1d",
           compress: false,
-          maxSize: "50M"
         }),
       };
     } else {
@@ -201,6 +207,13 @@ async function getServer(options: RunOptions = {}) {
     intervalMs: resolveHeartbeatIntervalMs(config),
     logger: serverInstance.app.log,
     snapshotFile: HEALTH_FILE,
+  });
+
+  const logRetention = new LogRetentionScheduler({
+    logDir: join(HOME_DIR, "logs"),
+    maxFiles: DEFAULT_LOG_MAX_FILES,
+    maxTotalBytes: DEFAULT_LOG_MAX_TOTAL_BYTES,
+    logger: serverInstance.app.log,
   });
 
   // Enrich the existing `/health` liveness probe rather than adding a second
@@ -448,9 +461,11 @@ async function getServer(options: RunOptions = {}) {
   // Report once the port is bound, then on every interval.
   serverInstance.addHook("onListen", async () => {
     heartbeat.start();
+    logRetention.start();
   });
   serverInstance.addHook("onClose", async () => {
     heartbeat.stop();
+    logRetention.stop();
   });
 
   // Add global error handlers to prevent the service from crashing
