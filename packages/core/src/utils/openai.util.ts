@@ -293,6 +293,19 @@ export function applyProviderNativeChatCaching(
     return applyRequestCacheKey(request, context);
   }
 
+  // Opencode Zen – mirrors native ProviderTransform.options() session affinity:
+  // native sets promptCacheKey = sessionID for every opencode model (and gpt-5
+  // via opencode). We inject prompt_cache_key in the Unified body so Zen's
+  // downstream OpenAI/Moonshot cache + sticky routing stays hot across turns.
+  if (
+    name === "opencode" ||
+    name.startsWith("opencode") ||
+    host === "opencode.ai" ||
+    host.endsWith(".opencode.ai")
+  ) {
+    return applyRequestCacheKey(request, context);
+  }
+
   return {
     ...request,
     messages: stripMessagesCacheControl(request.messages || []),

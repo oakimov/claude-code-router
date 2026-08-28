@@ -9,6 +9,7 @@ import {
   isFallbackEligibleStatus,
   isProviderNetworkError,
 } from "@/utils/retry";
+import { deriveCacheSessionKey } from "@/utils/cacheControl";
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const OPENCODE_VERSION = "1.18.25";
@@ -51,8 +52,15 @@ export class OpencodeHeadersTransformer implements Transformer {
   ): Promise<Record<string, any>> {
     const conversationId =
       context?.req?.sessionId || this.fingerprintConversation(request, context);
-    const body = request.body || request;
+    let body = request.body || request;
     const baseConfig = request.config || {};
+    // Parity with native opencode ProviderTransform.options(): every opencode
+    // request must carry a session-scoped prompt_cache_key so Zen's downstream
+    // provider cache (OpenAI promptCacheKey / Moonshot prefix) stays hot across
+    // turns. processRequestTransformers skips applyProviderNativeChatCaching when
+    // provider.transformer.use is non-empty (the opencode case), so we inject
+    // here as a defensive fallback – no-op if routes.ts already did.
+    body = this.ensurePromptCacheKey(body, context);
     // OpenCode identifies one logical user turn with the user-message id. Keep
     // this stable across transport retries; only the session changes when Zen's
     // deterministic provider bucket must be re-rolled.
@@ -457,6 +465,14 @@ export class OpencodeHeadersTransformer implements Transformer {
       ...(retryAfter ? { "Retry-After": retryAfter } : {}),
       ...(retryAfterMs ? { "Retry-After-Ms": retryAfterMs } : {}),
     };
+  }
+
+  private ensurePromptCacheKey(body: any, context: any): any {
+    if (!body || typeof body !== "object" || !Array.isArray(body.messages)) return body;
+    if ((body as any).prompt_cache_key) return body;
+    const key = deriveCacheSessionKey(context, body);
+    if (!key) return body;
+    return { ...body, prompt_cache_key: key };
   }
 
   private fingerprintConversation(request: any, context: any): string {

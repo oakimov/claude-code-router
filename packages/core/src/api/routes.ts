@@ -33,6 +33,19 @@ import {
 } from "@/utils/retry";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
 import { applyOpenAIChatReasoning } from "../utils/reasoning-effort";
+import { applyRawAnthropicPromptCaching } from "../utils/cacheControl";
+
+function isOpencodeProvider(provider: any): boolean {
+  const name = String(provider?.name || "").toLowerCase();
+  if (name === "opencode" || name.startsWith("opencode")) return true;
+  const base = provider?.baseUrl || provider?.api_base_url || "";
+  try {
+    const host = new URL(base).hostname.toLowerCase();
+    return host === "opencode.ai" || host.endsWith(".opencode.ai");
+  } catch {
+    return String(base).toLowerCase().includes("opencode.ai");
+  }
+}
 import {
   logOutboundCacheStructure,
   tapUpstreamSSEDebug,
@@ -575,6 +588,20 @@ async function processRequestTransformers(
 
   if (bypass) {
     config.headers = sanitizePassthroughHeaders(headers);
+    // Parity with native opencode anthropic caching (applyCaching): even in
+    // passthrough/bypass, Zen anthropic (Qwen/MiniMax via /v1/messages) benefits
+    // from cache_control. Claude Code's bypass body may already carry it, but we
+    // ensure at least the ephemeral system+tools breakpoints exist for opencode.
+    if (isOpencodeProvider(provider)) {
+      try {
+        // Only for Anthropic-shaped bodies (system/messages); no-op for others.
+        if (requestBody && typeof requestBody === "object" && (requestBody.system !== undefined || Array.isArray(requestBody.messages))) {
+          requestBody = applyRawAnthropicPromptCaching(requestBody);
+        }
+      } catch {
+        // never break the request path on caching
+      }
+    }
   }
 
   if (
