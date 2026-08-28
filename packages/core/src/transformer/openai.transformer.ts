@@ -55,13 +55,25 @@ export class OpenAITransformer implements Transformer {
 
   /**
    * Provider-side: apply OpenAI-native cache policy to a Unified Chat body.
+   * Avoid cloning the entire Unified body (~800KB at longContext) when no
+   * mutation will occur – native opencode mutates in place.
    */
   async transformRequestIn(
     request: UnifiedChatRequest,
     provider: any,
     context: any
   ): Promise<UnifiedChatRequest> {
-    request = structuredClone(request);
+    // Only clone if we will mutate messages (thinking) or inject cache key;
+    // otherwise return the reference – caller already owns a clone from
+    // cloneProtocolBody and provider chain copies on write.
+    const needsHistoryRewrite = (request.messages || []).some((m: any) => m?.role === "assistant" && (m.thinking || m.reasoning || m.reasoning_content));
+    const needsReasoning = Boolean((request as any).reasoning || (request as any).thinking);
+    if (needsHistoryRewrite || needsReasoning) {
+      request = structuredClone(request);
+    } else {
+      // Shallow copy so we can safely add prompt_cache_key without mutating caller's object
+      request = { ...request, messages: request.messages, tools: request.tools as any } as UnifiedChatRequest;
+    }
     applyOpenAIChatReasoning(request);
     request.messages = applyChatReasoningHistory(request.messages);
     return applyProviderNativeChatCaching(request, provider, context);
@@ -82,7 +94,10 @@ export class OpenAITransformer implements Transformer {
     }
     if (contentType.includes("application/json")) {
       const json = await response.json();
-      const shaped = applyChatThinkingToCompletion(structuredClone(json));
+      // Avoid deep-cloning the whole completion JSON (~tokens * 4 bytes) when
+      // the only mutation is a small thinking alias – apply in place on a shallow copy.
+      const copy = Array.isArray(json?.choices) ? { ...json, choices: json.choices.map((c: any) => ({ ...c, message: c?.message ? { ...c.message } : c.message, delta: c?.delta ? { ...c.delta } : c.delta })) } : { ...json };
+      const shaped = applyChatThinkingToCompletion(copy);
       return new Response(JSON.stringify(shaped ?? json), {
         status: response.status,
         statusText: response.statusText,

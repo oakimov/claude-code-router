@@ -868,7 +868,7 @@ async function sendRequestToProvider(
       {
         httpsProxy: fastify.configService.getHttpsProxy(),
         ...providerRequestConfig,
-        headers: JSON.parse(JSON.stringify(headers)),
+        headers: { ...headers },
         signal: context?.signal ?? providerRequestConfig.signal,
       },
       context,

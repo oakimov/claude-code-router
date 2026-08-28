@@ -24,8 +24,9 @@ export class CerebrasTransformer implements Transformer {
     provider: LLMProvider,
     context?: any
   ): Promise<Record<string, unknown>> {
-    // Deep clone the request to avoid modifying the original
-    const transformedRequest = JSON.parse(JSON.stringify(request));
+    // Shallow copy is sufficient – we only strip top-level prompt cache and
+    // inject prompt_cache_key; messages/tools are re-assigned via helpers.
+    const transformedRequest: any = { ...request };
     transformedRequest.messages = stripMessagesCacheControl(
       transformedRequest.messages
     );
