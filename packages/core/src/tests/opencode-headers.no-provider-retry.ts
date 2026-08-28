@@ -64,7 +64,7 @@ function assertIdentityHeaders(calls: Captured[]) {
     assert.equal(call.headers["x-api-key"], "test-key");
     assert.equal(call.headers["x-opencode-project"], "global");
     assert.equal(call.headers["x-opencode-client"], "cli");
-    assert.equal(call.headers["user-agent"], "opencode/1.18.23");
+    assert.equal(call.headers["user-agent"], "opencode/1.18.25");
     assert.match(call.headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
     assert.match(call.headers["x-opencode-request"], /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
     assert.equal(call.headers["x-session-affinity"], undefined);

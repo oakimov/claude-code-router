@@ -11,7 +11,7 @@ import {
 } from "@/utils/retry";
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-const OPENCODE_VERSION = "1.18.23";
+const OPENCODE_VERSION = "1.18.25";
 const OPENCODE_USER_AGENT = `opencode/${OPENCODE_VERSION}`;
 
 // OpenCode Zen selects an upstream backend by hashing the last 4 characters of
@@ -340,7 +340,7 @@ export class OpencodeHeadersTransformer implements Transformer {
       "x-opencode-client": "cli",
       // `x-zen-model` is intentionally NOT sent. Research (2026-08-25, verified
       // against opencode-research git history AND the shipped
-      // opencode-darwin-arm64@1.18.23 binary): the real client never emits this
+      // opencode-darwin-arm64@1.18.25 binary): the real client never emits this
       // header — it exists only inside Zen's edge worker
       // (console/app/src/routes/zen/util/handler.ts), where selectProvider()
       // picks a backend from the private ZEN_MODELS* SST secrets and then either
