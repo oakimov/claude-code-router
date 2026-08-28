@@ -254,9 +254,20 @@ export function responsesRequestToUnified(
     parallel_tool_calls: body.parallel_tool_calls,
   } as UnifiedChatRequest;
 
-  // Opaque same-protocol hint — preserved on Unified for passthrough destinations.
+  // Opaque same-protocol hints — preserved on Unified for Responses→Responses.
+  // Do not invent these for Chat/Anthropic inbound; only the Responses client
+  // can express them.
   if (typeof body.prompt_cache_key === "string") {
     (unified as any).prompt_cache_key = body.prompt_cache_key;
+  }
+  const include = normalizeResponsesInclude(body.include);
+  if (include) {
+    (unified as any).include = include;
+  }
+  // store:true is rejected above; only an explicit false is a client signal
+  // (AI SDK / OpenCode pair it with include: reasoning.encrypted_content).
+  if (body.store === false) {
+    (unified as any).store = false;
   }
 
   if (responseFormat) {
@@ -264,6 +275,17 @@ export function responsesRequestToUnified(
   }
 
   return unified;
+}
+
+/** Responses `include` is a string list; drop non-strings rather than invent values. */
+export function normalizeResponsesInclude(
+  include: unknown
+): string[] | undefined {
+  if (!Array.isArray(include)) return undefined;
+  const values = include.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0
+  );
+  return values.length > 0 ? values : undefined;
 }
 
 function rejectUnsupportedResponsesState(body: any): void {
@@ -408,7 +430,7 @@ export function thinkingFromResponsesReasoningItem(
   const content = reasoningSummaryText(item);
   const encrypted_content = responsesEncryptedContentFrom(item.encrypted_content);
   const id =
-    typeof item.id === "string" && item.id
+    isUsableReasoningItemId(item.id)
       ? item.id
       : isResponsesReasoningItemId(item.encrypted_content)
         ? item.encrypted_content
@@ -585,6 +607,17 @@ export function assistantTurnHasText(turn: CanonicalAssistantTurn): boolean {
   return turn.texts.some((part) => part.text.length > 0);
 }
 
+/** Placeholder CCR used to emit for ciphertext-only items; Zen rejects dupes. */
+const REASONING_ID_PLACEHOLDER = "rs_anon";
+
+function isUsableReasoningItemId(id: unknown): id is string {
+  return typeof id === "string" && !!id && id !== REASONING_ID_PLACEHOLDER;
+}
+
+function mintReasoningItemId(seed: string): string {
+  return `rs_${createHash("sha256").update(seed).digest("hex").slice(0, 24)}`;
+}
+
 export function responsesReasoningItemFromThinking(
   thinking:
     | {
@@ -606,24 +639,53 @@ export function responsesReasoningItemFromThinking(
   // argument is a preferred label for that item, not a reason to invent one
   // — otherwise skeletonResponse always minting `rs_${responseId}` would
   // prepend an empty reasoning item on every completed stream.
-  const thinkingId =
-    typeof thinking.id === "string" && thinking.id ? thinking.id : undefined;
+  const thinkingId = isUsableReasoningItemId(thinking.id)
+    ? thinking.id
+    : undefined;
+  const preferredId = isUsableReasoningItemId(id) ? id : undefined;
   if (!content && !encrypted_content && !thinkingId) return null;
   const item: any = {
     type: "reasoning",
     // Date.now() ids rewrite the whole Responses/Codex prefix on every
     // turn and bust prompt cache. Prefer a carried id, then a caller
-    // label, then a stable hash of the summary text.
+    // label, then a stable hash of ciphertext / summary. Never emit the
+    // shared `rs_anon` placeholder — Zen 400s on duplicate input ids.
     id:
       thinkingId ||
-      id ||
-      (content
-        ? `rs_${createHash("sha256").update(content).digest("hex").slice(0, 24)}`
-        : "rs_anon"),
+      preferredId ||
+      (encrypted_content
+        ? mintReasoningItemId(encrypted_content)
+        : content
+          ? mintReasoningItemId(content)
+          : mintReasoningItemId(`reasoning:${thinkingId || preferredId || ""}`)),
     summary: content ? [{ type: "summary_text", text: content }] : [],
   };
   if (encrypted_content) item.encrypted_content = encrypted_content;
   return item;
+}
+
+/**
+ * Zen rejects Requests whose `input` repeats the same reasoning item id.
+ * Rewrite placeholders / collisions using ciphertext (or summary) as seed.
+ */
+export function uniquifyReasoningItemIds(items: any[] | undefined): void {
+  if (!Array.isArray(items)) return;
+  const seen = new Set<string>();
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
+    if (!item || item.type !== "reasoning") continue;
+    let id = isUsableReasoningItemId(item.id) ? item.id : "";
+    if (!id || seen.has(id)) {
+      const summary = reasoningSummaryText(item);
+      const encrypted =
+        typeof item.encrypted_content === "string" ? item.encrypted_content : "";
+      const seed =
+        encrypted || summary || `reasoning:${index}:${id || "missing"}`;
+      id = mintReasoningItemId(seen.has(id) ? `${seed}#${index}` : seed);
+      item.id = id;
+    }
+    seen.add(id);
+  }
 }
 
 function attachThinkingToAssistant(
@@ -1386,6 +1448,9 @@ export interface ResponsesStreamState {
   thinkingContent: string;
   thinkingEncryptedContent?: string;
   thinkingId?: string;
+  thinkingStarted: boolean;
+  thinkingClosed: boolean;
+  thinkingOutputIndex?: number;
   codexIsolateConventions: boolean;
 }
 
@@ -1415,6 +1480,8 @@ export function createResponsesStreamState(
     callIdMap: options?.callIdMap ?? createCallIdMap(),
     customToolNames: options?.customToolNames ?? new Set<string>(),
     thinkingContent: "",
+    thinkingStarted: false,
+    thinkingClosed: false,
     codexIsolateConventions: options?.codexIsolateConventions !== false,
   };
 }
@@ -1452,6 +1519,80 @@ function appendCreatedEvent(
  * fail to render the tool call as a distinct block when items close out of
  * their own start order.
  */
+/**
+ * Open the Responses reasoning item lifecycle. OpenCode / @ai-sdk/openai only
+ * materialize thinking from streamed `reasoning_summary_*` events (plus
+ * `output_item.added` for reasoning) — landing the summary solely on
+ * `response.completed.output` leaves the client with no thinking parts.
+ */
+function ensureThinkingItem(state: ResponsesStreamState, events: any[]): void {
+  if (state.thinkingStarted || state.thinkingClosed) return;
+  state.thinkingStarted = true;
+  state.thinkingOutputIndex = state.nextOutputIndex++;
+  if (!state.thinkingId) {
+    state.thinkingId = `rs_${state.responseId}`;
+  }
+  events.push({
+    type: "response.output_item.added",
+    output_index: state.thinkingOutputIndex,
+    item: {
+      type: "reasoning",
+      id: state.thinkingId,
+      status: "in_progress",
+      summary: [],
+    },
+  });
+  events.push({
+    type: "response.reasoning_summary_part.added",
+    item_id: state.thinkingId,
+    output_index: state.thinkingOutputIndex,
+    summary_index: 0,
+    part: { type: "summary_text", text: "" },
+  });
+}
+
+function closeThinkingItem(state: ResponsesStreamState, events: any[]): void {
+  if (!state.thinkingStarted || state.thinkingClosed) return;
+  state.thinkingClosed = true;
+  const id = state.thinkingId || `rs_${state.responseId}`;
+  const item = responsesReasoningItemFromThinking(
+    {
+      content: state.thinkingContent,
+      encrypted_content: state.thinkingEncryptedContent,
+      id,
+    },
+    id
+  );
+  events.push({
+    type: "response.reasoning_summary_text.done",
+    item_id: id,
+    output_index: state.thinkingOutputIndex,
+    summary_index: 0,
+    text: state.thinkingContent,
+  });
+  events.push({
+    type: "response.reasoning_summary_part.done",
+    item_id: id,
+    output_index: state.thinkingOutputIndex,
+    summary_index: 0,
+    part: { type: "summary_text", text: state.thinkingContent },
+  });
+  events.push({
+    type: "response.output_item.done",
+    output_index: state.thinkingOutputIndex,
+    item: item
+      ? { ...item, status: "completed" }
+      : {
+          type: "reasoning",
+          id,
+          status: "completed",
+          summary: state.thinkingContent
+            ? [{ type: "summary_text", text: state.thinkingContent }]
+            : [],
+        },
+  });
+}
+
 function closeTextItem(state: ResponsesStreamState, events: any[]): void {
   if (!state.textStarted || state.textClosed) return;
   state.textClosed = true;
@@ -1532,11 +1673,12 @@ export function unifiedChunkToResponsesEvents(
   // Chat Completions upstream still sees a reasoning item.
   const thinking = thinkingFromUnifiedAssistant(delta);
 
-  // First useful event: response.created
+  // Preserve upstream lifecycle starts instead of waiting for generated content.
   if (
     !state.textStarted &&
     state.toolCalls.size === 0 &&
-    (typeof delta.content === "string" ||
+    (delta.role === "assistant" ||
+      typeof delta.content === "string" ||
       Array.isArray(delta.tool_calls) ||
       thinking?.content ||
       thinking?.encrypted_content ||
@@ -1555,14 +1697,42 @@ export function unifiedChunkToResponsesEvents(
   if (encrypted_content) {
     state.thinkingEncryptedContent = encrypted_content;
   }
-  if (typeof thinking?.id === "string" && thinking.id) {
-    state.thinkingId = thinking.id;
-  } else if (isResponsesReasoningItemId(delta.thinking?.signature)) {
-    // Heal Unified chunks that still stash a reasoning item id on signature.
-    state.thinkingId = delta.thinking.signature;
+  // Lock the reasoning item id on first sight — rewriting after
+  // output_item.added desyncs @ai-sdk/openai's activeReasoning map.
+  // Reject the legacy `rs_anon` placeholder so we mint a unique id instead.
+  if (!state.thinkingId) {
+    if (
+      typeof thinking?.id === "string" &&
+      thinking.id &&
+      thinking.id !== "rs_anon"
+    ) {
+      state.thinkingId = thinking.id;
+    } else if (isResponsesReasoningItemId(delta.thinking?.signature)) {
+      state.thinkingId = delta.thinking.signature;
+    }
+  }
+
+  // Stream reasoning the way OpenAI / Zen do: clients (OpenCode via
+  // @ai-sdk/openai) ignore summaries that only appear on response.completed.
+  if (
+    thinking?.content ||
+    encrypted_content ||
+    (typeof thinking?.id === "string" && thinking.id)
+  ) {
+    ensureThinkingItem(state, events);
+    if (thinking?.content) {
+      events.push({
+        type: "response.reasoning_summary_text.delta",
+        item_id: state.thinkingId,
+        output_index: state.thinkingOutputIndex,
+        summary_index: 0,
+        delta: thinking.content,
+      });
+    }
   }
 
   if (typeof delta.content === "string" && delta.content.length > 0) {
+    closeThinkingItem(state, events);
     if (state.textClosed) {
       // The previous message item already completed (a tool call opened
       // after the preamble). Trailing text is a new output item — emitting
@@ -1608,8 +1778,9 @@ export function unifiedChunkToResponsesEvents(
   }
 
   if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
-    // A text preamble must fully close (in item-index order) before a tool
-    // call's own added/delta/done sequence begins — see closeTextItem.
+    // Reasoning and text must fully close (in item-index order) before a
+    // tool call's own added/delta/done sequence begins — see closeTextItem.
+    closeThinkingItem(state, events);
     closeTextItem(state, events);
   }
 
@@ -1716,6 +1887,7 @@ export function finalizeResponsesStream(
     codexIsolateConventions: state.codexIsolateConventions,
   };
 
+  closeThinkingItem(state, events);
   closeTextItem(state, events);
 
   for (const entry of state.toolCalls.values()) {

@@ -12,6 +12,7 @@ import {
 import { isReasoningDisabled } from "../utils/reasoning-effort";
 export class ReasoningTransformer implements Transformer {
   static TransformerName = "reasoning";
+  name = "reasoning";
   enable: any;
 
   constructor(private readonly options?: TransformerOptions) {

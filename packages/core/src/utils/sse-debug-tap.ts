@@ -12,6 +12,7 @@ import {
   type CachePrefixDiff,
   type CachePrefixStage,
 } from "./cache-prefix-debug";
+import type { MessageDebugDirection } from "./message-debug";
 
 export type UpstreamSSEDebugOptions = {
   logger?: any;
@@ -33,6 +34,32 @@ export type UpstreamSSEDebugOptions = {
   cacheDiff?: CachePrefixDiff | null;
   /** Cap for a single logged payload string (raw `data` field). */
   maxBytes?: number;
+  /**
+   * Opt-in raw per-event SSE logging. Independent of LOG_LEVEL=debug.
+   * When false (default), the debug tap still computes terminal cache outcome
+   * summaries but does not log every delta.
+   */
+  rawEvents?: boolean;
+  /**
+   * Which wire leg produced these bytes. Defaults to `provider→ccr` for the
+   * upstream tap and `ccr→client` for the client tap.
+   */
+  direction?: MessageDebugDirection;
+  /**
+   * When true, only emit raw SSE/JSON event logs (no cache outcome summary).
+   * Used for the client-bound leg where cache usage was already observed upstream.
+   */
+  eventsOnly?: boolean;
+};
+
+export type ClientSSEDebugOptions = {
+  logger?: any;
+  reqId?: string | number;
+  provider?: string;
+  model?: string;
+  protocol?: string;
+  maxBytes?: number;
+  rawEvents?: boolean;
 };
 
 function isDebugEnabled(logger: any): boolean {
@@ -50,6 +77,15 @@ function isDebugEnabled(logger: any): boolean {
   if (typeof logger.levelVal === "number") return logger.levelVal <= 20;
   // Minimal test loggers often expose only debug(); treat that as enabled.
   return !("level" in logger) && !("levelVal" in logger);
+}
+
+function isRawSSETraceEnabled(opts: UpstreamSSEDebugOptions): boolean {
+  if (opts.rawEvents === true) return true;
+  if (opts.rawEvents === false) return false;
+  // Explicit config / env opt-in (not implied by LOG_LEVEL=debug).
+  const env = process.env.LOG_SSE_EVENTS || process.env.CCR_LOG_SSE_EVENTS;
+  if (env === "1" || env === "true") return true;
+  return false;
 }
 
 function cloneResponseHeaders(
@@ -71,12 +107,15 @@ function logReceived(
   data: string,
   parsed?: unknown
 ): void {
+  if (!isRawSSETraceEnabled(opts)) return;
   const logger = opts.logger;
   if (!logger?.debug) return;
   const maxBytes = opts.maxBytes ?? DEFAULT_LOG_BODY_MAX_BYTES;
   const base = {
     reqId: opts.reqId,
     provider: opts.provider,
+    model: opts.model,
+    direction: opts.direction ?? "provider→ccr",
   };
 
   logger.debug({
@@ -259,6 +298,7 @@ function consumeSSEDebugBranch(
       .getReader();
 
     let usage: CacheUsage = { cachedExcludedFromPrompt: false };
+    const rawEvents = isRawSSETraceEnabled(opts);
 
     // Yield so a sync-heavy logger.debug (pino file I/O) cannot monopolize the
     // event loop and starve the client TransformStream on the same thread.
@@ -278,43 +318,47 @@ function consumeSSEDebugBranch(
           typeof event.data === "object" &&
           (event.data as any).type === "done"
         ) {
-          logReceived(opts, "[DONE]");
-          await yieldToClient();
+          if (rawEvents) {
+            logReceived(opts, "[DONE]");
+            await yieldToClient();
+          }
           continue;
         }
 
         if (typeof event.data === "object" && (event.data as any).raw != null) {
-          const raw = String((event.data as any).raw);
-          logReceived(opts, raw);
-          await yieldToClient();
+          if (rawEvents) {
+            logReceived(opts, String((event.data as any).raw));
+            await yieldToClient();
+          }
           continue;
         }
 
         usage = mergeCacheUsage(usage, event.data);
 
-        let dataStr: string;
-        try {
-          dataStr = JSON.stringify(event.data);
-        } catch {
-          dataStr = String(event.data);
+        if (rawEvents) {
+          let dataStr: string;
+          try {
+            dataStr = JSON.stringify(event.data);
+          } catch {
+            dataStr = String(event.data);
+          }
+          logReceived(opts, dataStr, event.data);
+          await yieldToClient();
         }
-        logReceived(opts, dataStr, event.data);
-        await yieldToClient();
       }
-    } catch {
-      // Debug branch must never affect the client stream.
     } finally {
+      if (!opts.eventsOnly) {
+        logCacheOutcome(opts, usage);
+      }
       try {
         reader.releaseLock();
       } catch {
-        // ignore
+        // already released
       }
-      // Usage lands on terminal frames, so the verdict is only knowable here.
-      logCacheOutcome(opts, usage);
     }
   };
 
-  void run();
+  void run().catch(() => {});
 }
 
 async function tapJsonBody(
@@ -329,10 +373,12 @@ async function tapJsonBody(
     parsed = undefined;
   }
   logReceived(opts, text, parsed);
-  logCacheOutcome(
-    opts,
-    mergeCacheUsage({ cachedExcludedFromPrompt: false }, parsed)
-  );
+  if (!opts.eventsOnly) {
+    logCacheOutcome(
+      opts,
+      mergeCacheUsage({ cachedExcludedFromPrompt: false }, parsed)
+    );
+  }
   return new Response(text, {
     status: response.status,
     statusText: response.statusText,
@@ -369,11 +415,16 @@ export async function tapUpstreamSSEDebug(
     return response;
   }
 
+  const withDirection: UpstreamSSEDebugOptions = {
+    ...opts,
+    direction: opts.direction ?? "provider→ccr",
+  };
+
   const contentType = contentTypeOf(response);
 
   if (contentType.includes("application/json")) {
     try {
-      return await tapJsonBody(response, opts);
+      return await tapJsonBody(response, withDirection);
     } catch {
       return response;
     }
@@ -381,12 +432,17 @@ export async function tapUpstreamSSEDebug(
 
   if (!contentType.includes("text/event-stream")) {
     // Unknown body shape: no usage to read, but still surface the prediction.
-    logCacheOutcome(opts, { cachedExcludedFromPrompt: false });
+    if (!withDirection.eventsOnly) {
+      logCacheOutcome(withDirection, { cachedExcludedFromPrompt: false });
+    }
     return response;
   }
 
   try {
-    const clientBranch = pipeSSEWithNonblockingDebugTap(response.body, opts);
+    const clientBranch = pipeSSEWithNonblockingDebugTap(
+      response.body,
+      withDirection
+    );
     return new Response(clientBranch, {
       status: response.status,
       statusText: response.statusText,
@@ -394,6 +450,34 @@ export async function tapUpstreamSSEDebug(
     });
   } catch {
     return response;
+  }
+}
+
+/**
+ * Byte-preserving tap for the SSE body CCR sends back to the client after
+ * response transformers. Same non-blocking tunnel as the upstream tap; events
+ * are tagged `direction: "ccr→client"` so greps can split the two legs.
+ */
+export function tapClientSSEDebug(
+  body: ReadableStream<Uint8Array>,
+  opts: ClientSSEDebugOptions
+): ReadableStream<Uint8Array> {
+  if (!body || !opts.rawEvents || !isDebugEnabled(opts.logger)) {
+    return body;
+  }
+  try {
+    return pipeSSEWithNonblockingDebugTap(body, {
+      logger: opts.logger,
+      reqId: opts.reqId,
+      provider: opts.provider,
+      model: opts.model,
+      maxBytes: opts.maxBytes,
+      rawEvents: true,
+      direction: "ccr→client",
+      eventsOnly: true,
+    });
+  } catch {
+    return body;
   }
 }
 

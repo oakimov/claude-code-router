@@ -32,6 +32,7 @@ import {
   thinkingFromResponsesReasoningItem,
   thinkingFromUnifiedAssistant,
   unwrapCustomToolInput,
+  uniquifyReasoningItemIds,
 } from "../utils/openai.responses.util";
 
 const PAT_METADATA_TTL_MS = 5 * 60 * 1000;
@@ -616,6 +617,7 @@ export class CodexTransformer implements Transformer {
     });
 
     (request as any).input = input;
+    uniquifyReasoningItemIds(input);
     delete (request as any).messages;
 
     // Codex API requires store to be false
@@ -881,13 +883,12 @@ export class CodexTransformer implements Transformer {
       // The codex API occasionally returns a single JSON object
       // (chat.completion or ResponsesAPIPayload) with text/event-stream
       // Content-Type — e.g. for short completions it skips streaming and
-      // returns a flat JSON. Peek at the first non-whitespace character of
-      // a clone of the body: a real SSE stream starts with `data:` or
-      // `event:`, while a raw JSON object starts with `{` or `[`. (Model
-      // message text is always inside a JSON event's `delta` field, never
-      // as raw stream text, so this disambiguation is unambiguous.)
-      const peek = await this.readBodyAndPeek(response.clone().body!);
-      if (peek && (peek.firstChar === "{" || peek.firstChar === "[")) {
+      // returns a flat JSON. Peek the first non-whitespace character from
+      // the original body (no Response.clone): a real SSE stream starts
+      // with `data:` or `event:`, while a raw JSON object starts with `{`
+      // or `[`. Replay the peeked chunk for the SSE path.
+      const peek = await this.readBodyAndPeek(response);
+      if (peek.kind === "json") {
         // Codex returned a flat JSON object (chat.completion or
         // ResponsesAPIPayload) instead of an SSE stream — it does this for
         // short/trivial completions even when stream:true was requested.
@@ -929,6 +930,17 @@ export class CodexTransformer implements Transformer {
           status: response.status,
           statusText: response.statusText,
           headers: new Headers({ "Content-Type": "text/event-stream" }),
+        });
+      }
+
+      // SSE: continue with a body that replays the peeked chunk.
+      if (peek.kind === "sse") {
+        response = peek.response;
+      } else if (peek.kind === "empty") {
+        response = new Response(null, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
         });
       }
 
@@ -1460,6 +1472,9 @@ export class CodexTransformer implements Transformer {
             delta: {
               thinking: {
                 content: data.delta || "",
+                ...(typeof data.item_id === "string" && data.item_id
+                  ? { id: data.item_id }
+                  : {}),
               },
             },
             finish_reason: null,
@@ -1679,69 +1694,137 @@ export class CodexTransformer implements Transformer {
   }
 
   /**
-   * Peek at the first non-whitespace character of a cloned response body to
-   * distinguish a real SSE stream (starts with `data:` or `event:`, first
-   * char `d` or `e`) from a flat JSON body (first char `{` or `[`) that the
-   * codex API sometimes returns even with text/event-stream Content-Type.
-   *
-   * - **For flat JSON** (`{` / `[`): reads the full clone body and returns
-   *   `{ firstChar, text }` so the caller can parse and handle it.
-   * - **For SSE** (anything else): returns `null` immediately after reading
-   *   only the first chunk from the clone. The original `response.body` on
-   *   the other side of the tee is untouched and can still be streamed live
-   *   by the SSE reader — avoiding buffering the entire response.
-   *
-   * Callers must pass `response.clone().body!` so the original body is not
-   * consumed by the peek.
+   * Peek the first chunk of the response body to distinguish flat JSON from
+   * SSE without Response.clone(). JSON drains the body into text; SSE returns
+   * a new Response whose stream replays the peeked chunk then continues from
+   * the same reader.
    */
   private async readBodyAndPeek(
-    body: ReadableStream<Uint8Array>
-  ): Promise<{ firstChar: string; text: string } | null> {
+    response: Response
+  ): Promise<
+    | { kind: "json"; firstChar: string; text: string }
+    | { kind: "sse"; response: Response }
+    | { kind: "empty" }
+  > {
+    const body = response.body;
+    if (!body) return { kind: "empty" };
+
     const reader = body.getReader();
     const decoder = new TextDecoder();
-    // Wrap all early returns so the reader lock is always released on the
-    // clone's body — otherwise the clone is left in a locked state and the
-    // GC can't reclaim it. The original response.body (on the other side of
-    // response.clone()) is independent and unaffected.
-    const releaseReader = () => {
+    const cancelReader = async () => {
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore
+      }
       try {
         reader.releaseLock();
       } catch {
         // already released
       }
     };
+
     let firstRead: { done: boolean; value?: Uint8Array };
     try {
       firstRead = await reader.read();
     } catch (err) {
-      releaseReader();
+      await cancelReader();
       throw err;
     }
-    if (firstRead.done) {
-      releaseReader();
-      return null;
-    }
-    const firstChunk = decoder.decode(firstRead.value!, { stream: true });
-    const trimmed = firstChunk.trimStart();
-    const firstChar = trimmed.charAt(0) || "";
-    // SSE starts with "d" (data:) or "e" (event:) — not JSON → bail fast
-    if (firstChar !== "{" && firstChar !== "[") {
-      releaseReader();
-      return null;
-    }
-    // Flat JSON — drain the rest of the clone body
-    let buffer = firstChunk;
-    try {
-      while (true) {
-        const r = await reader.read();
-        if (r.done) break;
-        buffer += decoder.decode(r.value, { stream: true });
+
+    if (firstRead.done || !firstRead.value) {
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore
       }
-    } finally {
-      buffer += decoder.decode();
-      releaseReader();
+      return { kind: "empty" };
     }
-    return { firstChar, text: buffer };
+
+    const firstChunk = firstRead.value;
+    const firstText = decoder.decode(firstChunk, { stream: true });
+    const firstChar = firstText.trimStart().charAt(0) || "";
+
+    if (firstChar === "{" || firstChar === "[") {
+      let buffer = firstText;
+      try {
+        while (true) {
+          const r = await reader.read();
+          if (r.done) break;
+          buffer += decoder.decode(r.value, { stream: true });
+        }
+        buffer += decoder.decode();
+      } catch (err) {
+        await cancelReader();
+        throw err;
+      } finally {
+        try {
+          reader.releaseLock();
+        } catch {
+          // ignore
+        }
+      }
+      return { kind: "json", firstChar, text: buffer };
+    }
+
+    const replayed = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(firstChunk);
+      },
+      async pull(controller) {
+        try {
+          const r = await reader.read();
+          if (r.done) {
+            controller.close();
+            try {
+              reader.releaseLock();
+            } catch {
+              // ignore
+            }
+            return;
+          }
+          controller.enqueue(r.value!);
+        } catch (err) {
+          try {
+            await reader.cancel();
+          } catch {
+            // ignore
+          }
+          try {
+            reader.releaseLock();
+          } catch {
+            // ignore
+          }
+          controller.error(err);
+        }
+      },
+      async cancel(reason) {
+        try {
+          await reader.cancel(reason);
+        } catch {
+          // ignore
+        }
+        try {
+          reader.releaseLock();
+        } catch {
+          // ignore
+        }
+      },
+    });
+
+    const headers = new Headers(response.headers);
+    if (!headers.has("Content-Type")) {
+      headers.set("Content-Type", "text/event-stream");
+    }
+
+    return {
+      kind: "sse",
+      response: new Response(replayed, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      }),
+    };
   }
 
   private async collectSseIntoChatCompletion(

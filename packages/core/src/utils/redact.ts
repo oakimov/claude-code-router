@@ -89,6 +89,12 @@ export function sanitizeBodyForLog(
   const redacted = value
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]")
     .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}/gi, "[redacted-secret]")
+    // Responses reasoning ciphertext is huge and useless for UI/debug of
+    // thinking text; keep the key so include/pass-through is still visible.
+    .replace(
+      /"encrypted_content"\s*:\s*"(?:\\.|[^"\\])*"/gi,
+      '"encrypted_content":"[redacted-encrypted]"'
+    )
     .replace(
       new RegExp(
         `"(${SENSITIVE_JSON_KEYS})"\\s*:\\s*"(?:\\\\.|[^"\\\\])*"`,

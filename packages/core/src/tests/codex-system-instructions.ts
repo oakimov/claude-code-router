@@ -6,6 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { CodexTransformer } from "../transformer/codex.transformer";
+import { OpenAIResponsesTransformer } from "../transformer/openai.responses.transformer";
 
 function mockCodexAuth(transformer: CodexTransformer) {
   (transformer as any).resolveAuth = async () => ({
@@ -97,11 +98,41 @@ async function noSystemYieldsEmptyInstructions() {
   assertNoSystemInInput(body.input || []);
 }
 
+async function responsesInstructionsAreFoldedOnce() {
+  const unified = await new OpenAIResponsesTransformer().transformRequestOut({
+    model: "gpt-5.6-luna",
+    instructions: "Top-level instructions.",
+    input: [
+      { role: "developer", content: "Input developer message." },
+      { role: "user", content: "ping" },
+    ],
+  } as any);
+  const transformer = new CodexTransformer();
+  mockCodexAuth(transformer);
+  const result = await transformer.transformRequestIn(
+    unified,
+    { baseUrl: "https://chatgpt.com/backend-api/codex" },
+    { req: { id: "codex-responses-system-test" } }
+  );
+  const body = result.body as any;
+
+  assert.equal(
+    body.instructions,
+    "Top-level instructions.\n\nInput developer message."
+  );
+  assert.equal(
+    body.instructions.match(/Top-level instructions\./g)?.length,
+    1
+  );
+  assertNoSystemInInput(body.input || []);
+}
+
 async function main() {
   await foldsMultipleSystemMessagesIntoInstructions();
   await foldsListOnlySystemWithoutDroppingText();
   await singleStringSystemStillWorks();
   await noSystemYieldsEmptyInstructions();
+  await responsesInstructionsAreFoldedOnce();
   console.log("codex-system-instructions: all tests passed");
 }
 

@@ -938,12 +938,6 @@ export class AnthropicTransformer implements Transformer {
           if (!isClosed) {
             try {
               controller.enqueue(data);
-              const dataStr = new TextDecoder().decode(data);
-              this.logger.debug({
-                reqId: context.req.id,
-                data: dataStr,
-                type: "send data",
-              });
             } catch (error) {
               if (
                 error instanceof TypeError &&
@@ -951,11 +945,6 @@ export class AnthropicTransformer implements Transformer {
               ) {
                 isClosed = true;
               } else {
-                this.logger.debug({
-                  reqId: context.req.id,
-                  error: error instanceof Error ? error.message : String(error),
-                  type: "send data error",
-                });
                 throw error;
               }
             }

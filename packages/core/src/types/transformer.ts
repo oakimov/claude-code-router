@@ -30,6 +30,9 @@ export interface TransformerContext {
   [key: string]: any;
 }
 
+/** Where a request transformer runs in the compiled provider/model plan. */
+export type TransformerRequestPhase = "body" | "headers" | "transport";
+
 export type Transformer = {
   transformRequestIn?: (
     request: UnifiedChatRequest,
@@ -45,6 +48,14 @@ export type Transformer = {
 
   endPoint?: string;
   name?: string;
+  /**
+   * When true, this transformer performs the upstream call (fetch, SDK, etc.)
+   * and returns the Response via config.__providerResponse. The request plan
+   * runs at most one such transformer, after every body/header transform.
+   */
+  ownsTransport?: boolean;
+  /** Optional phase hint; ownsTransport implies "transport". */
+  requestPhase?: TransformerRequestPhase;
   auth?: (request: any, provider: LLMProvider, context: TransformerContext) => Promise<any>;
   
   // Logger for transformer

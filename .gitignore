@@ -13,6 +13,9 @@ packages/server/ccr-config
 .firecrawl/
 .playwright/
 
+# Code search
+.codesearch.db/
+
 # Claude
 .claude/settings.local.json
 

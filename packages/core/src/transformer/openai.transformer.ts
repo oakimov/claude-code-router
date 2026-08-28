@@ -96,7 +96,28 @@ export class OpenAITransformer implements Transformer {
       const json = await response.json();
       // Avoid deep-cloning the whole completion JSON (~tokens * 4 bytes) when
       // the only mutation is a small thinking alias – apply in place on a shallow copy.
-      const copy = Array.isArray(json?.choices) ? { ...json, choices: json.choices.map((c: any) => ({ ...c, message: c?.message ? { ...c.message } : c.message, delta: c?.delta ? { ...c.delta } : c.delta })) } : { ...json };
+      // Clone the nested thinking objects too so syncAssistantThinkingFields
+      // mutations (thinking.content) don't leak to the original json.
+      const copy = Array.isArray(json?.choices)
+        ? {
+            ...json,
+            choices: json.choices.map((c: any) => ({
+              ...c,
+              message: c?.message
+                ? {
+                    ...c.message,
+                    ...(c.message.thinking ? { thinking: { ...c.message.thinking } } : {}),
+                  }
+                : c.message,
+              delta: c?.delta
+                ? {
+                    ...c.delta,
+                    ...(c.delta.thinking ? { thinking: { ...c.delta.thinking } } : {}),
+                  }
+                : c.delta,
+            })),
+          }
+        : { ...json };
       const shaped = applyChatThinkingToCompletion(copy);
       return new Response(JSON.stringify(shaped ?? json), {
         status: response.status,

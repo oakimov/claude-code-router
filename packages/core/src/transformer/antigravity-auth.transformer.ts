@@ -51,6 +51,8 @@ function endpointCandidates(preferredBase?: string): string[] {
 
 export class AntigravityAuthTransformer implements Transformer {
   name = "antigravity-auth";
+  ownsTransport = true;
+  requestPhase = "transport" as const;
   logger?: any;
 
   private async buildAuthAndEnvelope(

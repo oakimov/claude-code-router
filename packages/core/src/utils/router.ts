@@ -3,11 +3,19 @@ import { sessionUsageCache, Usage } from "./cache";
 import { readFile } from "fs/promises";
 import { opendir, stat } from "fs/promises";
 import { join, resolve, relative, basename } from "path";
+import { createHash } from "crypto";
 import { CLAUDE_PROJECTS_DIR, HOME_DIR } from "@caeliq/ccr-shared";
 import { LRUCache } from "lru-cache";
 import { ConfigService } from "../services/config";
 import { TokenizerService } from "../services/tokenizer";
 import { isReasoningDisabled } from "./reasoning-effort";
+import {
+  estimateTokenizePayloadChars,
+  estimateTokensFromChars,
+  countTokensInWorker,
+  TOKEN_COUNT_WORKER_THRESHOLD_CHARS,
+} from "./token-count-worker";
+import { ensureRequestLatency, markLatency } from "./request-latency";
 
 // Types from @anthropic-ai/sdk
 interface Tool {
@@ -548,9 +556,111 @@ const parseSessionId = (userId: unknown): string | undefined => {
   return undefined;
 };
 
+const sessionTokenPrefixCache = new LRUCache<
+  string,
+  { fingerprint: string; tokenCount: number }
+>({ max: 500 });
+
+function fingerprintMessagePrefix(messages: MessageParam[]): string {
+  if (!messages.length) return "0";
+  const prefix = messages.slice(0, -1);
+  const head = JSON.stringify(prefix.slice(0, 2));
+  const tail = JSON.stringify(prefix.slice(-1));
+  return createHash("sha256")
+    .update(`${prefix.length}|${head}|${tail}`)
+    .digest("hex")
+    .slice(0, 24);
+}
+
+function routerNeedsExactTokenCount(
+  routerConfig: any,
+  customRouterPath: unknown
+): boolean {
+  if (customRouterPath) return true;
+  if (routerConfig?.longContext) return true;
+  return false;
+}
+
+async function resolveExactTokenCount(options: {
+  messages: MessageParam[];
+  system: any;
+  tools: Tool[];
+  tokenizerService?: TokenizerService;
+  tokenizerConfig?: any;
+  sessionId?: string;
+  lastUsage?: Usage;
+  longContextThreshold: number;
+  latency?: ReturnType<typeof ensureRequestLatency>;
+}): Promise<number> {
+  const {
+    messages,
+    system,
+    tools,
+    tokenizerService,
+    tokenizerConfig,
+    sessionId,
+    lastUsage,
+    longContextThreshold,
+    latency,
+  } = options;
+
+  markLatency(latency, "tokenizeStart");
+
+  const charCount = estimateTokenizePayloadChars(messages, system, tools);
+  // One char can be one BPE token in pathological cases. If charCount is
+  // strictly below the threshold, exact tokens cannot reach it.
+  if (charCount < longContextThreshold) {
+    const estimated = estimateTokensFromChars(charCount);
+    markLatency(latency, "tokenizeEnd");
+    return estimated;
+  }
+
+  // Incremental: stable transcript prefix + provider-reported prior usage.
+  if (sessionId && lastUsage && messages.length > 1) {
+    const fingerprint = fingerprintMessagePrefix(messages);
+    const cached = sessionTokenPrefixCache.get(sessionId);
+    if (cached && cached.fingerprint === fingerprint) {
+      const appended = messages.slice(-1);
+      const delta = calculateTokenCount(appended, [], []);
+      const combined = lastUsage.input_tokens + delta;
+      markLatency(latency, "tokenizeEnd");
+      return combined;
+    }
+  }
+
+  let tokenCount: number;
+  const useWorker = charCount >= TOKEN_COUNT_WORKER_THRESHOLD_CHARS;
+  if (useWorker) {
+    try {
+      tokenCount = await countTokensInWorker({ messages, system, tools });
+    } catch {
+      tokenCount = calculateTokenCount(messages, system, tools);
+    }
+  } else if (tokenizerService) {
+    const result = await tokenizerService.countTokens(
+      { messages, system, tools },
+      tokenizerConfig
+    );
+    tokenCount = result.tokenCount;
+  } else {
+    tokenCount = calculateTokenCount(messages, system, tools);
+  }
+
+  if (sessionId && messages.length > 1) {
+    sessionTokenPrefixCache.set(sessionId, {
+      fingerprint: fingerprintMessagePrefix(messages),
+      tokenCount,
+    });
+  }
+
+  markLatency(latency, "tokenizeEnd");
+  return tokenCount;
+}
+
 export const router = async (req: any, _res: any, context: RouterContext) => {
   const { configService, event } = context;
   const body = routingBody(req);
+  const latency = ensureRequestLatency(req);
 
   // Session identity: Anthropic metadata.user_id, or Unified metadata if present.
   const sessionSource =
@@ -566,32 +676,61 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
   try {
     const modelForTokenizer =
       typeof body.model === "string" ? body.model : String(body.model ?? "");
-    const [providerName, modelName] = modelForTokenizer.split(",");
-    const tokenizerConfig = context.tokenizerService?.getTokenizerConfigForModel(
-      providerName,
-      modelName
-    );
+    const customRouterPath = configService.get("CUSTOM_ROUTER_PATH");
+    const providers = configService.get<any[]>("providers") || [];
+    const globalRouter = configService.get("Router");
+    markLatency(latency, "projectLookup");
+    const projectRouter = await getProjectSpecificRouter(req, configService);
+    const activeRouter = projectRouter || globalRouter;
+    const longContextThreshold = activeRouter?.longContextThreshold || 60000;
 
-    let tokenCount: number;
-
-    if (context.tokenizerService) {
-      const result = await context.tokenizerService.countTokens(
-        {
-          messages,
-          system,
-          tools,
-        },
-        tokenizerConfig
+    // Explicit provider,model routes need no token count unless a custom router
+    // might still consume it. getUseModel returns those routes before longContext.
+    if (!customRouterPath && modelForTokenizer.includes(",")) {
+      const [provider, model] = modelForTokenizer.split(",");
+      const finalProvider = providers.find(
+        (p: any) => p.name.toLowerCase() === provider.toLowerCase()
       );
-      tokenCount = result.tokenCount;
-    } else {
-      tokenCount = calculateTokenCount(messages, system, tools);
+      const finalModel = finalProvider?.models?.find(
+        (m: any) => m.toLowerCase() === model.toLowerCase()
+      );
+      req.tokenCount = 0;
+      body.model =
+        finalProvider && finalModel
+          ? `${finalProvider.name},${finalModel}`
+          : modelForTokenizer;
+      if (req.unifiedBody && typeof req.unifiedBody === "object") {
+        req.unifiedBody.model = body.model;
+      }
+      req.scenarioType = "default";
+      markLatency(latency, "routeSelected");
+      return;
+    }
+
+    let tokenCount = 0;
+    if (routerNeedsExactTokenCount(activeRouter, customRouterPath)) {
+      const [providerName, modelName] = modelForTokenizer.split(",");
+      const tokenizerConfig =
+        context.tokenizerService?.getTokenizerConfigForModel(
+          providerName,
+          modelName
+        );
+      tokenCount = await resolveExactTokenCount({
+        messages,
+        system,
+        tools,
+        tokenizerService: context.tokenizerService,
+        tokenizerConfig,
+        sessionId: req.sessionId,
+        lastUsage: lastMessageUsage,
+        longContextThreshold,
+        latency,
+      });
     }
 
     req.tokenCount = tokenCount;
 
     let model;
-    const customRouterPath = configService.get("CUSTOM_ROUTER_PATH");
     if (customRouterPath) {
       try {
         const customRouter = require(customRouterPath);
@@ -616,6 +755,7 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
     } else {
       req.scenarioType = "default";
     }
+    markLatency(latency, "routeSelected");
 
     // Apply selected model to canonical Unified. Do not mutate immutable client wire provenance.
     body.model = model;

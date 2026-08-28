@@ -12,3 +12,4 @@ coverage
 .nyc_output
 .claude
 agent-tools
+.codesearch.db/

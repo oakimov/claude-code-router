@@ -28,6 +28,7 @@ import {
 import { protocolErrorBody } from "./protocol-errors";
 import { stripOneMillionContextMarker } from "@/utils/claude-model-catalog";
 import { decodeClaudeModelAlias } from "@caeliq/ccr-shared";
+import { ensureRequestLatency, markLatency } from "@/utils/request-latency";
 import { applyReasoningAutoSummary } from "@/utils/reasoning-effort";
 
 export interface PreparedInboundRequest {
@@ -39,8 +40,12 @@ export interface PreparedInboundRequest {
   clientWireBody: any;
   /** Normalized Unified body used for routing and provider conversion. */
   unifiedBody: UnifiedChatRequest;
-  /** Unified projection before destination-specific Anthropic emulation. */
-  prePolicyUnifiedBody: UnifiedChatRequest;
+  /**
+   * Unified projection before destination-specific Anthropic emulation.
+   * Only cloned when global fallback is configured; otherwise undefined so
+   * fallback can fall back to `unifiedBody`.
+   */
+  prePolicyUnifiedBody?: UnifiedChatRequest;
   providerName: string;
   modelName: string;
 }
@@ -138,6 +143,8 @@ export async function prepareInboundRequest(
     endpointTransformer,
     transformerContext
   );
+  markLatency(ensureRequestLatency(req as any), "normalized");
+
 
   // Opt-in readable thinking for every client → provider direction: stamp
   // Unified reasoning.summary so Responses/Codex/Anthropic/Gemini outbound
@@ -217,7 +224,10 @@ export async function prepareInboundRequest(
   unifiedBody.model = destination.modelName;
   routingReq.provider = destination.providerName;
   routingReq.model = destination.modelName;
-  const prePolicyUnifiedBody = cloneProtocolBody(unifiedBody);
+  // Clone only when fallback may need an unmutated pre-policy snapshot.
+  const prePolicyUnifiedBody = hasConfiguredFallback(fastify)
+    ? cloneProtocolBody(unifiedBody)
+    : undefined;
   const providerMode = getAnthropicProviderMode(provider);
   context.anthropicProviderMode = providerMode;
   context.anthropicDestinationInScope =
@@ -362,5 +372,21 @@ export function protocolAwareBypass(
     transformer,
     protocolContext.protocol,
     modelName
+  );
+}
+
+/** True when any Router/top-level fallback scenario has a non-empty model list. */
+function hasConfiguredFallback(fastify: FastifyInstance): boolean {
+  const router = fastify.configService.get("Router") as
+    | { fallback?: Record<string, unknown> }
+    | undefined;
+  const fallback =
+    (router?.fallback as Record<string, unknown> | undefined) ??
+    (fastify.configService.get("fallback") as
+      | Record<string, unknown>
+      | undefined);
+  if (!fallback || typeof fallback !== "object") return false;
+  return Object.values(fallback).some(
+    (value) => Array.isArray(value) && value.length > 0
   );
 }

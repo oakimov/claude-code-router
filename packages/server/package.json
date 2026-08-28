@@ -22,7 +22,7 @@
     "@ai-sdk/anthropic": "3.0.111",
     "@ai-sdk/openai": "3.0.97",
     "@caeliq/llms": "workspace:*",
-    "@cursor/sdk": "^1.0.28",
+    "@cursor/sdk": "^1.0.30",
     "@fastify/cookie": "^11.1.2",
     "@fastify/multipart": "^10.1.1",
     "@fastify/rate-limit": "^11.2.0",
@@ -41,7 +41,7 @@
   "devDependencies": {
     "@caeliq/ccr-shared": "workspace:*",
     "@types/adm-zip": "^0.5.8",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "esbuild": "^0.28.2",
     "fastify": "^5.12.1",
     "tsx": "^4.23.12",

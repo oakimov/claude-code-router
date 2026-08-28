@@ -63,7 +63,8 @@ The `config.json` file has several key sections:
 
 - **`PROXY_URL`** (optional): You can set a proxy for API requests, for example: `"PROXY_URL": "http://127.0.0.1:7890"`. Loopback targets (`localhost`, `127.0.0.1`, `::1`) always bypass the proxy. Hosts listed in the `NO_PROXY` / `no_proxy` environment variables also bypass it (comma-separated hosts, `.domain` / `*.domain`, CIDR, optional `:port`).
 - **`LOG`** (optional): You can enable logging by setting it to `true`. When set to `false`, no log files will be created. Default is `true`.
-- **`LOG_LEVEL`** (optional): Set the logging level. Available options are: `"fatal"`, `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`. Default is `"debug"`.
+- **`LOG_LEVEL`** (optional): Set the logging level. Available options are: `"fatal"`, `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`. Default is `"info"`.
+- **`LOG_SSE_EVENTS`** (optional): When `true`, logs every SSE event on both **provider→CCR** and **CCR→client** while `LOG_LEVEL` is `debug`. Default is `false`. Pair with `LOG_REQUEST_BODY` for request bodies on **client→CCR** and **CCR→provider**.
 - **Logging Systems**: The Claude Code Router uses two separate logging systems:
   - **Server-level logs**: HTTP requests, API calls, and server events are logged using pino in the `~/.claude-code-router/logs/` directory with filenames like `ccr-*.log`
   - **Application-level logs**: Routing decisions and business logic events are logged in `~/.claude-code-router/claude-code-router.log`

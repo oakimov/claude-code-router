@@ -268,6 +268,41 @@ async function testJsonResponsePassthrough() {
   assert.equal(json.usage.total_tokens, 2);
 }
 
+async function testJsonResponseDoesNotMutateParsedThinking() {
+  const tf = new OpenAITransformer();
+
+  for (const field of ["message", "delta"] as const) {
+    const payload: any = {
+      choices: [
+        {
+          index: 0,
+          finish_reason: null,
+          [field]: {
+            role: "assistant",
+            reasoning_content: "plan",
+            thinking: { signature: "sig" },
+          },
+        },
+      ],
+    };
+    const originalThinking = payload.choices[0][field].thinking;
+    const response = {
+      headers: new Headers({ "Content-Type": "application/json" }),
+      json: async () => payload,
+      status: 200,
+      statusText: "OK",
+    } as Response;
+
+    const out = await tf.transformResponseIn(response);
+    const json = await out.json();
+
+    assert.equal(payload.choices[0][field].thinking, originalThinking);
+    assert.deepEqual(originalThinking, { signature: "sig" });
+    assert.equal(json.choices[0][field].thinking, undefined);
+    assert.equal(json.choices[0][field].reasoning, "plan");
+  }
+}
+
 async function testToolJsonResponse() {
   const tf = new OpenAITransformer();
   const payload = {
@@ -609,6 +644,7 @@ async function main() {
   await testUnsupportedFields();
   await testMatchingTokenLimitsOk();
   await testJsonResponsePassthrough();
+  await testJsonResponseDoesNotMutateParsedThinking();
   await testToolJsonResponse();
   await testStreamAddsDone();
   await testStreamPreservesExistingDone();

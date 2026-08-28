@@ -39,6 +39,8 @@ const ZEN_RETRY_JITTER_FACTOR = 0.25;
 
 export class OpencodeHeadersTransformer implements Transformer {
   name = "opencode-headers";
+  ownsTransport = true;
+  requestPhase = "transport" as const;
 
   private sessionCache = new Map<string, string>();
   private readonly MAX_SESSIONS = 100;
@@ -229,8 +231,7 @@ export class OpencodeHeadersTransformer implements Transformer {
   private preserveZenStreamErrors(response: Response): Response {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
-    const encoder = new TextEncoder();
-    let buffer = "";
+    let pending = "";
     let terminated = false;
 
     const stream = new ReadableStream<Uint8Array>({
@@ -239,8 +240,8 @@ export class OpencodeHeadersTransformer implements Transformer {
           while (!terminated) {
             const { done, value } = await reader.read();
             if (done) {
-              const tail = buffer + decoder.decode();
-              buffer = "";
+              const tail = pending + decoder.decode();
+              pending = "";
               const failure = tail
                 ? OpencodeHeadersTransformer.zenStreamFailure(tail)
                 : undefined;
@@ -252,35 +253,31 @@ export class OpencodeHeadersTransformer implements Transformer {
                 controller.error(error);
                 return;
               }
-              if (tail) controller.enqueue(encoder.encode(tail));
               controller.close();
               return;
             }
 
-            buffer += decoder.decode(value, { stream: true });
-            const events = buffer.split(/\r?\n\r?\n/);
-            buffer = events.pop() || "";
-            if (!events.length) continue;
+            // Forward upstream bytes unchanged so successful streams keep
+            // native chunk boundaries and cadence. Only inspect a text copy
+            // for Zen terminal error events.
+            controller.enqueue(value);
 
-            const output: string[] = [];
+            pending += decoder.decode(value, { stream: true });
+            const events = pending.split(/\r?\n\r?\n/);
+            pending = events.pop() || "";
             let failure: string | undefined;
             for (const event of events) {
               failure = OpencodeHeadersTransformer.zenStreamFailure(event);
-              if (failure) {
-                terminated = true;
-                break;
-              }
-              output.push(event);
-            }
-            if (output.length) {
-              controller.enqueue(encoder.encode(`${output.join("\n\n")}\n\n`));
+              if (failure) break;
             }
             if (failure) {
+              terminated = true;
               const error = Object.assign(new Error(failure), {
                 code: "provider_network_error",
               });
               await reader.cancel(error).catch(() => {});
               controller.error(error);
+              return;
             }
             return;
           }

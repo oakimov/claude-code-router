@@ -132,42 +132,61 @@ export const createServer = async (config: any): Promise<any> => {
       return originalFetch(...args);
     }
 
-    const requestHeaders = sanitizeHeadersForLog(
-      headersFromFetchArgs(input, init) as any
-    );
+    const logger = app.log as {
+      level?: string;
+      isLevelEnabled?: (level: string) => boolean;
+      debug: (...args: any[]) => void;
+      error: (...args: any[]) => void;
+    };
+    const debugEnabled =
+      typeof logger.isLevelEnabled === "function"
+        ? logger.isLevelEnabled("debug")
+        : logger.level === "debug" || logger.level === "trace";
 
-    const rawRequestBody = logRequestBody
-      ? bodyFromFetchArgs(input, init)
-      : undefined;
-
-    app.log.debug(
-      {
-        url,
-        method: methodFromFetchArgs(input, init),
-        headers: requestHeaders,
-        ...(rawRequestBody !== undefined
-          ? { body: sanitizeBodyForLog(rawRequestBody, logRequestBodyMaxBytes) }
-          : {}),
-      },
-      "Upstream Provider Request"
-    );
+    if (debugEnabled) {
+      const requestHeaders = sanitizeHeadersForLog(
+        headersFromFetchArgs(input, init) as any
+      );
+      const rawRequestBody = logRequestBody
+        ? bodyFromFetchArgs(input, init)
+        : undefined;
+      logger.debug(
+        {
+          url,
+          method: methodFromFetchArgs(input, init),
+          headers: requestHeaders,
+          direction: "ccr→provider",
+          ...(rawRequestBody !== undefined
+            ? {
+                body: sanitizeBodyForLog(
+                  rawRequestBody,
+                  logRequestBodyMaxBytes
+                ),
+              }
+            : {}),
+        },
+        "Upstream Provider Request"
+      );
+    }
 
     try {
       const response = await originalFetch(...args);
-      const responseHeaders = sanitizeHeadersForLog(response.headers);
 
-      app.log.debug(
-        {
-          url,
-          status: response.status,
-          headers: responseHeaders,
-        },
-        "Upstream Provider Response"
-      );
+      if (debugEnabled) {
+        logger.debug(
+          {
+            url,
+            status: response.status,
+            headers: sanitizeHeadersForLog(response.headers),
+            direction: "provider→ccr",
+          },
+          "Upstream Provider Response"
+        );
+      }
 
       if (response.status >= 400) {
         const errorBody = await response.clone().text();
-        app.log.error(
+        logger.error(
           {
             url,
             status: response.status,
@@ -184,9 +203,12 @@ export const createServer = async (config: any): Promise<any> => {
       // Log at debug so OpenCode/Cursor noise does not look like provider 500s.
       // Use shared classifier so timeouts stay as errors (not quiet disconnects).
       if (isClientAbortError(error)) {
-        app.log.debug({ url, error: message }, "Upstream provider fetch aborted");
+        logger.debug(
+          { url, error: message },
+          "Upstream provider fetch aborted"
+        );
       } else {
-        app.log.error(
+        logger.error(
           {
             url,
             error: message,

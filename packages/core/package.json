@@ -41,7 +41,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
     "@caeliq/ccr-shared": "workspace:*",
-    "@cursor/sdk": "^1.0.28",
+    "@cursor/sdk": "^1.0.30",
     "@fastify/cors": "^11.3.0",
     "@fastify/rate-limit": "^11.2.0",
     "@google/genai": "^2.18.0",
@@ -60,7 +60,7 @@
     "uuid": "^14.0.2"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.12",
     "typescript": "^6.0.3"

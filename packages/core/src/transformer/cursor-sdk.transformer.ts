@@ -47,6 +47,8 @@ export class CursorSdkTransformer implements Transformer {
   static TransformerName = CURSOR_SDK_TRANSFORMER_NAME;
 
   name = CURSOR_SDK_TRANSFORMER_NAME;
+  ownsTransport = true;
+  requestPhase = "transport" as const;
   logger?: any;
 
   private options: CursorSdkTransformerOptions;

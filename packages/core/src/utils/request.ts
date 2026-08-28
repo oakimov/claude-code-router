@@ -8,6 +8,37 @@ import {
   isProviderNetworkError,
   toClientAbortError,
 } from "./retry";
+import { markLatency } from "./request-latency";
+
+const proxyDispatchers = new Map<string, ProxyAgent>();
+
+/** One Undici ProxyAgent per normalized proxy URL so connections can be reused. */
+export function getProxyDispatcher(httpsProxy: string): ProxyAgent {
+  const key = new URL(httpsProxy).toString();
+  let agent = proxyDispatchers.get(key);
+  if (!agent) {
+    agent = new ProxyAgent(key);
+    proxyDispatchers.set(key, agent);
+  }
+  return agent;
+}
+
+/** Close every cached ProxyAgent (call on server shutdown). */
+export function closeProxyDispatchers(): void {
+  for (const agent of proxyDispatchers.values()) {
+    try {
+      void agent.close();
+    } catch {
+      // Best-effort cleanup during shutdown.
+    }
+  }
+  proxyDispatchers.clear();
+}
+
+/** Test-only: inspect the module-level dispatcher cache. */
+export function __getProxyDispatcherCacheForTests(): Map<string, ProxyAgent> {
+  return proxyDispatchers;
+}
 
 function normalizeHostname(hostname: string): string {
   return hostname
@@ -129,7 +160,7 @@ export async function sendUnifiedRequest(
   url: URL | string,
   request: UnifiedChatRequest,
   config: any,
-  _context: any,
+  context: any,
   _logger?: any
 ): Promise<Response> {
   const headers = new Headers({
@@ -160,9 +191,7 @@ export async function sendUnifiedRequest(
     Boolean(config.httpsProxy) && !shouldBypassProxy(requestUrl);
 
   if (useProxy) {
-    (fetchOptions as any).dispatcher = new ProxyAgent(
-      new URL(config.httpsProxy).toString()
-    );
+    (fetchOptions as any).dispatcher = getProxyDispatcher(config.httpsProxy);
   }
 
   // const clientHeaders = context?.req?.headers as
@@ -189,7 +218,10 @@ export async function sendUnifiedRequest(
   // disabled here.
 
   try {
-    return await fetch(requestUrl, fetchOptions);
+    markLatency(context?.req?._latency, "upstreamFetchStart");
+    const response = await fetch(requestUrl, fetchOptions);
+    markLatency(context?.req?._latency, "upstreamHeaders");
+    return response;
   } catch (error: any) {
     // AbortSignal.any + abort(string) may reject with a bare string. Normalize
     // so middleware classifies it as 499 instead of a 500 internal error.

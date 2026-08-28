@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,25 +47,13 @@ function resetState() {
 }
 
 /**
- * Make the suite hermetic when no real OAuth credentials exist (e.g. CI).
- *
- * OAuth-backed tests (claude-auth) call `transformRequestIn`, which loads
- * `~/.claude-code-router/claude_auth.json` and throws when it is absent.
- * Locally the file exists (from `ccr claude-auth`), so tests pass; on a fresh
- * checkout they fail. If no auth file is present — neither one configured via
- * `CCR_CLAUDE_AUTH_FILE` nor the default path — provision a synthetic token
- * file in the exact shape `ccr claude-auth` writes, so the tests exercise the
- * real code path instead of erroring. Tests that need to control the file
- * themselves override `CCR_CLAUDE_AUTH_FILE` and restore it.
+ * Keep OAuth-backed tests independent of a developer's credentials. Always
+ * provision a fresh synthetic token instead of consulting the default auth
+ * file, which may be absent, expired, or concurrently refreshed.
  */
-function ensureHermeticAuthFileForTest(): void {
-  const configured = process.env.CCR_CLAUDE_AUTH_FILE;
-  const defaultAuthFile = join(homedir(), ".claude-code-router", "claude_auth.json");
-  if ((configured && existsSync(configured)) || existsSync(defaultAuthFile)) return;
-
+function ensureHermeticAuthFileForTest(): string {
   const dir = mkdtempSync(join(tmpdir(), "ccr-claude-auth-hermetic-"));
   const authFile = join(dir, "claude_auth.json");
-  const deviceFile = join(dir, "claude_device.json");
   writeFileSync(
     authFile,
     JSON.stringify({
@@ -76,7 +64,8 @@ function ensureHermeticAuthFileForTest(): void {
     { mode: 0o600 }
   );
   process.env.CCR_CLAUDE_AUTH_FILE = authFile;
-  process.env.CCR_CLAUDE_DEVICE_FILE = deviceFile;
+  process.env.CCR_CLAUDE_DEVICE_FILE = join(dir, "claude_device.json");
+  return dir;
 }
 
 // --- Classification -------------------------------------------------------
@@ -1048,33 +1037,44 @@ function testRouteOwnershipUnchanged() {
 }
 
 async function main() {
-  ensureHermeticAuthFileForTest();
-  testIsClaudeCodeClient();
-  testSuffixVectorsPinned();
-  testCchShape();
-  testClaudeToolNameMapping();
-  testFullSystemZeroStringEquality();
-  await testInboundProtocolMatrixSynthesis();
-  await testSystemHandlingRegressionGuards();
-  await testForeignSystemContentRelocatedMultiBlock();
-  await testForeignSystemContentKeptWithoutUserMessage();
-  await testForeignSystemContentNotRelocatedForClaudeCode();
-  testExactBetaLists();
-  testUsageParityOneMillionSuffix();
-  await testNoPreflightCountTokensCall();
-  await testNoLocalContextRejection();
-  testNoCompactionTriggerInvented();
-  await testOverageHeaderPreservedThroughConversion();
-  await testSynthesizedHeadersPresenceByClient();
-  testSynthesizedCustomHeaderSafety();
-  await testToolNamesSurviveUnprefixed();
-  await testAuthRecoveryContract();
-  testCatalogDrivenGating();
-  await testChainAnthropicAloneHasNoMarkers();
-  await testChainClaudeAuthPlusAnthropicMergesNotReplaces();
-  await testSingletonSafetyConcurrentRequests();
-  testRouteOwnershipUnchanged();
-  console.log("claude-auth.identity: ok");
+  const originalAuthFile = process.env.CCR_CLAUDE_AUTH_FILE;
+  const originalDeviceFile = process.env.CCR_CLAUDE_DEVICE_FILE;
+  const hermeticDir = ensureHermeticAuthFileForTest();
+  try {
+    testIsClaudeCodeClient();
+    testSuffixVectorsPinned();
+    testCchShape();
+    testClaudeToolNameMapping();
+    testFullSystemZeroStringEquality();
+    await testInboundProtocolMatrixSynthesis();
+    await testSystemHandlingRegressionGuards();
+    await testForeignSystemContentRelocatedMultiBlock();
+    await testForeignSystemContentKeptWithoutUserMessage();
+    await testForeignSystemContentNotRelocatedForClaudeCode();
+    testExactBetaLists();
+    testUsageParityOneMillionSuffix();
+    await testNoPreflightCountTokensCall();
+    await testNoLocalContextRejection();
+    testNoCompactionTriggerInvented();
+    await testOverageHeaderPreservedThroughConversion();
+    await testSynthesizedHeadersPresenceByClient();
+    testSynthesizedCustomHeaderSafety();
+    await testToolNamesSurviveUnprefixed();
+    await testAuthRecoveryContract();
+    testCatalogDrivenGating();
+    await testChainAnthropicAloneHasNoMarkers();
+    await testChainClaudeAuthPlusAnthropicMergesNotReplaces();
+    await testSingletonSafetyConcurrentRequests();
+    testRouteOwnershipUnchanged();
+    console.log("claude-auth.identity: ok");
+  } finally {
+    if (originalAuthFile === undefined) delete process.env.CCR_CLAUDE_AUTH_FILE;
+    else process.env.CCR_CLAUDE_AUTH_FILE = originalAuthFile;
+    if (originalDeviceFile === undefined) delete process.env.CCR_CLAUDE_DEVICE_FILE;
+    else process.env.CCR_CLAUDE_DEVICE_FILE = originalDeviceFile;
+    rmSync(hermeticDir, { recursive: true, force: true });
+    resetState();
+  }
 }
 
 main().catch((err) => {

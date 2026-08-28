@@ -22,7 +22,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "3.0.111",
     "@ai-sdk/openai": "3.0.97",
-    "@cursor/sdk": "^1.0.28",
+    "@cursor/sdk": "^1.0.30",
     "ai": "6.0.258",
     "json5": "^2.2.3",
     "zod": "4.4.3"
@@ -31,7 +31,7 @@
     "@caeliq/ccr-server": "workspace:*",
     "@caeliq/ccr-shared": "workspace:*",
     "@inquirer/prompts": "^8.5.2",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "adm-zip": "^0.6.0",
     "esbuild": "^0.28.2",
     "find-process": "^2.1.1",

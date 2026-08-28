@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   summarizeOutboundCacheStructure,
+  tapClientSSEDebug,
   tapUpstreamSSEDebug,
 } from "../utils/sse-debug-tap";
 
@@ -79,6 +80,7 @@ async function logsAnthropicUsageAndPreservesBytes() {
   const fixture = anthropicSSEFixture();
   const tapped = await tapUpstreamSSEDebug(sseResponse(fixture), {
     logger,
+    rawEvents: true,
     reqId: "req-1",
     provider: "anthropic",
   });
@@ -157,6 +159,7 @@ async function passthroughNonSSE() {
   });
   const tapped = await tapUpstreamSSEDebug(response, {
     logger,
+    rawEvents: true,
     reqId: "req-plain",
     provider: "anthropic",
   });
@@ -176,6 +179,7 @@ async function logsJsonBody() {
   });
   const tapped = await tapUpstreamSSEDebug(response, {
     logger,
+    rawEvents: true,
     reqId: "req-json",
     provider: "anthropic",
   });
@@ -185,10 +189,54 @@ async function logsJsonBody() {
   );
   assert.deepEqual(JSON.parse(await tapped.text()), payload);
   assert.ok(records.some((r) => r.type === "recieved data"));
+  assert.ok(
+    records.some((r) => r.direction === "provider→ccr"),
+    "upstream JSON tap must tag provider→ccr"
+  );
   const original = records.find((r) => r.tppe === "Original Response");
   assert.equal(
     (original?.response as any)?.usage?.cache_read_input_tokens,
     42
+  );
+}
+
+async function clientTapTagsDirection() {
+  const { logger, records } = createDebugLogger();
+  const frame = sseFrame({
+    type: "response.reasoning_summary_text.delta",
+    delta: "Checking .",
+  });
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(frame);
+      controller.close();
+    },
+  });
+
+  const tapped = tapClientSSEDebug(body, {
+    logger,
+    rawEvents: true,
+    reqId: "req-client",
+    provider: "opencode-responses",
+  });
+  const text = await new Response(tapped).text();
+  assert.ok(text.includes("Checking ."));
+
+  await waitFor(
+    () => records.some((r) => r.direction === "ccr→client"),
+    2000
+  );
+  assert.ok(
+    records.some(
+      (r) =>
+        r.type === "recieved data" &&
+        r.direction === "ccr→client" &&
+        String(r.data).includes("Checking .")
+    )
+  );
+  assert.ok(
+    !records.some((r) => r.type === "cache outcome"),
+    "client leg must not emit cache outcome"
   );
 }
 
@@ -238,6 +286,7 @@ async function debugBranchCancelDoesNotBreakClient() {
 
   const tapped = await tapUpstreamSSEDebug(upstream, {
     logger,
+    rawEvents: true,
     reqId: "req-cancel",
     provider: "anthropic",
   });
@@ -282,6 +331,7 @@ async function slowDebugDoesNotStallClient() {
 
   const records: DebugRecord[] = [];
   const tapped = await tapUpstreamSSEDebug(upstream, {
+    rawEvents: true,
     logger: {
       level: "debug",
       debug(payload: DebugRecord) {
@@ -346,6 +396,7 @@ async function clientOutrunsDebugConsumer() {
   const { logger, records } = createDebugLogger();
   const tapped = await tapUpstreamSSEDebug(upstream, {
     logger,
+    rawEvents: true,
     reqId: "req-outrun",
     provider: "anthropic",
   });
@@ -402,6 +453,7 @@ async function firstChunkArrivesBeforeUpstreamFinishes() {
   const { logger } = createDebugLogger();
   const tapped = await tapUpstreamSSEDebug(upstream, {
     logger,
+    rawEvents: true,
     reqId: "req-ttfb",
     provider: "anthropic",
   });
@@ -465,6 +517,7 @@ async function terminalUsageFrameSurvivesSlowDebug() {
 
   const records: DebugRecord[] = [];
   const tapped = await tapUpstreamSSEDebug(upstream, {
+    rawEvents: true,
     logger: {
       level: "debug",
       debug(payload: DebugRecord) {
@@ -522,6 +575,7 @@ async function clientCancelFinalizesDebugBranch() {
   const { logger, records } = createDebugLogger();
   const tapped = await tapUpstreamSSEDebug(upstream, {
     logger,
+    rawEvents: true,
     reqId: "req-hangup",
     provider: "anthropic",
     cacheDiff: intactDiff(),
@@ -564,6 +618,7 @@ async function bytesSurviveMultibyteChunkBoundaries() {
   const { logger } = createDebugLogger();
   const tapped = await tapUpstreamSSEDebug(upstream, {
     logger,
+    rawEvents: true,
     reqId: "req-utf8",
     provider: "anthropic",
   });
@@ -651,6 +706,7 @@ async function main() {
   await skipsWhenDebugDisabled();
   await passthroughNonSSE();
   await logsJsonBody();
+  await clientTapTagsDirection();
   await debugBranchCancelDoesNotBreakClient();
   await slowDebugDoesNotStallClient();
   await clientOutrunsDebugConsumer();

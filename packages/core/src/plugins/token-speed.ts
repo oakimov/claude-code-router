@@ -212,8 +212,15 @@ export const tokenSpeedPlugin: CCRPlugin = {
           stream: true
         });
 
-        // Tee the stream: one for stats, one for the client
-        const [originalStream, statsStream] = payload.tee();
+        // Nonblocking tap: forward bytes to the client immediately; stats
+        // consume a side branch with infinite writable HWM so tee() cannot
+        // couple backpressure from the stats parser onto the client stream.
+        const statsTunnel = new TransformStream<Uint8Array, Uint8Array>(
+          undefined,
+          { highWaterMark: Infinity },
+          { highWaterMark: 1 }
+        );
+        const statsWriter = statsTunnel.writable.getWriter();
 
         // Process stats in background
         const processStats = async () => {
@@ -246,7 +253,8 @@ export const tokenSpeedPlugin: CCRPlugin = {
 
           try {
             // Decode byte stream to text, then parse SSE events
-            const eventStream = statsStream
+            // Cast avoids DOM lib ArrayBuffer/ArrayBufferLike mismatch on TextDecoderStream.
+            const eventStream = (statsTunnel.readable as ReadableStream)
               .pipeThrough(new TextDecoderStream())
               .pipeThrough(new SSEParserTransform());
             const reader = eventStream.getReader();
@@ -341,8 +349,30 @@ export const tokenSpeedPlugin: CCRPlugin = {
           fastify.log.error(error, `Background stats processing failed`);
         });
 
-        // Return original stream to client
-        return originalStream;
+        let statsAlive = true;
+        const abandonStats = () => {
+          if (!statsAlive) return;
+          statsAlive = false;
+          void statsWriter.close().catch(() => {});
+        };
+
+        return payload.pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+              controller.enqueue(chunk);
+              if (!statsAlive) return;
+              void statsWriter.write(chunk.slice()).catch(() => {
+                abandonStats();
+              });
+            },
+            flush() {
+              abandonStats();
+            },
+            cancel() {
+              abandonStats();
+            },
+          } as Transformer<Uint8Array, Uint8Array>)
+        );
       }
 
       // Handle non-streaming responses

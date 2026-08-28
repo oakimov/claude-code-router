@@ -107,32 +107,57 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 }
 ```
 
-#### Capturing request bodies
+#### Capturing request and response messages
 
-`LOG_REQUEST_BODY` adds the body of every outbound provider request to the
-`Upstream Provider Request` log record, so you can read back exactly what was
-sent upstream after all transformers ran. It is off by default and requires
-`LOG_LEVEL: "debug"` (or lower) to be visible.
+Two independent opt-in flags cover every wire direction. Both require
+`LOG_LEVEL: "debug"` (or lower) so the records are emitted.
+
+| Flag | What it logs |
+|---|---|
+| `LOG_REQUEST_BODY` | Full request bodies on **client→CCR** (all protocols) and **CCR→provider**, plus non-stream JSON on **CCR→client** |
+| `LOG_SSE_EVENTS` | Every SSE event on **provider→CCR** and **CCR→client** |
+
+Each record carries a `direction` field (`client→ccr`, `ccr→provider`,
+`provider→ccr`, `ccr→client`) so you can grep one leg at a time.
 
 ```json5
 {
   "LOG_LEVEL": "debug",
   "LOG_REQUEST_BODY": true,           // Off by default
-  "LOG_REQUEST_BODY_MAX_BYTES": 32768 // Per-body cap, default 32768
+  "LOG_REQUEST_BODY_MAX_BYTES": 32768, // Per-body / per-event cap
+  "LOG_SSE_EVENTS": true              // Off by default
 }
 ```
 
 :::warning
 This writes full conversation content — system prompts, user messages, tool
-results — to `~/.claude-code-router/logs/`. Credentials are redacted
-(`Authorization`, `api_key`, `access_token`, `sk-…` style keys), but the
-prompts themselves are not. Log files rotate at 50 MB with 3 kept. Enable it
-for a debugging window, then turn it back off.
+results, and streaming deltas — to `~/.claude-code-router/logs/`. Credentials
+are redacted (`Authorization`, `api_key`, `access_token`, `sk-…` style keys),
+and Responses `encrypted_content` blobs are replaced with
+`[redacted-encrypted]`, but the prompts and readable reasoning summaries
+themselves are not. Log files rotate at 50 MB with 3 kept. Enable it for a
+debugging window, then turn it back off.
 :::
 
-Only request bodies are captured. Successful responses are streamed and stay
-uncaptured; error responses are already logged in full as
-`Upstream Provider Error Body`.
+Without `LOG_REQUEST_BODY`, Anthropic Messages clients still get the legacy
+`type: "request body"` info log on inbound only. Responses and Chat Completions
+inbound bodies are silent unless the flag is on.
+
+Useful greps:
+
+```bash
+# What OpenCode / Claude Code sent CCR
+rg '"direction":"client→ccr"' ~/.claude-code-router/logs/ccr.log
+
+# What CCR posted upstream after transformers
+rg '"direction":"ccr→provider"' ~/.claude-code-router/logs/ccr.log
+
+# Raw Zen / provider SSE (includes reasoning_summary_text)
+rg '"direction":"provider→ccr"' ~/.claude-code-router/logs/ccr.log
+
+# What the client actually received after response transformers
+rg '"direction":"ccr→client"' ~/.claude-code-router/logs/ccr.log
+```
 
 #### Health heartbeat
 

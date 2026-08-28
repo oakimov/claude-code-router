@@ -169,6 +169,18 @@ export interface UnifiedChatRequest {
   anthropic_metadata?: Record<string, any>;
   anthropic_stop_sequences?: string[];
   reasoning_effort?: string;
+
+  /**
+   * Responses opaque `include` list (e.g. `reasoning.encrypted_content`).
+   * Client-driven: only set when the inbound protocol was Responses and the
+   * client sent it. Chat/Anthropic clients have no equivalent field.
+   */
+  include?: string[];
+  /**
+   * Responses `store`. Only `false` is preserved (CCR rejects `store: true`).
+   * Client-driven same-protocol hint, paired with `include` by OpenCode/AI SDK.
+   */
+  store?: false;
 }
 
 // Unified response interface

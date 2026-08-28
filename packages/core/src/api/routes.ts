@@ -48,8 +48,15 @@ function isOpencodeProvider(provider: any): boolean {
 }
 import {
   logOutboundCacheStructure,
+  tapClientSSEDebug,
   tapUpstreamSSEDebug,
 } from "../utils/sse-debug-tap";
+import {
+  logMessageBody,
+  resolveLogBodyMaxBytes,
+  shouldLogRequestBodies,
+  shouldLogSSEEvents,
+} from "../utils/message-debug";
 import { withSSEClientKeepalive } from "@/utils/sse/client-keepalive";
 import { withChatCompletionsDoneBoundary } from "@/utils/sse/done-boundary";
 import { sendWithUnauthorizedAuthRecovery } from "@/utils/auth-recovery";
@@ -74,6 +81,18 @@ import {
   protocolAwareBypass,
   PreparedInboundRequest,
 } from "@/routing/inbound-pipeline";
+import {
+  compileTransformerPlan,
+  cancelReplacedProviderResponse,
+  isExactProtocolResponsePlan,
+} from "@/utils/transformer-plan";
+import {
+  ensureRequestLatency,
+  markLatency,
+  attachLatencyMeta,
+  emitLatencyRecord,
+  tapResponseFirstByte,
+} from "@/utils/request-latency";
 import {
   applyThirdPartyAnthropicPolicy,
   getAnthropicProviderMode,
@@ -131,6 +150,8 @@ async function handleTransformerEndpoint(
   const disconnect = createClientDisconnectSignal(req, reply);
   const clientSignal = disconnect.signal;
   disconnect.arm();
+  const latency = ensureRequestLatency(req as any);
+  markLatency(latency, "bodyParsed");
 
   let prepared: PreparedInboundRequest;
   try {
@@ -141,7 +162,13 @@ async function handleTransformerEndpoint(
       transformer,
       routePath
     );
+    markLatency(latency, "destinationPolicy");
   } catch (error: any) {
+    attachLatencyMeta(latency, {
+      error: error?.message || String(error),
+      cancelled: isClientAbortError(error) || clientSignal.aborted,
+    });
+    emitLatencyRecord(req.log, latency);
     if (isClientAbortError(error) || clientSignal.aborted) {
       throw typeof error === "string"
         ? toClientAbortError(error)
@@ -152,12 +179,26 @@ async function handleTransformerEndpoint(
 
   const provider = fastify.providerService.getProvider(prepared.providerName);
   if (!provider) {
+    attachLatencyMeta(latency, {
+      provider: prepared.providerName,
+      model: prepared.modelName,
+      error: "provider_not_found",
+    });
+    emitLatencyRecord(req.log, latency);
     throw createApiError(
       `Provider '${prepared.providerName}' not found`,
       404,
       "provider_not_found"
     );
   }
+
+  attachLatencyMeta(latency, {
+    protocol: prepared.protocolContext?.protocol,
+    provider: prepared.providerName,
+    model: prepared.modelName,
+    scenario: (req as any).scenarioType,
+    tokenCount: (req as any).tokenCount,
+  });
 
   // Stash prepared state so fallback can reuse Unified + protocol context.
   (req as any)._preparedInbound = prepared;
@@ -210,7 +251,10 @@ async function handleTransformerEndpoint(
         skipClientNormalization: true,
       }
     );
+    markLatency(latency, "requestTransformers");
+    attachLatencyMeta(latency, { bypass });
 
+    markLatency(latency, "upstreamFetchStart");
     const response = await sendRequestToProvider(
       requestBody,
       config,
@@ -225,9 +269,14 @@ async function handleTransformerEndpoint(
       }
     );
 
+    markLatency(latency, "upstreamHeaders");
+    const timedResponse = tapResponseFirstByte(response, () => {
+      markLatency(latency, "upstreamFirstByte");
+    });
+
     const finalResponse = await processResponseTransformers(
       requestBody,
-      response,
+      timedResponse,
       provider,
       transformer,
       bypass,
@@ -238,6 +287,7 @@ async function handleTransformerEndpoint(
         skipClientNormalization: bypass,
       }
     );
+    markLatency(latency, "responseTransformers");
 
     return await formatResponse(
       finalResponse,
@@ -245,9 +295,19 @@ async function handleTransformerEndpoint(
       prepared.originalBody,
       clientSignal,
       prepared.protocolContext.stream,
-      prepared.protocolContext.protocol
+      prepared.protocolContext.protocol,
+      {
+        configService: fastify.configService,
+        provider: provider?.name,
+        model: prepared.modelName,
+      }
     );
   } catch (error: any) {
+    attachLatencyMeta(latency, {
+      error: error?.code || error?.message || String(error),
+      cancelled: isClientAbortError(error) || clientSignal.aborted,
+    });
+    emitLatencyRecord(req.log, latency);
     if (isClientAbortError(error)) {
       throw typeof error === "string" ? toClientAbortError(error) : error;
     }
@@ -461,9 +521,12 @@ async function handleFallback(
         }
       );
 
+      const timedResponse = tapResponseFirstByte(response, () => {
+        markLatency((newReq as any)._latency, "upstreamFirstByte");
+      });
       const finalResponse = await processResponseTransformers(
         requestBody,
-        response,
+        timedResponse,
         provider,
         transformer,
         bypass,
@@ -482,7 +545,12 @@ async function handleFallback(
         prepared?.originalBody ?? req.body,
         clientSignal,
         fallbackProtocolContext?.stream,
-        fallbackProtocolContext?.protocol
+        fallbackProtocolContext?.protocol,
+        {
+          configService: fastify.configService,
+          provider: provider?.name,
+          model: typeof requestBody?.model === "string" ? requestBody.model : undefined,
+        }
       );
     } catch (fallbackError: any) {
       if (isClientAbortError(fallbackError)) {
@@ -635,57 +703,36 @@ async function processRequestTransformers(
     }
   }
 
-  if (!bypass && provider.transformer?.use?.length) {
-    for (const providerTransformer of provider.transformer.use) {
-      if (
-        manualExactPassthrough &&
-        providerTransformer?.name === transformer.name
-      ) {
-        continue;
-      }
-      if (
-        !providerTransformer ||
-        typeof providerTransformer.transformRequestIn !== "function"
-      ) {
-        continue;
-      }
-      const transformIn = await providerTransformer.transformRequestIn(
-        requestBody,
-        provider,
-        context
-      );
-      if (transformIn.body) {
-        requestBody = transformIn.body;
-        const nextConfig = transformIn.config || {};
-        config = {
-          ...config,
-          ...nextConfig,
-          headers: mergeHeadersCaseInsensitive(
-            config.headers,
-            nextConfig.headers
-          ),
-        };
-      } else {
-        requestBody = transformIn;
-      }
-    }
-  }
+  const modelUse = !bypass
+    ? (provider.transformer?.[body.model]?.use as Transformer[] | undefined)
+    : undefined;
+  const providerUse = !bypass
+    ? (provider.transformer?.use as Transformer[] | undefined)
+    : undefined;
 
-  if (!bypass && provider.transformer?.[body.model]?.use?.length) {
-    for (const modelTransformer of provider.transformer[body.model].use) {
+  if (providerUse?.length || modelUse?.length) {
+    let plan;
+    try {
+      plan = compileTransformerPlan(providerUse, modelUse, {
+        skipName: manualExactPassthrough ? transformer.name : undefined,
+      });
+    } catch (error: any) {
+      throw createApiError(
+        error?.message || "Invalid transformer configuration",
+        400,
+        "invalid_request_error",
+        "invalid_request_error"
+      );
+    }
+
+    for (const chainTransformer of plan.request) {
       if (
-        manualExactPassthrough &&
-        modelTransformer?.name === transformer.name
+        !chainTransformer ||
+        typeof chainTransformer.transformRequestIn !== "function"
       ) {
         continue;
       }
-      if (
-        !modelTransformer ||
-        typeof modelTransformer.transformRequestIn !== "function"
-      ) {
-        continue;
-      }
-      const transformIn = await modelTransformer.transformRequestIn(
+      const transformIn = await chainTransformer.transformRequestIn(
         requestBody,
         provider,
         context
@@ -693,6 +740,13 @@ async function processRequestTransformers(
       if (transformIn.body) {
         requestBody = transformIn.body;
         const nextConfig = transformIn.config || {};
+        const previousResponse = config.__providerResponse as
+          | Response
+          | undefined;
+        const nextResponse = nextConfig.__providerResponse as
+          | Response
+          | undefined;
+        cancelReplacedProviderResponse(previousResponse, nextResponse);
         config = {
           ...config,
           ...nextConfig,
@@ -783,12 +837,31 @@ async function sendRequestToProvider(
       responseStatus: response?.status,
       clientStageDiff: context?.req?._cachePrefixClientDiff,
       cacheDiff,
+      direction: "provider→ccr",
+      maxBytes: resolveLogBodyMaxBytes(fastify.configService),
+      rawEvents: shouldLogSSEEvents(fastify.configService),
+    });
+  };
+
+  const logOutboundRequestBody = () => {
+    if (!shouldLogRequestBodies(fastify.configService)) return;
+    logMessageBody(requestBody, {
+      logger: context?.req?.log ?? fastify.log,
+      direction: "ccr→provider",
+      reqId: context?.req?.id,
+      provider: provider?.name,
+      model:
+        typeof requestBody?.model === "string" ? requestBody.model : undefined,
+      maxBytes: resolveLogBodyMaxBytes(fastify.configService),
     });
   };
 
   // Allow a transformer to own the full upstream call (non-fetch transports,
   // agent SDKs, etc.) by returning a ready Response via __providerResponse.
   if (config?.__providerResponse) {
+    // Body was already posted inside the owning transformer; still record it
+    // so LOG_REQUEST_BODY covers OpenCode Zen / SDK-owned legs.
+    logOutboundRequestBody();
     return tapProviderResponse(config.__providerResponse as Response);
   }
 
@@ -861,6 +934,7 @@ async function sendRequestToProvider(
     __authRecovery,
     ...providerRequestConfig
   } = config || {};
+  logOutboundRequestBody();
   const send = (headers: Record<string, string>) =>
     sendUnifiedRequest(
       url,
@@ -1027,48 +1101,46 @@ async function processResponseTransformers(
   // such as the Gemini thought-signature cache.
   const responseContext = { ...context, provider };
 
-  // Execute provider-level response transformers
-  if (!bypass && provider.transformer?.use?.length) {
-    for (const providerTransformer of Array.from(
-      provider.transformer.use
-    ).reverse() as Transformer[]) {
-      if (
-        manualExactPassthrough &&
-        providerTransformer?.name === transformer.name
-      ) {
-        continue;
-      }
-      if (
-        !providerTransformer ||
-        typeof providerTransformer.transformResponseOut !== "function"
-      ) {
-        continue;
-      }
-      finalResponse = await providerTransformer.transformResponseOut!(
-        finalResponse,
-        responseContext
+  const modelUse = !bypass
+    ? (provider.transformer?.[requestBody.model]?.use as
+        | Transformer[]
+        | undefined)
+    : undefined;
+  const providerUse = !bypass
+    ? (provider.transformer?.use as Transformer[] | undefined)
+    : undefined;
+  let exactProtocolResponse = false;
+
+  if (providerUse?.length || modelUse?.length) {
+    let plan;
+    try {
+      plan = compileTransformerPlan(providerUse, modelUse, {
+        skipName: manualExactPassthrough ? transformer.name : undefined,
+      });
+    } catch (error: any) {
+      throw createApiError(
+        error?.message || "Invalid transformer configuration",
+        400,
+        "invalid_request_error",
+        "invalid_request_error"
       );
     }
-  }
+    exactProtocolResponse = isExactProtocolResponsePlan(
+      plan,
+      transformer,
+      context?.protocolContext?.ownerTransformerName
+    );
 
-  // Execute model-specific response transformers
-  if (!bypass && provider.transformer?.[requestBody.model]?.use?.length) {
-    for (const modelTransformer of Array.from(
-      provider.transformer[requestBody.model].use
-    ).reverse() as Transformer[]) {
+    for (const chainTransformer of plan.response) {
       if (
-        manualExactPassthrough &&
-        modelTransformer?.name === transformer.name
+        !chainTransformer ||
+        (exactProtocolResponse &&
+          chainTransformer.name === transformer.name) ||
+        typeof chainTransformer.transformResponseOut !== "function"
       ) {
         continue;
       }
-      if (
-        !modelTransformer ||
-        typeof modelTransformer.transformResponseOut !== "function"
-      ) {
-        continue;
-      }
-      finalResponse = await modelTransformer.transformResponseOut!(
+      finalResponse = await chainTransformer.transformResponseOut!(
         finalResponse,
         responseContext
       );
@@ -1076,7 +1148,11 @@ async function processResponseTransformers(
   }
 
   // Execute transformer's transformResponseIn method
-  if (!skipBodyConversion && transformer.transformResponseIn) {
+  if (
+    !skipBodyConversion &&
+    !exactProtocolResponse &&
+    transformer.transformResponseIn
+  ) {
     finalResponse = await transformer.transformResponseIn(
       finalResponse,
       context
@@ -1097,7 +1173,12 @@ async function formatResponse(
   body: any,
   clientSignal?: AbortSignal,
   streamIntent?: boolean,
-  protocol?: ClientProtocol
+  protocol?: ClientProtocol,
+  debug?: {
+    configService?: ConfigService;
+    provider?: string;
+    model?: string;
+  }
 ) {
   // Set HTTP status code
   if (!response.ok) {
@@ -1112,6 +1193,12 @@ async function formatResponse(
   for (const [name, value] of Object.entries(downstreamHeaders)) {
     reply.header(name, value);
   }
+
+  const log = reply.log ?? (reply.request as any)?.log;
+  const reqId = (reply.request as any)?.id;
+  const rawSSE = shouldLogSSEEvents(debug?.configService);
+  const logBodies = shouldLogRequestBodies(debug?.configService);
+  const maxBytes = resolveLogBodyMaxBytes(debug?.configService);
 
   // Handle streaming response
   const isStream =
@@ -1133,13 +1220,29 @@ async function formatResponse(
         protocol === "openai_chat_completions"
           ? withChatCompletionsDoneBoundary(response.body)
           : response.body;
-      const clientBody = withSSEClientKeepalive(framed);
+      const keptAlive = withSSEClientKeepalive(framed);
+      const clientBody = tapClientSSEDebug(keptAlive, {
+        logger: log,
+        reqId,
+        provider: debug?.provider,
+        model: debug?.model,
+        protocol,
+        maxBytes,
+        rawEvents: rawSSE,
+      });
       const nodeStream = Readable.fromWeb(clientBody as any);
       let cleanedUp = false;
+      const latency = (reply.request as any)?._latency;
+      const socketGone = isResponseSocketGone(reply);
+      let sawFirstByte = false;
 
       const cleanup = () => {
         if (cleanedUp) return;
         cleanedUp = true;
+        attachLatencyMeta(latency, {
+          cancelled: Boolean(clientSignal?.aborted || socketGone),
+        });
+        emitLatencyRecord(reply.log ?? (reply.request as any)?.log, latency);
         try {
           if (!nodeStream.destroyed) {
             nodeStream.destroy();
@@ -1149,13 +1252,21 @@ async function formatResponse(
         }
       };
 
+      nodeStream.once("data", () => {
+        if (!sawFirstByte) {
+          sawFirstByte = true;
+          markLatency(latency, "downstreamFirstByte");
+        }
+      });
+      nodeStream.once("end", () => {
+        emitLatencyRecord(reply.log ?? (reply.request as any)?.log, latency);
+      });
+
       const detachAbort = () => {
         if (clientSignal) {
           clientSignal.removeEventListener("abort", cleanup);
         }
       };
-
-      const socketGone = isResponseSocketGone(reply);
 
       // Only 499 when the TCP socket is actually gone. A disconnect signal
       // alone is not proof — Cursor previously got false 499 JSON bodies
@@ -1247,6 +1358,20 @@ async function formatResponse(
   } else {
     // Handle regular JSON response (including error responses)
     const json = await response.json();
+    if (logBodies || rawSSE) {
+      logMessageBody(json, {
+        logger: log ?? { debug() {} },
+        direction: "ccr→client",
+        reqId,
+        protocol,
+        provider: debug?.provider,
+        model: debug?.model,
+        maxBytes,
+      });
+    }
+    const latency = (reply.request as any)?._latency;
+    markLatency(latency, "downstreamFirstByte");
+    emitLatencyRecord(reply.log ?? (reply.request as any)?.log, latency);
     return reply.send(json);
   }
 }

@@ -14,8 +14,8 @@
  *   cursor          cache strip + SDK prompt flatten (no live Agent.run)
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AnthropicTransformer } from "../transformer/anthropic.transformer";
 import { ChromeOnDeviceTransformer } from "../transformer/chrome-on-device.transformer";
@@ -121,19 +121,11 @@ async function applyChain(
   return { body: requestBody, config };
 }
 
-function ensureHermeticClaudeAuth(): void {
-  const configured = process.env.CCR_CLAUDE_AUTH_FILE;
-  const defaultAuthFile = join(
-    homedir(),
-    ".claude-code-router",
-    "claude_auth.json"
-  );
-  if ((configured && existsSync(configured)) || existsSync(defaultAuthFile)) {
-    return;
-  }
+function ensureHermeticClaudeAuth(): string {
   const dir = mkdtempSync(join(tmpdir(), "ccr-claude-auth-matrix-"));
+  const authFile = join(dir, "claude_auth.json");
   writeFileSync(
-    join(dir, "claude_auth.json"),
+    authFile,
     JSON.stringify({
       access_token: "hermetic-subscription-token",
       token_type: "Bearer",
@@ -141,7 +133,8 @@ function ensureHermeticClaudeAuth(): void {
     }),
     { mode: 0o600 }
   );
-  process.env.CCR_CLAUDE_AUTH_FILE = join(dir, "claude_auth.json");
+  process.env.CCR_CLAUDE_AUTH_FILE = authFile;
+  return dir;
 }
 
 async function inboundAnthropic() {
@@ -281,8 +274,6 @@ async function testRequestChains() {
     ["chat", await inboundChat()],
     ["responses", await inboundResponses()],
   ] as const;
-
-  ensureHermeticClaudeAuth();
 
   for (const [source, unified] of sources) {
     assistantHasThinkingAndTool(unified.messages);
@@ -699,9 +690,17 @@ async function testPathBackAndReplay() {
 }
 
 async function main() {
-  await testRequestChains();
-  await testPathBackAndReplay();
-  console.log("cross-protocol.config-matrix: PASS");
+  const originalAuthFile = process.env.CCR_CLAUDE_AUTH_FILE;
+  const hermeticDir = ensureHermeticClaudeAuth();
+  try {
+    await testRequestChains();
+    await testPathBackAndReplay();
+    console.log("cross-protocol.config-matrix: PASS");
+  } finally {
+    if (originalAuthFile === undefined) delete process.env.CCR_CLAUDE_AUTH_FILE;
+    else process.env.CCR_CLAUDE_AUTH_FILE = originalAuthFile;
+    rmSync(hermeticDir, { recursive: true, force: true });
+  }
 }
 
 main().catch((error) => {

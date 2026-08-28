@@ -105,9 +105,11 @@ async function testCodexKeepsTextWithTools() {
     {}
   );
   const input = result.body.input;
-  assert.equal(result.body.instructions, "sys-a");
-  assert.equal(input[0].role, "system");
-  assert.equal(input[0].content[0].text, "sys-b");
+  assert.equal(result.body.instructions, "sys-a\n\nsys-b");
+  assert.ok(
+    !input.some((item: any) => item.role === "system" || item.role === "developer"),
+    "Codex input must not contain role:system/developer"
+  );
   const types = input.map((item: any) => item.type);
   const start = types.indexOf("reasoning");
   assert.deepEqual(types.slice(start, start + 3), [

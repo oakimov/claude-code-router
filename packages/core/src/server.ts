@@ -32,6 +32,11 @@ import { TokenizerService } from "./services/tokenizer";
 import { router, calculateTokenCount, searchProjectBySession } from "./utils/router";
 import { sessionUsageCache } from "./utils/cache";
 import { matchClientProtocol } from "./routing/protocol-endpoints";
+import {
+  logMessageBody,
+  resolveLogBodyMaxBytes,
+  shouldLogRequestBodies,
+} from "./utils/message-debug";
 
 // Extend FastifyRequest to include custom properties
 declare module "fastify" {
@@ -193,13 +198,22 @@ class Server {
         const match = matchClientProtocol(req.method, url.pathname);
         if (match && req.body) {
           const body = req.body as any;
-          if (match.protocol === "anthropic_messages") {
-            // Preserve the existing Messages behavior without expanding
-            // full-body info logging to every newly supported protocol.
+          if (shouldLogRequestBodies(this.configService)) {
+            logMessageBody(body, {
+              logger: req.log,
+              direction: "client→ccr",
+              level: "debug",
+              reqId: req.id,
+              protocol: match.protocol,
+              model: typeof body?.model === "string" ? body.model : undefined,
+              maxBytes: resolveLogBodyMaxBytes(this.configService),
+            });
+          } else if (match.protocol === "anthropic_messages") {
+            // Legacy Messages-only info log when body capture is not opted in.
             req.log.info({ data: body, type: "request body" });
-            if (!body.stream) {
-              body.stream = false;
-            }
+          }
+          if (match.protocol === "anthropic_messages" && !body.stream) {
+            body.stream = false;
           }
         }
         done();
@@ -233,6 +247,8 @@ class Server {
 // Export for external use
 export default Server;
 export { sessionUsageCache };
+export { closeProxyDispatchers } from "./utils/request";
+export { closeTokenCountWorkers } from "./utils/token-count-worker";
 export { router };
 export { calculateTokenCount };
 export { searchProjectBySession };
@@ -250,6 +266,19 @@ export {
   sanitizeBodyForLog,
   DEFAULT_LOG_BODY_MAX_BYTES,
 } from "./utils/redact";
+export {
+  logMessageBody,
+  bodyToLogString,
+  shouldLogRequestBodies,
+  shouldLogSSEEvents,
+  resolveLogBodyMaxBytes,
+  isTruthyConfigFlag,
+  type MessageDebugDirection,
+} from "./utils/message-debug";
+export {
+  tapUpstreamSSEDebug,
+  tapClientSSEDebug,
+} from "./utils/sse-debug-tap";
 export {
   exchangeAuthorizationCode,
   fetchUserEmail,

@@ -10,10 +10,12 @@ import {
   createCallIdMap,
   createResponsesStreamState,
   finalizeResponsesStream,
+  responsesReasoningItemFromThinking,
   responsesRequestToUnified,
   responsesTextFormatFromResponseFormat,
   unifiedChunkToResponsesEvents,
   unifiedResponseToResponses,
+  uniquifyReasoningItemIds,
 } from "../utils/openai.responses.util";
 import { sanitizeResponsesCallId } from "../utils/toolCallId";
 
@@ -435,6 +437,44 @@ async function testReasoningAndTools() {
       : null,
     "Read"
   );
+}
+
+async function testClientIncludeAndStorePassThrough() {
+  // Responses→Responses: client include / store:false survive Unified and
+  // outbound rebuild. Chat/Anthropic never send these; do not invent them.
+  const unified = responsesRequestToUnified({
+    model: "muse-spark",
+    input: "think",
+    reasoning: { effort: "high", summary: "auto" },
+    store: false,
+    include: ["reasoning.encrypted_content", 1, "", "file_search_call.results"],
+  });
+  assert.deepEqual(unified.include, [
+    "reasoning.encrypted_content",
+    "file_search_call.results",
+  ]);
+  assert.equal(unified.store, false);
+
+  const tf = new OpenAIResponsesTransformer();
+  const out = await tf.transformRequestIn(unified, {}, {});
+  assert.deepEqual((out as any).include, [
+    "reasoning.encrypted_content",
+    "file_search_call.results",
+  ]);
+  assert.equal((out as any).store, false);
+  assert.equal((out as any).reasoning?.summary, "auto");
+
+  const fromChat = await tf.transformRequestIn(
+    {
+      model: "muse-spark",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning: { effort: "high", summary: "auto" },
+    } as any,
+    {},
+    {}
+  );
+  assert.equal((fromChat as any).include, undefined);
+  assert.equal((fromChat as any).store, undefined);
 }
 
 async function testCustomHostedToolConvertsToFunction() {
@@ -2021,7 +2061,7 @@ async function testStreamedThinkingLandsOnCompletedReasoningItem() {
     ...unifiedChunkToResponsesEvents(
       {
         id: "chatcmpl-th",
-        choices: [{ delta: { thinking: { content: "hmm" } } }],
+        choices: [{ delta: { thinking: { content: "hmm", id: "rs_stream" } } }],
       },
       state
     ),
@@ -2046,12 +2086,65 @@ async function testStreamedThinkingLandsOnCompletedReasoningItem() {
     ),
     ...finalizeResponsesStream(state),
   ];
+  const types = events.map((event) => event.type);
+  assert.ok(types.includes("response.output_item.added"));
+  assert.ok(types.includes("response.reasoning_summary_part.added"));
+  assert.ok(types.includes("response.reasoning_summary_text.delta"));
+  assert.ok(types.includes("response.reasoning_summary_text.done"));
+  assert.ok(types.includes("response.reasoning_summary_part.done"));
+  const reasoningAdded = events.find(
+    (event) =>
+      event.type === "response.output_item.added" &&
+      event.item?.type === "reasoning"
+  );
+  assert.equal(reasoningAdded?.item?.id, "rs_stream");
+  const deltas = events
+    .filter((event) => event.type === "response.reasoning_summary_text.delta")
+    .map((event) => event.delta)
+    .join("");
+  assert.equal(deltas, "hmm");
+  // Reasoning must close before the message item opens (Zen / OpenAI order).
+  const reasoningDoneAt = types.indexOf("response.output_item.done");
+  const messageAddedAt = types.findIndex(
+    (type, index) =>
+      type === "response.output_item.added" &&
+      events[index].item?.type === "message"
+  );
+  assert.ok(reasoningDoneAt >= 0);
+  assert.ok(messageAddedAt > reasoningDoneAt);
   const completed = events.at(-1).response;
   assert.equal(completed.output[0].type, "reasoning");
   assert.equal(completed.output[0].summary[0].text, "hmm");
   assert.equal(completed.output[0].encrypted_content, "enc-stream");
   assert.equal(completed.output[0].id, "rs_stream");
   assert.equal(completed.output[1].type, "message");
+}
+
+async function testDuplicateRsAnonReasoningIdsAreRewritten() {
+  const a = responsesReasoningItemFromThinking({
+    encrypted_content: "cipher-turn-a",
+    id: "rs_anon",
+  });
+  const b = responsesReasoningItemFromThinking({
+    encrypted_content: "cipher-turn-b",
+    id: "rs_anon",
+  });
+  assert.ok(a);
+  assert.ok(b);
+  assert.notEqual(a.id, "rs_anon");
+  assert.notEqual(b.id, "rs_anon");
+  assert.notEqual(a.id, b.id);
+
+  const items = [
+    { type: "reasoning", id: "rs_anon", encrypted_content: "enc-1", summary: [] },
+    { type: "reasoning", id: "rs_anon", encrypted_content: "enc-2", summary: [] },
+    { type: "reasoning", id: "rs_same", encrypted_content: "enc-3", summary: [] },
+    { type: "reasoning", id: "rs_same", encrypted_content: "enc-4", summary: [] },
+  ];
+  uniquifyReasoningItemIds(items);
+  const ids = items.map((item) => item.id);
+  assert.equal(new Set(ids).size, 4);
+  assert.ok(ids.every((id) => id !== "rs_anon"));
 }
 
 async function testClientTransformRequestOut() {
@@ -2138,6 +2231,7 @@ async function main() {
   await testUnsupportedState();
   await testResponseFormatConversion();
   await testReasoningAndTools();
+  await testClientIncludeAndStorePassThrough();
   await testCustomHostedToolConvertsToFunction();
   await testJsonOutput();
   await testCustomToolSseLifecycle();
@@ -2170,6 +2264,7 @@ async function main() {
   await testPoisonedReasoningItemIdIsNotReplayedAsEncryptedContent();
   await testChatReasoningContentHistoryBecomesResponsesReasoning();
   await testStreamedThinkingLandsOnCompletedReasoningItem();
+  await testDuplicateRsAnonReasoningIdsAreRewritten();
   await testClientTransformRequestOut();
   await testMaxOutputTokensClampedToApiFloor();
   console.log("openai.inbound-responses: PASS");

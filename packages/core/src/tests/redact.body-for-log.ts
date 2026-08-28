@@ -69,9 +69,25 @@ function defaultCapApplies() {
   assert.ok(out.includes("[truncated 10 bytes]"));
 }
 
+function redactsEncryptedContent() {
+  const body = JSON.stringify({
+    type: "response.output_item.done",
+    item: {
+      type: "reasoning",
+      encrypted_content: "gAAAAABlongcipherblobthatmustnotblowuplogs",
+      summary: [{ type: "summary_text", text: "Checking gitignore" }],
+    },
+  });
+  const out = sanitizeBodyForLog(body);
+  assert.ok(!out.includes("gAAAAABlongcipher"));
+  assert.ok(out.includes("[redacted-encrypted]"));
+  assert.ok(out.includes("Checking gitignore"));
+}
+
 function main() {
   preservesContent();
   redactsSecrets();
+  redactsEncryptedContent();
   truncatesWithMarker();
   defaultCapApplies();
 

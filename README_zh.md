@@ -72,7 +72,7 @@ docker run -d --name ccr \
 
 - **`PROXY_URL`**（可选）：可以为 API 请求设置代理，例如：`"PROXY_URL": "http://127.0.0.1:7890"`。回环目标（`localhost`、`127.0.0.1`、`::1`）始终绕过代理。`NO_PROXY` / `no_proxy` 环境变量中列出的主机也会绕过代理（逗号分隔的主机、`.domain` / `*.domain`、CIDR、可选的 `:port`）。
 - **`LOG`**（可选）：设为 `true` 可启用日志。设为 `false` 时不创建日志文件。默认值为 `true`。
-- **`LOG_LEVEL`**（可选）：设置日志级别。可用选项：`"fatal"`、`"error"`、`"warn"`、`"info"`、`"debug"`、`"trace"`。默认值为 `"debug"`。
+- **`LOG_LEVEL`**（可选）：设置日志级别。可用选项：`"fatal"`、`"error"`、`"warn"`、`"info"`、`"debug"`、`"trace"`。默认值为 `"info"`。
 - **日志系统**：Claude Code Router 使用两套独立的日志系统：
   - **服务器级日志**：使用 pino 将 HTTP 请求、API 调用和服务器事件记录在 `~/.claude-code-router/logs/` 目录下，文件名形如 `ccr-*.log`
   - **应用级日志**：路由决策和业务逻辑事件记录在 `~/.claude-code-router/claude-code-router.log`

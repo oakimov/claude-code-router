@@ -122,7 +122,7 @@ Override configuration through environment variables:
 | `HOST` | Listen address | `127.0.0.1` |
 | `PORT` | Listen port | `3456` |
 | `APIKEY` | API key | - |
-| `LOG_LEVEL` | Log level | `debug` |
+| `LOG_LEVEL` | Log level | `info` |
 | `LOG` | Enable logging | `true` |
 
 ## Production Recommendations

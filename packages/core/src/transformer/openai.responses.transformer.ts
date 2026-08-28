@@ -21,6 +21,7 @@ import {
   createCallIdMap,
   createResponsesStreamState,
   finalizeResponsesStream,
+  normalizeResponsesInclude,
   recordReasoningSummaryDelta,
   responsesFailedEvent,
   responsesReasoningItemFromThinking,
@@ -31,6 +32,7 @@ import {
   thinkingFromUnifiedAssistant,
   unifiedChunkToResponsesEvents,
   unifiedResponseToResponses,
+  uniquifyReasoningItemIds,
   type ResponsesCallIdMap,
 } from "../utils/openai.responses.util";
 
@@ -534,6 +536,7 @@ export class OpenAIResponsesTransformer implements Transformer {
     });
 
     (request as any).input = input;
+    uniquifyReasoningItemIds(input);
     delete (request as any).messages;
 
     if (Array.isArray(request.tools)) {
@@ -604,6 +607,20 @@ export class OpenAIResponsesTransformer implements Transformer {
 
     if (request.parallel_tool_calls !== undefined) {
       (request as any).parallel_tool_calls = request.parallel_tool_calls;
+    }
+
+    // Client-driven Responses hints: re-emit only what inbound preserved.
+    // Chat/Anthropic→Responses leave these unset (no synthesis).
+    const include = normalizeResponsesInclude(request.include);
+    if (include) {
+      request.include = include;
+    } else {
+      delete (request as any).include;
+    }
+    if (request.store === false) {
+      request.store = false;
+    } else {
+      delete (request as any).store;
     }
 
     return request;
@@ -918,6 +935,22 @@ export class OpenAIResponsesTransformer implements Transformer {
     data: ResponsesStreamEvent,
     toolIndexFor: (data: ResponsesStreamEvent) => number
   ): any | null {
+    if (data.type === "response.created") {
+      return {
+        id: data.response?.id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model,
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant" },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
     if (data.type === "response.output_text.delta") {
       return {
         id: data.item_id || "chatcmpl-" + Date.now(),
@@ -1107,6 +1140,9 @@ export class OpenAIResponsesTransformer implements Transformer {
             delta: {
               thinking: {
                 content: data.delta || "",
+                ...(typeof data.item_id === "string" && data.item_id
+                  ? { id: data.item_id }
+                  : {}),
               },
             },
             finish_reason: null,

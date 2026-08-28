@@ -25,7 +25,7 @@ import {
   listPresets,
 } from "@caeliq/ccr-shared";
 import { createStream } from 'rotating-file-stream';
-import { sessionUsageCache, setHealthReporter, SSEParserTransform, SSESerializerTransform, rewriteStream } from "@caeliq/llms";
+import { sessionUsageCache, setHealthReporter, SSEParserTransform, SSESerializerTransform, rewriteStream, closeProxyDispatchers, closeTokenCountWorkers } from "@caeliq/llms";
 import JSON5 from "json5";
 import { IAgent, ITool } from "./agents/type";
 import agentsManager from "./agents";
@@ -100,6 +100,78 @@ async function registerPluginsFromConfig(serverInstance: any, config: any): Prom
   await pluginManager.enablePlugins(serverInstance);
 }
 
+/**
+ * Background consumer for Anthropic message_delta usage frames.
+ * Uses one incremental TextDecoder and buffers incomplete SSE events so a
+ * split `event:` / `data:` pair across chunks is still recognized.
+ */
+async function consumeMessageDeltaUsage(
+  stream: ReadableStream<Uint8Array>,
+  sessionId: string,
+  heartbeat: HealthHeartbeat,
+  log: { debug: (...args: any[]) => void; error: (...args: any[]) => void }
+): Promise<void> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const handleEventBlock = (block: string) => {
+    let eventName = "";
+    let dataLine = "";
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLine = line.slice(5).trimStart();
+      }
+    }
+    if (eventName !== "message_delta" || !dataLine) return;
+    try {
+      const message = JSON.parse(dataLine);
+      if (message?.usage) {
+        sessionUsageCache.put(sessionId, message.usage);
+        heartbeat.recordUsage(sessionId, message.usage);
+      }
+    } catch {
+      // Ignore malformed usage frames.
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder
+        .decode(value, { stream: true })
+        .replace(/\r\n/g, "\n")
+        .replace(/\r/g, "\n");
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const block = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        if (block.trim()) handleEventBlock(block);
+      }
+    }
+    buffer += decoder.decode().replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    if (buffer.trim()) handleEventBlock(buffer);
+  } catch (readError: any) {
+    if (
+      readError?.name === "AbortError" ||
+      readError?.code === "ERR_STREAM_PREMATURE_CLOSE"
+    ) {
+      log.debug("Background usage stream closed prematurely");
+    } else {
+      log.error("Error in background usage stream reading:", readError);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // already released
+    }
+  }
+}
+
 async function getServer(options: RunOptions = {}) {
   await initializeClaudeConfig();
   await initDir();
@@ -158,7 +230,7 @@ async function getServer(options: RunOptions = {}) {
         config.LOG = true;
       }
       loggerConfig = {
-        level: config.LOG_LEVEL || "debug",
+        level: config.LOG_LEVEL || "info",
         stream: createStream(generator, {
           path: HOME_DIR,
           history: `./logs/${SERVER_LOG_HISTORY_NAME}`,
@@ -187,6 +259,7 @@ async function getServer(options: RunOptions = {}) {
       PORT: servicePort,
       LOG_REQUEST_BODY: config.LOG_REQUEST_BODY,
       LOG_REQUEST_BODY_MAX_BYTES: config.LOG_REQUEST_BODY_MAX_BYTES,
+      LOG_SSE_EVENTS: config.LOG_SSE_EVENTS,
       LOG_FILE: join(
         homedir(),
         ".claude-code-router",
@@ -413,38 +486,47 @@ async function getServer(options: RunOptions = {}) {
           }).pipeThrough(new SSESerializerTransform()))
         }
 
-        const [originalStream, clonedStream] = payload.tee();
-        const read = async (stream: ReadableStream) => {
-          const reader = stream.getReader();
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              // Process the value if needed
-              const dataStr = new TextDecoder().decode(value);
-              if (!dataStr.startsWith("event: message_delta")) {
-                continue;
-              }
-              const str = dataStr.slice(27);
-              try {
-                const message = JSON.parse(str);
-                sessionUsageCache.put(req.sessionId, message.usage);
-                heartbeat.recordUsage(req.sessionId, message.usage);
-              } catch {}
-            }
-          } catch (readError: any) {
-            if (readError.name === 'AbortError' || readError.code === 'ERR_STREAM_PREMATURE_CLOSE') {
-              // Client disconnect / stream teardown — expected, keep quiet.
-              serverInstance.app.log.debug('Background read stream closed prematurely');
-            } else {
-              serverInstance.app.log.error('Error in background stream reading:', readError);
-            }
-          } finally {
-            reader.releaseLock();
-          }
-        }
-        read(clonedStream);
-        return done(null, originalStream)
+        // Nonblocking usage tap: forward bytes to the client immediately and
+        // parse usage on a side branch whose writable has infinite HWM so
+        // tee()-coupled backpressure cannot stall the client stream.
+        const usageTunnel = new TransformStream<Uint8Array, Uint8Array>(
+          undefined,
+          { highWaterMark: Infinity },
+          { highWaterMark: 1 }
+        );
+        const usageWriter = usageTunnel.writable.getWriter();
+        void consumeMessageDeltaUsage(
+          usageTunnel.readable,
+          req.sessionId,
+          heartbeat,
+          serverInstance.app.log
+        );
+
+        let usageAlive = true;
+        const abandonUsage = () => {
+          if (!usageAlive) return;
+          usageAlive = false;
+          void usageWriter.close().catch(() => {});
+        };
+
+        const clientStream = payload.pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+              controller.enqueue(chunk);
+              if (!usageAlive) return;
+              void usageWriter.write(chunk.slice()).catch(() => {
+                abandonUsage();
+              });
+            },
+            flush() {
+              abandonUsage();
+            },
+            cancel() {
+              abandonUsage();
+            },
+          } as Transformer<Uint8Array, Uint8Array>)
+        );
+        return done(null, clientStream)
       }
       if (typeof payload === 'object' && payload !== null) {
         sessionUsageCache.put(req.sessionId, payload.usage);
@@ -466,6 +548,8 @@ async function getServer(options: RunOptions = {}) {
   serverInstance.addHook("onClose", async () => {
     heartbeat.stop();
     logRetention.stop();
+    closeProxyDispatchers();
+    await closeTokenCountWorkers();
   });
 
   // Add global error handlers to prevent the service from crashing
