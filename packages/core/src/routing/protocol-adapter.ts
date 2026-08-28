@@ -121,11 +121,14 @@ function chatBodyAsUnified(body: any): UnifiedChatRequest {
 /**
  * Provider transformers are allowed to mutate their input. Every primary and
  * fallback attempt therefore needs an independent copy of the normalized body.
- * Node 22 always provides structuredClone; JSON fallback is removed to avoid
- * the double-parse cost on large longContext bodies (~800KB @ 200k tokens).
+ * Prefers structuredClone when available; falls back to JSON round-trip for
+ * environments without it.
  */
 export function cloneProtocolBody<T>(value: T): T {
-  return structuredClone(value);
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 const PASSTHROUGH_HEADER_DENYLIST = new Set([

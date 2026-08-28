@@ -44,6 +44,30 @@ Gemini Nano can enter deterministic loops when emitting highly structured conten
 - **Measurement**: guidance + tail reminder is 2,002 chars ≈ **501 tokens**. Real Claude Code turns on a live `glm-5.2` session measured 39.8k–53.5k prompt tokens, so the cost is **~1%**, and it sits at the head of the prompt where Cursor's cache absorbs it (one turn reported 583,872 of 651,111 raw prompt tokens as cached).
 - **Why not adaptive**: escalating only after a violation means shipping weaker defaults and waiting for a user-visible failure to trigger the fix, in exchange for ~1%.
 
+## 🗂 Core: prompt-cache policy
+
+### 1. Declarative cache injection points
+- [ ] Lift breakpoint / `prompt_cache_key` placement into a single config-driven policy (LiteLLM-style `cache_control_injection_points`), then have provider transformers only transport markers.
+- **Why**: Today OpenAI, Anthropic, OpenRouter, OpenCode, Vercel, etc. each invent placement in their transformers. Correct for Zen today (98–99%+ hits), but hard to audit and easy for providers to diverge.
+- **Not a latency/hit-rate win** for the current OpenCode → Zen path; do this when multi-provider cache consistency becomes painful.
+- **Touch**: `packages/core/src/utils/cacheControl.ts`, `openai.util.ts`, provider transformers that call `applyRawAnthropicPromptCaching` / `injectPromptCaching` / OpenRouter Gemini content markers.
+- **Reference**: LiteLLM `integrations/anthropic_cache_control_hook.py`; pipeline notes in the CCR vs LiteLLM comparison.
+
+## 🔀 Core: same-protocol wire keep (request side)
+
+**Goal**: when client protocol matches a protocol owner in the compiled provider plan, keep client wire bytes and still run middleware (`opencode-headers`, `claude-auth`, `codex`, `xai-auth`, …). Response side already does this via `isExactProtocolResponsePlan`. Request side still converts through Unified for multi-transformer chains because `protocolAwareBypass` requires `use.length === 1`.
+
+**Not a multi-second Zen TTFT win** (response path already fixed). Value is prefix fidelity + one rule instead of bypass / `passthrough` / exact-response / native-wire.
+
+### Recommended steps
+- [ ] Add `isExactProtocolRequestPlan` (mirror `isExactProtocolResponsePlan` in `transformer-plan.ts`): true when compiled plan contains the client protocol owner (`Anthropic` / `OpenAI` / `openai-responses`).
+- [ ] In `handleTransformerEndpoint`, select `clientWireBody` whenever exact-protocol request applies (not only `protocolAwareBypass` / `passthrough` / `anthropicNativeWire`). Keep Unified normalize for routing only.
+- [ ] In `processRequestTransformers` request loop, skip the protocol owner's `transformRequestIn` the same way response skips owner `transformResponseOut`; still run every non-owner transformer.
+- [ ] Audit middleware that assumes Chat `messages` vs Responses `input` / Anthropic `messages` (`opencode-headers` `body.messages` branches, cache injectors, reasoning) so wire-keep does not break header/session/cache paths.
+- [ ] Prefer retiring reliance on manual `passthrough: true` for same-protocol chains once the automatic rule covers them; document the single rule in `tasks/lessons.md`.
+- [ ] Tests: Responses + `opencode-headers`; Anthropic + `claude-auth`; Responses + `xai-auth`; Chat + middleware if configured; extend `cross-protocol.cache-prefix` / transformer-plan coverage so skip-convert cannot silently break prefix intactness.
+- **Touch**: `packages/core/src/utils/transformer-plan.ts`, `api/routes.ts`, `routing/protocol-adapter.ts` / `inbound-pipeline.ts`, middleware transformers above, hermetic tests under `packages/core/src/tests/`.
+
 ## 🔒 Temporary security overrides (`pnpm-workspace.yaml`)
 
 These pins either clear product high-severity advisories or consolidate compatible transitive versions that cannot be fixed by upgrading our direct deps alone. Remove each override once upstream ships a clean, deduplicated tree.

@@ -266,6 +266,144 @@ async function testSequentialToolTurnsDoNotMerge() {
   assert.equal(assistants[1]!.tool_calls.length, 1);
 }
 
+function assertSingleToolTurn(
+  unified: { messages: any[] },
+  content: string,
+  callIds: string[],
+  outputs: string[]
+) {
+  const assistants = unified.messages.filter(
+    (m: any) => m.role === "assistant"
+  );
+  assert.equal(
+    assistants.length,
+    1,
+    "same-turn text + tools must be one assistant"
+  );
+  const assistant = assistants[0]!;
+  assert.equal(assistant.content, content);
+  assert.ok(assistant.tool_calls);
+  assert.equal(assistant.tool_calls.length, callIds.length);
+  assert.deepEqual(
+    assistant.tool_calls.map((t: any) => t.id),
+    callIds
+  );
+  const tools = unified.messages.filter((m: any) => m.role === "tool");
+  assert.equal(tools.length, outputs.length);
+  assert.deepEqual(
+    tools.map((t: any) => t.tool_call_id),
+    callIds
+  );
+  assert.deepEqual(
+    tools.map((t: any) => t.content),
+    outputs
+  );
+}
+
+async function assertWireKeepsToolPair(
+  unified: any,
+  callIds: string[]
+) {
+  const tf = new OpenAIResponsesTransformer();
+  const out = await tf.transformRequestIn(unified, {}, {});
+  const input = (out as any).input as any[];
+  const calls = input.filter((item) => item.type === "function_call");
+  const outputs = input.filter((item) => item.type === "function_call_output");
+  assert.equal(calls.length, callIds.length);
+  assert.equal(outputs.length, callIds.length);
+  assert.deepEqual(
+    calls.map((item) => item.call_id),
+    callIds
+  );
+  assert.deepEqual(
+    outputs.map((item) => item.call_id),
+    callIds
+  );
+}
+
+/**
+ * Some clients (and Chat→Responses encoders) emit function_call before the
+ * same-turn assistant text. That is valid Responses; items pair by call_id.
+ * Inbound must still produce one Chat assistant so validateOpenAIToolCalls
+ * does not strip the tool history.
+ */
+async function testFunctionCallThenAssistantTextCoalesce() {
+  const unified = responsesRequestToUnified({
+    model: "m",
+    input: [
+      {
+        type: "function_call",
+        call_id: "call_1",
+        name: "Read",
+        arguments: '{"path":"TODO.md"}',
+      },
+      { role: "assistant", content: "I'll read TODO.md" },
+      {
+        type: "function_call_output",
+        call_id: "call_1",
+        output: "# TODO",
+      },
+    ],
+  });
+  assertSingleToolTurn(unified, "I'll read TODO.md", ["call_1"], ["# TODO"]);
+  await assertWireKeepsToolPair(unified, ["call_1"]);
+}
+
+async function testAssistantTextThenFunctionCallCoalesce() {
+  const unified = responsesRequestToUnified({
+    model: "m",
+    input: [
+      { role: "assistant", content: "I'll read TODO.md" },
+      {
+        type: "function_call",
+        call_id: "call_1",
+        name: "Read",
+        arguments: '{"path":"TODO.md"}',
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_1",
+        output: "# TODO",
+      },
+    ],
+  });
+  assertSingleToolTurn(unified, "I'll read TODO.md", ["call_1"], ["# TODO"]);
+  await assertWireKeepsToolPair(unified, ["call_1"]);
+}
+
+async function testAssistantTextThenParallelFunctionCallsCoalesce() {
+  const unified = responsesRequestToUnified({
+    model: "m",
+    input: [
+      { role: "assistant", content: "checking" },
+      {
+        type: "function_call",
+        call_id: "call_A",
+        name: "Read",
+        arguments: "{}",
+      },
+      {
+        type: "function_call",
+        call_id: "call_B",
+        name: "Grep",
+        arguments: "{}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_A",
+        output: "a",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_B",
+        output: "b",
+      },
+    ],
+  });
+  assertSingleToolTurn(unified, "checking", ["call_A", "call_B"], ["a", "b"]);
+  await assertWireKeepsToolPair(unified, ["call_A", "call_B"]);
+}
+
 async function testUnsupportedState() {
   await expectReject(
     () =>
@@ -2228,6 +2366,9 @@ async function main() {
   await testParallelFunctionCallsCoalesce();
   await testParallelCustomToolCallsCoalesce();
   await testSequentialToolTurnsDoNotMerge();
+  await testFunctionCallThenAssistantTextCoalesce();
+  await testAssistantTextThenFunctionCallCoalesce();
+  await testAssistantTextThenParallelFunctionCallsCoalesce();
   await testUnsupportedState();
   await testResponseFormatConversion();
   await testReasoningAndTools();

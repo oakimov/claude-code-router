@@ -343,8 +343,10 @@ function rejectUnsupportedResponsesState(body: any): void {
 
 /**
  * Chat Completions (and DeepSeek) require one assistant message carrying every
- * parallel tool_call. Responses emits consecutive function_call items, so merge
- * into the trailing tool-only assistant when present.
+ * parallel tool_call plus any same-turn text. Responses emits those as separate
+ * items (text then function_call, or the reverse), so fold both onto the
+ * trailing assistant. A tool result ends the turn; the next function_call
+ * starts a new assistant.
  */
 function assistantContentIsEmpty(message: any): boolean {
   return (
@@ -356,21 +358,33 @@ function assistantContentIsEmpty(message: any): boolean {
 
 function appendAssistantToolCall(messages: any[], toolCall: any): void {
   const last = messages[messages.length - 1];
-  if (last && last.role === "assistant" && assistantContentIsEmpty(last)) {
-    if (Array.isArray(last.tool_calls) && last.tool_calls.length > 0) {
+  if (last && last.role === "assistant") {
+    if (Array.isArray(last.tool_calls)) {
       last.tool_calls.push(toolCall);
-      return;
-    }
-    if (last.thinking && !last.tool_calls) {
+    } else {
       last.tool_calls = [toolCall];
-      return;
     }
+    return;
   }
   messages.push({
     role: "assistant",
     content: null,
     tool_calls: [toolCall],
   });
+}
+
+function appendAssistantContent(messages: any[], content: any): boolean {
+  const last = messages[messages.length - 1];
+  if (
+    last?.role === "assistant" &&
+    Array.isArray(last.tool_calls) &&
+    last.tool_calls.length > 0 &&
+    assistantContentIsEmpty(last)
+  ) {
+    last.content = content;
+    return true;
+  }
+  return false;
 }
 
 function reasoningSummaryText(item: any): string {
@@ -867,17 +881,26 @@ function appendInputItem(
         "invalid_request_error"
       );
     }
+    const content = flattenResponsesContent(item.content);
+    if (role === "assistant" && appendAssistantContent(messages, content)) {
+      return;
+    }
     messages.push({
       role,
-      content: flattenResponsesContent(item.content),
+      content,
     });
     return;
   }
 
   if (item.type === "input_text" || item.type === "output_text") {
+    const content = String(item.text ?? "");
+    const role = item.type === "output_text" ? "assistant" : "user";
+    if (role === "assistant" && appendAssistantContent(messages, content)) {
+      return;
+    }
     messages.push({
-      role: item.type === "output_text" ? "assistant" : "user",
-      content: String(item.text ?? ""),
+      role,
+      content,
     });
     return;
   }
