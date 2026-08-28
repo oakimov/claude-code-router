@@ -43,6 +43,51 @@ const whoamiRequests = new Map<string, Promise<PatAuth>>();
 const CODEX_CLI_VERSION = "0.145.0";
 const CODEX_ORIGINATOR = "codex_cli_rs";
 
+function isCodexSystemRole(role: unknown): boolean {
+  return role === "system" || role === "developer";
+}
+
+/** Extract plain text from a Unified system/developer message for `instructions`. */
+function textFromSystemContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) {
+    return content == null ? "" : String(content);
+  }
+  return content
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object" && "text" in item) {
+        return String((item as { text: unknown }).text ?? "");
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * Codex rejects `role: "system"|"developer"` in Responses `input` with
+ * `{"detail":"System messages are not allowed"}`. Fold every system-like
+ * message (and any pre-set instructions) into the top-level `instructions`
+ * string in source order so mid-session model switches and multi-block
+ * Claude Code prompts keep their text.
+ */
+function foldSystemMessagesIntoInstructions(
+  request: UnifiedChatRequest
+): void {
+  const parts: string[] = [];
+  const existing = (request as any).instructions;
+  if (typeof existing === "string" && existing) {
+    parts.push(existing);
+  }
+  for (const msg of request.messages || []) {
+    if (!isCodexSystemRole(msg.role)) continue;
+    const text = textFromSystemContent(msg.content);
+    if (text) parts.push(text);
+  }
+  (request as any).instructions = parts.join("\n\n");
+}
+
 interface WhoamiResponse {
   chatgpt_account_id?: string;
   chatgpt_account_is_fedramp?: boolean;
@@ -453,58 +498,10 @@ export class CodexTransformer implements Transformer {
     // tool-role message only carries tool_call_id, not the tool name.
     const customToolCallIds = new Set<string>();
 
-    const systemMessages = request.messages.filter(
-      (msg) => msg.role === "system"
-    );
-    if (systemMessages.length > 0) {
-      const firstSystem = systemMessages[0];
-      let instructionsText: string;
-      if (Array.isArray(firstSystem.content)) {
-        instructionsText = firstSystem.content
-          .map((item) => {
-            if (typeof item === "string") return item;
-            if (item && typeof item === "object" && "text" in item)
-              return (item as { text: string }).text;
-            return "";
-          })
-          .filter(Boolean)
-          .join("\n");
-      } else {
-        instructionsText = firstSystem.content as string;
-      }
-      if (instructionsText) {
-        (request as any).instructions = instructionsText;
-      }
-    }
-    for (const extraSystem of systemMessages.slice(1)) {
-      const text = Array.isArray(extraSystem.content)
-        ? extraSystem.content
-            .map((item: any) =>
-              typeof item === "string"
-                ? item
-                : item && typeof item === "object" && "text" in item
-                  ? (item as { text: string }).text
-                  : ""
-            )
-            .filter(Boolean)
-            .join("\n")
-        : String(extraSystem.content || "");
-      if (text) {
-        input.push({
-          type: "message",
-          role: "system",
-          content: [{ type: "input_text", text }],
-        });
-      }
-    }
-
-    // Codex API requires instructions — provide a default if none set
-    if (!(request as any).instructions) {
-      (request as any).instructions = "";
-    }
+    foldSystemMessagesIntoInstructions(request);
 
     request.messages.forEach((message) => {
-      if (message.role === "system") return;
+      if (isCodexSystemRole(message.role)) return;
 
       if (Array.isArray(message.content)) {
         const convertedContent = message.content

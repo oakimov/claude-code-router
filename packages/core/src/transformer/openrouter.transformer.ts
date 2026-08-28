@@ -17,7 +17,152 @@ import {
   extractReasoningText,
   cleanReasoningFields,
 } from "../utils/thinking";
+import { HeaderRecord } from "../utils/headers";
+import { readHeaderValue } from "../utils/anthropic-client-policy";
+import {
+  buildSynthesizedIdentityHeaders,
+  isClaudeCodeClient,
+} from "./claude-auth.transformer";
 import { v4 as uuidv4 } from "uuid";
+
+/** Claude Code identity headers forwarded verbatim when the client is genuine CLI. */
+const CLAUDE_CODE_IDENTITY_HEADER_NAMES = [
+  "user-agent",
+  "x-app",
+  "x-claude-code-session-id",
+  "anthropic-dangerous-direct-browser-access",
+  "x-client-request-id",
+  "x-stainless-arch",
+  "x-stainless-lang",
+  "x-stainless-os",
+  "x-stainless-package-version",
+  "x-stainless-retry-count",
+  "x-stainless-runtime",
+  "x-stainless-runtime-version",
+  "x-stainless-timeout",
+] as const;
+
+const DEFAULT_OPENROUTER_HTTP_REFERER =
+  "https://github.com/caeliq/claude-code-router";
+const DEFAULT_OPENROUTER_TITLE = "Claude Code Router";
+const DEFAULT_OPENROUTER_CATEGORIES = "cli-agent";
+
+/** Option keys that belong on the outbound HTTP request, not the JSON body. */
+const OPENROUTER_HEADER_OPTION_KEYS = new Set([
+  "http-referer",
+  "HTTP-Referer",
+  "referer",
+  "x-title",
+  "X-Title",
+  "x-openrouter-title",
+  "X-OpenRouter-Title",
+  "x-openrouter-categories",
+  "X-OpenRouter-Categories",
+  "user-agent",
+  "User-Agent",
+]);
+
+function pickOption(
+  options: TransformerOptions | undefined,
+  ...keys: string[]
+): string | undefined {
+  if (!options) return undefined;
+  for (const key of keys) {
+    const value = options[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function bodyOptionsFrom(
+  options: TransformerOptions | undefined
+): Record<string, unknown> {
+  if (!options) return {};
+  const body: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(options)) {
+    if (OPENROUTER_HEADER_OPTION_KEYS.has(key)) continue;
+    body[key] = value;
+  }
+  return body;
+}
+
+/**
+ * OpenRouter app attribution headers. Some routed upstreams also require a
+ * Claude Code–shaped User-Agent; attribution alone is not enough for those.
+ * @see https://openrouter.ai/docs/app-attribution
+ */
+export function buildOpenRouterAttributionHeaders(
+  options?: TransformerOptions
+): HeaderRecord {
+  const httpReferer =
+    pickOption(options, "HTTP-Referer", "http-referer", "referer") ||
+    process.env.OPENROUTER_HTTP_REFERER?.trim() ||
+    DEFAULT_OPENROUTER_HTTP_REFERER;
+  const title =
+    pickOption(
+      options,
+      "X-OpenRouter-Title",
+      "x-openrouter-title",
+      "X-Title",
+      "x-title"
+    ) ||
+    process.env.OPENROUTER_APP_TITLE?.trim() ||
+    DEFAULT_OPENROUTER_TITLE;
+  const categories =
+    pickOption(
+      options,
+      "X-OpenRouter-Categories",
+      "x-openrouter-categories"
+    ) ||
+    process.env.OPENROUTER_APP_CATEGORIES?.trim() ||
+    DEFAULT_OPENROUTER_CATEGORIES;
+
+  return {
+    "HTTP-Referer": httpReferer,
+    "X-Title": title,
+    "X-OpenRouter-Title": title,
+    "X-OpenRouter-Categories": categories,
+  };
+}
+
+/**
+ * Claude Code CLI identity headers. Prefer the caller's genuine CLI headers;
+ * otherwise synthesize the same profile claude-auth uses for non-CLI clients.
+ * Several OpenRouter upstreams reject requests without a claude-cli User-Agent.
+ */
+export function buildOpenRouterClaudeIdentityHeaders(
+  clientHeaders?: Record<string, unknown>,
+  options?: TransformerOptions
+): HeaderRecord {
+  const overrideUa = pickOption(options, "User-Agent", "user-agent");
+  const clientUa = readHeaderValue(clientHeaders, "user-agent");
+
+  let identity: HeaderRecord;
+  if (isClaudeCodeClient(clientUa)) {
+    identity = {};
+    for (const name of CLAUDE_CODE_IDENTITY_HEADER_NAMES) {
+      const value = readHeaderValue(clientHeaders, name);
+      if (value) identity[name] = value;
+    }
+  } else {
+    identity = buildSynthesizedIdentityHeaders();
+  }
+
+  if (overrideUa) {
+    identity["User-Agent"] = overrideUa;
+  }
+  return identity;
+}
+
+export function buildOpenRouterOutboundHeaders(
+  clientHeaders?: Record<string, unknown>,
+  options?: TransformerOptions
+): HeaderRecord {
+  return {
+    ...buildOpenRouterClaudeIdentityHeaders(clientHeaders, options),
+    ...buildOpenRouterAttributionHeaders(options),
+  };
+}
 
 export class OpenrouterTransformer implements Transformer {
   static TransformerName = "openrouter";
@@ -29,7 +174,7 @@ export class OpenrouterTransformer implements Transformer {
     request: UnifiedChatRequest,
     provider?: any,
     context?: any
-  ): Promise<UnifiedChatRequest> {
+  ): Promise<Record<string, any>> {
     const cacheKey = deriveCacheSessionKey(context, request);
 
     const normalizedModel = (request.model || "").toLowerCase();
@@ -88,12 +233,23 @@ export class OpenrouterTransformer implements Transformer {
         }
       });
     }
-    Object.assign(request, this.options || {});
+
+    // Body-only options (e.g. OpenRouter `provider` routing). Header options
+    // are applied on config.headers below so they are not leaked into JSON.
+    Object.assign(request, bodyOptionsFrom(this.options));
     if (cacheKey) {
       (request as any).session_id = cacheKey;
       (request as any).prompt_cache_key = cacheKey;
     }
-    return request;
+
+    const clientHeaders =
+      (context?.req?.headers as Record<string, unknown> | undefined) || {};
+    const headers = buildOpenRouterOutboundHeaders(clientHeaders, this.options);
+
+    return {
+      body: request,
+      config: { headers },
+    };
   }
 
   async transformResponseOut(response: Response): Promise<Response> {

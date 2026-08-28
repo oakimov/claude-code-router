@@ -255,26 +255,30 @@ async function testChatCompatAndOpenRouter() {
   assert.equal(assistant.thinking, undefined);
   assert.equal(assistant.reasoning_content, PLAN);
 
-  const openrouter = await new OpenrouterTransformer().transformRequestIn(
-    {
-      ...(await inboundConversation()),
-      model: "google/gemma-4-26b-a4b-it:free",
-    } as any,
-    {},
-    sessionCtx()
-  );
+  const openrouter = (
+    await new OpenrouterTransformer().transformRequestIn(
+      {
+        ...(await inboundConversation()),
+        model: "google/gemma-4-26b-a4b-it:free",
+      } as any,
+      {},
+      sessionCtx()
+    )
+  ).body;
   assert.ok(String((openrouter as any).session_id).startsWith("ccr_"));
   assert.ok(String((openrouter as any).prompt_cache_key).startsWith("ccr_"));
   assert.equal(json(openrouter).includes("cache_control"), false);
 
-  const openrouterClaude = await new OpenrouterTransformer().transformRequestIn(
-    {
-      ...(await inboundConversation()),
-      model: "anthropic/claude-sonnet-4-6",
-    } as any,
-    {},
-    sessionCtx()
-  );
+  const openrouterClaude = (
+    await new OpenrouterTransformer().transformRequestIn(
+      {
+        ...(await inboundConversation()),
+        model: "anthropic/claude-sonnet-4-6",
+      } as any,
+      {},
+      sessionCtx()
+    )
+  ).body;
   assert.ok(
     hasEphemeral(openrouterClaude),
     "OpenRouter Claude keeps Anthropic-format cache_control"

@@ -301,11 +301,13 @@ async function testCodexRoundTrip() {
 }
 
 async function testGatewayAndRequestLevelPaths() {
-  const openrouter = (await new OpenrouterTransformer().transformRequestIn(
-    request("anthropic/claude-sonnet-4-6"),
-    {},
-    { req: { sessionId: "openrouter-session" } }
-  )) as any;
+  const openrouter = (
+    await new OpenrouterTransformer().transformRequestIn(
+      request("anthropic/claude-sonnet-4-6"),
+      {},
+      { req: { sessionId: "openrouter-session" } }
+    )
+  ).body as any;
   assert.ok(openrouter.session_id.startsWith("ccr_"));
   assert.deepEqual(openrouter.cache_control, { type: "ephemeral" });
 

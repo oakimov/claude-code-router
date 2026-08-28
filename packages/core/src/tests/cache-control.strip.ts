@@ -62,11 +62,13 @@ async function testOpenrouterAddsNativeSessionAndCleansOpenAIFields() {
     tools: [toolWithCache()],
   } as unknown as UnifiedChatRequest;
 
-  const out = await transformer.transformRequestIn(
-    request,
-    {},
-    { req: { sessionId: "session-123" } }
-  );
+  const out = (
+    await transformer.transformRequestIn(
+      request,
+      {},
+      { req: { sessionId: "session-123" } }
+    )
+  ).body;
   assert.ok((out as any).session_id?.startsWith("ccr_"));
   assert.ok((out as any).prompt_cache_key?.startsWith("ccr_"));
   assert.equal((out.tools?.[0] as any).cache_control, undefined);
@@ -80,7 +82,7 @@ async function testOpenrouterKeepsToolCacheControlForClaude() {
     tools: [toolWithCache()],
   } as unknown as UnifiedChatRequest;
 
-  const out = await transformer.transformRequestIn(request);
+  const out = (await transformer.transformRequestIn(request)).body;
   assert.deepEqual((out.tools?.[0] as any).cache_control, { type: "ephemeral" });
   assert.deepEqual((out as any).cache_control, { type: "ephemeral" });
 }
