@@ -464,9 +464,14 @@ export class OpencodeHeadersTransformer implements Transformer {
     };
   }
 
-  private ensurePromptCacheKey(body: any, context: any): any {
-    if (!body || typeof body !== "object" || !Array.isArray(body.messages)) return body;
+    private ensurePromptCacheKey(body: any, context: any): any {
+    if (!body || typeof body !== "object") return body;
     if ((body as any).prompt_cache_key) return body;
+    // Chat uses ``messages``; Responses uses ``input``. Skip inventing a key
+    // when neither is present.
+    if (!Array.isArray(body.messages) && !Array.isArray(body.input)) {
+      return body;
+    }
     const key = deriveCacheSessionKey(context, body);
     if (!key) return body;
     return { ...body, prompt_cache_key: key };
