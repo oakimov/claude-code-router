@@ -1,6 +1,6 @@
 {
   "name": "@caeliq/claude-code-router",
-  "version": "2.1.7",
+  "version": "2.1.8",
   "description": "CLI for Claude Code Router",
   "bin": {
     "ccr": "dist/cli.js"
