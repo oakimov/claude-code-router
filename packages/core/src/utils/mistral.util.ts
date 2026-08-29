@@ -7,6 +7,7 @@ import {
 } from "./thinking";
 import { normalizeToolParameters } from "./schema";
 import { deriveCacheSessionKey } from "./cacheControl";
+import { extractToolMediaForStringToolApis } from "./tool-content";
 
 function thinkingTextFromPart(part: any): string {
   if (!part || part.type !== "thinking") return "";
@@ -152,7 +153,11 @@ export function buildRequestBody(
 
   // 1. Process messages
   if (Array.isArray(req.messages)) {
-    req.messages = req.messages.map((msg) => transformMessage(msg));
+    // Mistral tool messages are string-oriented; extract multimodal tool media
+    // into a follow-up user turn (same pattern as Chat Completions).
+    req.messages = extractToolMediaForStringToolApis(req.messages).map((msg) =>
+      transformMessage(msg)
+    );
   }
 
   // 2. Defaults

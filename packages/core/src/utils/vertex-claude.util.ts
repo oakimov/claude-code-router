@@ -8,6 +8,7 @@ import {
   normalizeTool
 } from "./google.util";
 import { applyRawAnthropicPromptCaching } from "./cacheControl";
+import { unifiedToolContentToAnthropic } from "./tool-content";
 
 // Vertex Claude message interface
 interface ClaudeMessage {
@@ -125,62 +126,61 @@ export function buildRequestBody(
     const content: any[] = [];
 
     if (message.role === "tool") {
-      let resultText = message.content;
-      if (Array.isArray(resultText)) {
-        resultText = resultText
-          .filter((part: any) => part.type === "text")
-          .map((part: any) => part.text)
-          .join("\n");
-      } else if (typeof resultText === "object" && resultText !== null) {
-        resultText = JSON.stringify(resultText);
-      }
-      content.push({
+      const toolResult = {
         type: "tool_result",
         tool_use_id: message.tool_call_id,
-        content: resultText as string,
+        content: unifiedToolContentToAnthropic(message.content),
+        ...(message.cache_control
+          ? { cache_control: message.cache_control }
+          : {}),
+      };
+      // Anthropic / Vertex Claude require tool_result inside a user turn.
+      const last = rawMessages[rawMessages.length - 1];
+      if (last?.role === "user" && Array.isArray(last.content)) {
+        last.content.push(toolResult);
+      } else {
+        rawMessages.push({ role: "user", content: [toolResult] });
+      }
+      continue;
+    }
+
+    if (typeof message.content === "string") {
+      content.push({
+        type: "text",
+        text: message.content,
         ...(message.cache_control
           ? { cache_control: message.cache_control }
           : {}),
       });
-    } else {
-      if (typeof message.content === "string") {
-        content.push({
-          type: "text",
-          text: message.content,
-          ...(message.cache_control
-            ? { cache_control: message.cache_control }
-            : {}),
-        });
-      } else if (Array.isArray(message.content)) {
-        // Text parts
-        message.content.forEach((item) => {
-          if (item.type === "text") {
-            content.push({
-              type: "text",
-              text: item.text || "",
-              ...((item as any).cache_control
-                ? { cache_control: (item as any).cache_control }
-                : {}),
-            });
-          }
-        });
-        // Image parts
-        const images = extractImageParts(message.content);
-        images.forEach((img) => {
-          content.push(processImageContent(img, "claude"));
-        });
-      }
-
-      if (message.tool_calls && message.tool_calls.length > 0) {
-        message.tool_calls.forEach(toolCall => {
+    } else if (Array.isArray(message.content)) {
+      // Text parts
+      message.content.forEach((item) => {
+        if (item.type === "text") {
           content.push({
-            type: "tool_use",
-            id: toolCall.id,
-            name: toolCall.function.name,
-            input: JSON.parse(toolCall.function.arguments || "{}"),
+            type: "text",
+            text: item.text || "",
+            ...((item as any).cache_control
+              ? { cache_control: (item as any).cache_control }
+              : {}),
           });
+        }
+      });
+      // Image parts
+      const images = extractImageParts(message.content);
+      images.forEach((img) => {
+        content.push(processImageContent(img, "claude"));
+      });
+    }
+
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      message.tool_calls.forEach((toolCall) => {
+        content.push({
+          type: "tool_use",
+          id: toolCall.id,
+          name: toolCall.function.name,
+          input: JSON.parse(toolCall.function.arguments || "{}"),
         });
-      }
+      });
     }
 
     if (content.length > 0) {

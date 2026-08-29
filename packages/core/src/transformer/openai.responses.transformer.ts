@@ -1198,9 +1198,36 @@ export class OpenAIResponsesTransformer implements Transformer {
       if (typeof content.image_url?.url === "string") {
         imagePayload.image_url = content.image_url.url;
       }
+      // Responses input_image.detail (auto|low|high|original) — preserve when
+      // clients/SDKs set it on Chat-shaped Unified image_url parts.
+      if (
+        typeof content.image_url?.detail === "string" &&
+        content.image_url.detail
+      ) {
+        imagePayload.detail = content.image_url.detail;
+      }
 
       return {
         ...imagePayload,
+        ...openAIContentCacheBreakpoint(content, model),
+      };
+    }
+
+    if (content.type === "file") {
+      const filePayload: Record<string, unknown> = {
+        type: "input_file",
+      };
+      if (typeof content.filename === "string" && content.filename) {
+        filePayload.filename = content.filename;
+      }
+      if (typeof content.file_data === "string" && content.file_data) {
+        filePayload.file_data = content.file_data;
+      }
+      if (typeof content.file_url === "string" && content.file_url) {
+        filePayload.file_url = content.file_url;
+      }
+      return {
+        ...filePayload,
         ...openAIContentCacheBreakpoint(content, model),
       };
     }

@@ -5,6 +5,7 @@ import {
   stripMessagesCacheControl,
   stripToolsCacheControl,
 } from "../utils/cacheControl";
+import { extractToolMediaForStringToolApis } from "../utils/tool-content";
 
 
 /**
@@ -27,8 +28,8 @@ export class CerebrasTransformer implements Transformer {
     // Shallow copy is sufficient – we only strip top-level prompt cache and
     // inject prompt_cache_key; messages/tools are re-assigned via helpers.
     const transformedRequest: any = { ...request };
-    transformedRequest.messages = stripMessagesCacheControl(
-      transformedRequest.messages
+    transformedRequest.messages = extractToolMediaForStringToolApis(
+      stripMessagesCacheControl(transformedRequest.messages)
     );
     transformedRequest.tools = stripToolsCacheControl(transformedRequest.tools);
     const cacheKey = deriveCacheSessionKey(context, request);

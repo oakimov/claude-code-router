@@ -9,6 +9,7 @@ import {
   stripToolsCacheControl,
 } from "../utils/cacheControl";
 import { applyOpenAIChatCaching } from "../utils/openai.util";
+import { extractToolMediaForStringToolApis } from "../utils/tool-content";
 import {
   createReasoningAccumulator,
   accumulateReasoning,
@@ -176,6 +177,15 @@ export class OpenrouterTransformer implements Transformer {
     context?: any
   ): Promise<Record<string, any>> {
     const cacheKey = deriveCacheSessionKey(context, request);
+
+    // OpenRouter is Chat Completions–shaped; pull multimodal tool media into a
+    // follow-up user message before cache / image URL normalisation.
+    if (Array.isArray(request.messages)) {
+      request = {
+        ...request,
+        messages: extractToolMediaForStringToolApis(request.messages),
+      };
+    }
 
     const normalizedModel = (request.model || "").toLowerCase();
     if (normalizedModel.includes("anthropic/") || normalizedModel.includes("claude")) {

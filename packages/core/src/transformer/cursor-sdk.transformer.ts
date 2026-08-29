@@ -14,6 +14,7 @@ import {
   stripMessagesCacheControl,
   stripToolsCacheControl,
 } from "../utils/cacheControl";
+import { extractToolMediaForStringToolApis } from "../utils/tool-content";
 
 export interface CursorSdkTransformerOptions extends TransformerOptions {
   cursorMode?: CursorSdkMode;
@@ -70,7 +71,12 @@ export class CursorSdkTransformer implements Transformer {
 
     const nativeRequest = {
       ...request,
-      messages: stripMessagesCacheControl(request.messages),
+      // Cursor prompt builder flattens tool content to text but pulls images
+      // from user turns — extract multimodal tool media into a follow-up user
+      // message so SDK vision still receives webfetch screenshots, etc.
+      messages: extractToolMediaForStringToolApis(
+        stripMessagesCacheControl(request.messages)
+      ),
       tools: stripToolsCacheControl(request.tools),
     };
     const response = await runCursor(

@@ -5,6 +5,7 @@ import {
   stripMessagesCacheControl,
   stripToolsCacheControl,
 } from "../utils/cacheControl";
+import { extractToolMediaForStringToolApis } from "../utils/tool-content";
 
 export class VercelTransformer implements Transformer {
   static TransformerName = "vercel";
@@ -27,7 +28,9 @@ export class VercelTransformer implements Transformer {
     // gateway-inserted breakpoints or exceed Anthropic's 4-breakpoint cap.
     request = {
       ...request,
-      messages: stripMessagesCacheControl(request.messages),
+      messages: extractToolMediaForStringToolApis(
+        stripMessagesCacheControl(request.messages)
+      ),
       tools: stripToolsCacheControl(request.tools),
     };
 

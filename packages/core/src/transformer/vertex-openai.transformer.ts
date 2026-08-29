@@ -5,6 +5,7 @@ import {
   stripMessagesCacheControl,
   stripToolsCacheControl,
 } from "../utils/cacheControl";
+import { extractToolMediaForStringToolApis } from "../utils/tool-content";
 
 export interface VertexOpenaiOptions extends TransformerOptions {
   client_email?: string;
@@ -61,7 +62,9 @@ export class VertexOpenaiTransformer implements Transformer {
     return {
       body: {
         ...request,
-        messages: stripMessagesCacheControl(request.messages),
+        messages: extractToolMediaForStringToolApis(
+          stripMessagesCacheControl(request.messages)
+        ),
         tools: stripToolsCacheControl(request.tools),
       },
       config: {

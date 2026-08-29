@@ -460,7 +460,23 @@ async function testUnsupportedState() {
         model: "m",
         input: [{ type: "input_file", file_id: "file_1" }],
       }),
-    "unsupported_input_item"
+    "unsupported_file_id"
+  );
+  const withFile = responsesRequestToUnified({
+    model: "m",
+    input: [
+      {
+        type: "input_file",
+        filename: "a.pdf",
+        file_data: "data:application/pdf;base64,AA==",
+      },
+    ],
+  });
+  assert.ok(
+    withFile.messages.some(
+      (m: any) =>
+        Array.isArray(m.content) && m.content.some((p: any) => p.type === "file")
+    )
   );
   await expectReject(
     () =>
@@ -2360,6 +2376,76 @@ async function testMaxOutputTokensClampedToApiFloor() {
   assert.equal((normal as any).max_output_tokens, 1024);
 }
 
+/**
+ * OpenCode / @ai-sdk/openai attach webfetch images as OutputContentList on
+ * function_call_output (input_text + input_image). JSON.stringifying that list
+ * into tool content made Responses outbound emit a string — Zen/Meta then 400
+ * with invalid_parameters. Preserve structured parts through Unified.
+ */
+async function testMultimodalFunctionCallOutputRoundTrip() {
+  const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
+  const unified = responsesRequestToUnified({
+    model: "muse-spark-1.2",
+    input: [
+      {
+        type: "function_call",
+        call_id: "call_vision_1",
+        name: "webfetch",
+        arguments: '{"url":"https://example.com/a.png"}',
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_vision_1",
+        output: [
+          { type: "input_text", text: "Image fetched successfully" },
+          { type: "input_image", image_url: imageUrl, detail: "auto" },
+        ],
+      },
+    ],
+  });
+
+  const tool = unified.messages.find((m: any) => m.role === "tool");
+  assert.ok(tool);
+  assert.ok(Array.isArray(tool.content), "tool content must stay structured");
+  assert.equal(tool.content[0].type, "text");
+  assert.equal(tool.content[0].text, "Image fetched successfully");
+  assert.equal(tool.content[1].type, "image_url");
+  assert.equal(tool.content[1].image_url.url, imageUrl);
+  assert.equal(tool.content[1].image_url.detail, "auto");
+
+  const tf = new OpenAIResponsesTransformer();
+  const out = await tf.transformRequestIn(structuredClone(unified) as any, {}, {});
+  const fco = (out as any).input.find(
+    (item: any) => item.type === "function_call_output"
+  );
+  assert.ok(fco);
+  assert.ok(Array.isArray(fco.output), "outbound output must be content list");
+  assert.deepEqual(fco.output, [
+    { type: "input_text", text: "Image fetched successfully" },
+    { type: "input_image", image_url: imageUrl, detail: "auto" },
+  ]);
+
+  // String tool outputs still round-trip as strings.
+  const textOnly = responsesRequestToUnified({
+    model: "muse-spark-1.2",
+    input: [
+      {
+        type: "function_call",
+        call_id: "call_text_1",
+        name: "Read",
+        arguments: "{}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_text_1",
+        output: "file contents",
+      },
+    ],
+  });
+  const textTool = textOnly.messages.find((m: any) => m.role === "tool");
+  assert.equal(textTool.content, "file contents");
+}
+
 async function main() {
   await testStringAndMessageInput();
   await testFunctionCallRoundTrip();
@@ -2408,6 +2494,7 @@ async function main() {
   await testDuplicateRsAnonReasoningIdsAreRewritten();
   await testClientTransformRequestOut();
   await testMaxOutputTokensClampedToApiFloor();
+  await testMultimodalFunctionCallOutputRoundTrip();
   console.log("openai.inbound-responses: PASS");
 }
 

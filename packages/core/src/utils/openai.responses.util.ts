@@ -750,10 +750,7 @@ function appendInputItem(
     messages.push({
       role: "tool",
       tool_call_id: mapCallId(callIdMap, item.call_id) ?? item.call_id,
-      content:
-        typeof item.output === "string"
-          ? item.output
-          : JSON.stringify(item.output ?? ""),
+      content: functionCallOutputToUnified(item.output),
     });
     return;
   }
@@ -804,10 +801,7 @@ function appendInputItem(
     messages.push({
       role: "tool",
       tool_call_id: mapCallId(callIdMap, item.call_id) ?? item.call_id,
-      content:
-        typeof item.output === "string"
-          ? item.output
-          : JSON.stringify(item.output ?? ""),
+      content: functionCallOutputToUnified(item.output),
     });
     return;
   }
@@ -938,12 +932,64 @@ function appendInputItem(
     return;
   }
 
+  if (item.type === "input_file") {
+    if (item.file_id) {
+      throw createApiError(
+        "Provider-bound file_id inputs are not supported",
+        400,
+        "unsupported_file_id",
+        "invalid_request_error"
+      );
+    }
+    const fileData = item.file_data;
+    const fileUrl = item.file_url;
+    if (typeof fileData !== "string" && typeof fileUrl !== "string") {
+      throw createApiError(
+        "input_file requires file_data or file_url",
+        400,
+        "invalid_file",
+        "invalid_request_error"
+      );
+    }
+    messages.push({
+      role: "user",
+      content: [
+        {
+          type: "file",
+          ...(typeof item.filename === "string"
+            ? { filename: item.filename }
+            : {}),
+          ...(typeof fileData === "string" ? { file_data: fileData } : {}),
+          ...(typeof fileUrl === "string" ? { file_url: fileUrl } : {}),
+          ...(typeof item.mime_type === "string"
+            ? { media_type: item.mime_type }
+            : {}),
+        },
+      ],
+    });
+    return;
+  }
+
   throw createApiError(
     `Unsupported Responses input item type '${item.type || "unknown"}'`,
     400,
     "unsupported_input_item",
     "invalid_request_error"
   );
+}
+
+/**
+ * Responses `function_call_output.output` / `custom_tool_call_output.output`
+ * may be a plain string or an OutputContentList (text + images + files).
+ * OpenCode / @ai-sdk/openai put webfetch image attachments in that list.
+ * JSON.stringifying the list destroys `input_image` and Zen/Meta reject the
+ * replayed string as invalid parameters — keep structured parts as Unified
+ * `text` / `image_url` so Responses outbound can re-emit `input_image`.
+ */
+function functionCallOutputToUnified(output: unknown): string | any[] {
+  if (typeof output === "string") return output;
+  if (Array.isArray(output)) return flattenResponsesContent(output);
+  return JSON.stringify(output ?? "");
 }
 
 function flattenResponsesContent(content: unknown): any {
@@ -987,6 +1033,34 @@ function flattenResponsesContent(content: unknown): any {
             ? { detail: (part as any).detail }
             : {}),
         },
+      });
+    } else if (part.type === "input_file") {
+      if ((part as any).file_id) {
+        throw createApiError(
+          "Provider-bound file_id inputs are not supported",
+          400,
+          "unsupported_file_id",
+          "invalid_request_error"
+        );
+      }
+      const fileData = part.file_data;
+      const fileUrl = part.file_url;
+      if (typeof fileData !== "string" && typeof fileUrl !== "string") {
+        throw createApiError(
+          "input_file requires file_data or file_url",
+          400,
+          "invalid_file",
+          "invalid_request_error"
+        );
+      }
+      parts.push({
+        type: "file",
+        ...(typeof part.filename === "string" ? { filename: part.filename } : {}),
+        ...(typeof fileData === "string" ? { file_data: fileData } : {}),
+        ...(typeof fileUrl === "string" ? { file_url: fileUrl } : {}),
+        ...(typeof part.mime_type === "string"
+          ? { media_type: part.mime_type }
+          : {}),
       });
     } else {
       throw createApiError(

@@ -1,6 +1,7 @@
 import { Transformer, TransformerContext } from "@/types/transformer";
 import { UnifiedChatRequest } from "@/types/llm";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
+import { extractToolMediaForStringToolApis } from "../utils/tool-content";
 import { createApiError } from "@/api/middleware";
 import {
   isChatCompletionsDoneLine,
@@ -63,19 +64,42 @@ export class OpenAITransformer implements Transformer {
     provider: any,
     context: any
   ): Promise<UnifiedChatRequest> {
-    // Only clone if we will mutate messages (thinking) or inject cache key;
-    // otherwise return the reference – caller already owns a clone from
-    // cloneProtocolBody and provider chain copies on write.
-    const needsHistoryRewrite = (request.messages || []).some((m: any) => m?.role === "assistant" && (m.thinking || m.reasoning || m.reasoning_content));
-    const needsReasoning = Boolean((request as any).reasoning || (request as any).thinking);
-    if (needsHistoryRewrite || needsReasoning) {
+    // Only clone if we will mutate messages (thinking / multimodal tool extract)
+    // or inject cache key; otherwise return the reference – caller already owns
+    // a clone from cloneProtocolBody and provider chain copies on write.
+    const needsHistoryRewrite = (request.messages || []).some(
+      (m: any) =>
+        m?.role === "assistant" &&
+        (m.thinking || m.reasoning || m.reasoning_content)
+    );
+    const needsToolMediaExtract = (request.messages || []).some(
+      (m: any) =>
+        m?.role === "tool" &&
+        Array.isArray(m.content) &&
+        m.content.some(
+          (p: any) => p?.type === "image_url" || p?.type === "file"
+        )
+    );
+    const needsReasoning = Boolean(
+      (request as any).reasoning || (request as any).thinking
+    );
+    if (needsHistoryRewrite || needsReasoning || needsToolMediaExtract) {
       request = structuredClone(request);
     } else {
       // Shallow copy so we can safely add prompt_cache_key without mutating caller's object
-      request = { ...request, messages: request.messages, tools: request.tools as any } as UnifiedChatRequest;
+      request = {
+        ...request,
+        messages: request.messages,
+        tools: request.tools as any,
+      } as UnifiedChatRequest;
     }
     applyOpenAIChatReasoning(request);
     request.messages = applyChatReasoningHistory(request.messages);
+    // Chat Completions tool messages are string-only; pull media into a
+    // follow-up user message so Responses→Chat vision still reaches upstream.
+    if (needsToolMediaExtract) {
+      request.messages = extractToolMediaForStringToolApis(request.messages);
+    }
     return applyProviderNativeChatCaching(request, provider, context);
   }
 

@@ -35,6 +35,10 @@ import {
   recallThoughtSignature,
   rememberThoughtSignature,
 } from "./thought-signature-cache";
+import {
+  unifiedToolMediaToGeminiParts,
+  unifiedToolTextOnly,
+} from "./tool-content";
 
 // Type enum equivalent in JavaScript
 const Type = {
@@ -363,6 +367,12 @@ export function buildRequestBody(
       images.forEach((img) => {
         parts.push(processImageContent(img, "gemini"));
       });
+      // File parts (PDF / other) from Responses input_file → Gemini inlineData
+      for (const media of unifiedToolMediaToGeminiParts(
+        (message.content as any[]).filter((p) => p?.type === "file")
+      )) {
+        parts.push(media);
+      }
     } else if (message.content && typeof message.content === "object") {
       if ((message.content as any).text) {
         const text = (message.content as any).text;
@@ -431,32 +441,27 @@ export function buildRequestBody(
     });
 
     if (role === "model" && preparedCalls.length > 0) {
-      const functionResponses = preparedCalls.map(({ toolCall, id }) => {
+      const functionResponseParts: any[] = [];
+      const mediaParts: any[] = [];
+      for (const { toolCall, id } of preparedCalls) {
         const response = toolResponses.find(
           (item) => item.tool_call_id === toolCall.id
         );
-
-        let resultText = response?.content;
-        if (Array.isArray(resultText)) {
-          resultText = resultText
-            .filter((part: any) => part.type === "text")
-            .map((part: any) => part.text)
-            .join("\n");
-        } else if (typeof resultText === "object" && resultText !== null) {
-          resultText = JSON.stringify(resultText);
-        }
-
-        return {
+        const resultText = unifiedToolTextOnly(response?.content);
+        functionResponseParts.push({
           functionResponse: {
             id,
             name: toolCall?.function?.name,
             response: { result: resultText },
           },
-        };
-      });
+        });
+        // Gemini accepts tool media as sibling inlineData/fileData parts in the
+        // same user turn (AI SDK legacy path). Keeps pre-Gemini-3 models working.
+        mediaParts.push(...unifiedToolMediaToGeminiParts(response?.content));
+      }
       rawContents.push({
         role: "user",
-        parts: functionResponses,
+        parts: [...functionResponseParts, ...mediaParts],
       });
     }
   });

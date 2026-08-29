@@ -21,6 +21,7 @@ import {
   stripMessagesCacheControl,
   stripToolsCacheControl,
 } from "../utils/cacheControl";
+import { extractToolMediaForStringToolApis } from "../utils/tool-content";
 
 function normalizeDeepSeekCacheUsage(payload: any): void {
   const usage = payload?.usage;
@@ -42,7 +43,9 @@ export class DeepseekTransformer implements Transformer {
     if (request.max_tokens && request.max_tokens > 8192) {
       request.max_tokens = 8192;
     }
-    request.messages = stripMessagesCacheControl(request.messages);
+    request.messages = extractToolMediaForStringToolApis(
+      stripMessagesCacheControl(request.messages)
+    );
     request.tools = stripToolsCacheControl(request.tools);
     prepareReasoningReplay(request, provider, context);
     return request;

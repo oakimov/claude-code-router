@@ -300,8 +300,9 @@ async function testMultipleSystemMessagesAndToolContent() {
     ["first", "second"]
   );
   assert.equal(body.messages[0].content[0].type, "tool_result");
+  const toolContent = body.messages[0].content[0].content;
   assert.equal(
-    body.messages[0].content[0].content[0].text,
+    typeof toolContent === "string" ? toolContent : toolContent[0].text,
     "structured result"
   );
 }

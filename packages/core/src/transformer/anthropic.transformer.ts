@@ -15,6 +15,10 @@ import { v4 as uuidv4 } from "uuid";
 import { createApiError } from "@/api/middleware";
 import { formatBase64 } from "@/utils/image";
 import { sanitizeToolCallId } from "@/utils/toolCallId";
+import {
+  anthropicToolResultToUnified,
+  unifiedToolContentToAnthropic,
+} from "@/utils/tool-content";
 import { buildAnthropicRequestRuntime } from "@/types/turn-intent";
 import {
   unprefixClaudeToolNames,
@@ -317,15 +321,7 @@ export class AnthropicTransformer implements Transformer {
               toolParts.forEach((tool: any) => {
                 const toolMessage: UnifiedMessage = {
                   role: "tool",
-                  content:
-                    typeof tool.content === "string"
-                      ? tool.content
-                      : Array.isArray(tool.content)
-                      ? tool.content
-                          .filter((c: any) => c.type === "text" && c.text)
-                          .map((c: any) => c.text)
-                          .join("\n") || JSON.stringify(tool.content)
-                      : JSON.stringify(tool.content),
+                  content: anthropicToolResultToUnified(tool.content),
                   tool_call_id:
                     sanitizeToolCallId(tool.tool_use_id) ?? tool.tool_use_id,
                   cache_control: tool.cache_control,
@@ -625,20 +621,7 @@ export class AnthropicTransformer implements Transformer {
           // (or by any provider using a non-conforming alphabet) still match.
           tool_use_id:
             sanitizeToolCallId(msg.tool_call_id) ?? msg.tool_call_id,
-          content:
-            typeof msg.content === "string"
-              ? msg.content
-              : Array.isArray(msg.content)
-                ? msg.content
-                    .filter((part: any) => part?.type === "text")
-                    .map((part: any) => ({
-                      type: "text",
-                      text: part.text || "",
-                      ...(part.cache_control
-                        ? { cache_control: part.cache_control }
-                        : {}),
-                    }))
-                : JSON.stringify(msg.content),
+          content: unifiedToolContentToAnthropic(msg.content),
           ...(msg.cache_control ? { cache_control: msg.cache_control } : {}),
         };
         const last = messages[messages.length - 1];
@@ -733,6 +716,9 @@ export class AnthropicTransformer implements Transformer {
                     : {}),
                 });
               }
+            } else if (part.type === "file") {
+              const fileBlocks = unifiedToolContentToAnthropic([part]);
+              if (Array.isArray(fileBlocks)) content.push(...fileBlocks);
             }
           }
         }
