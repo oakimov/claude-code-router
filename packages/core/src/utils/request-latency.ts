@@ -27,9 +27,13 @@ export type RequestLatency = {
     protocol?: string;
     provider?: string;
     model?: string;
+    method?: string;
+    url?: string;
     scenario?: string;
     bypass?: boolean;
+    wireKeep?: boolean;
     tokenCount?: number;
+    tokenCountSource?: "exact" | "estimate" | "skipped";
     inputBytes?: number;
     upstreamAttempts?: number;
     cancelled?: boolean;
@@ -129,6 +133,10 @@ export function emitLatencyRecord(
     s.upstreamFirstByte !== undefined && s.upstreamFetchStart !== undefined
       ? s.upstreamFirstByte - s.upstreamFetchStart
       : undefined;
+  const conversionDelayMs =
+    s.downstreamFirstByte !== undefined && s.upstreamFirstByte !== undefined
+      ? s.downstreamFirstByte - s.upstreamFirstByte
+      : undefined;
 
   logger?.info?.(
     {
@@ -139,6 +147,7 @@ export function emitLatencyRecord(
       upstreamHeaderMs,
       upstreamTtftMs,
       ccrTtftMs,
+      conversionDelayMs,
       totalMs: s.complete,
     },
     "request latency"

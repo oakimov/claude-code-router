@@ -2410,8 +2410,8 @@ async function testMultimodalFunctionCallOutputRoundTrip() {
   assert.equal(tool.content[0].type, "text");
   assert.equal(tool.content[0].text, "Image fetched successfully");
   assert.equal(tool.content[1].type, "image_url");
-  assert.equal(tool.content[1].image_url.url, imageUrl);
-  assert.equal(tool.content[1].image_url.detail, "auto");
+  assert.equal((tool.content[1] as any).image_url.url, imageUrl);
+  assert.equal((tool.content[1] as any).image_url.detail, "auto");
 
   const tf = new OpenAIResponsesTransformer();
   const out = await tf.transformRequestIn(structuredClone(unified) as any, {}, {});
@@ -2442,8 +2442,8 @@ async function testMultimodalFunctionCallOutputRoundTrip() {
       },
     ],
   });
-  const textTool = textOnly.messages.find((m: any) => m.role === "tool");
-  assert.equal(textTool.content, "file contents");
+  const textTool = textOnly.messages.find((m: any) => m.role === "tool") as any;
+  assert.equal(textTool!.content, "file contents");
 }
 
 async function main() {

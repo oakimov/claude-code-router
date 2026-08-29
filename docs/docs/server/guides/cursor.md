@@ -160,7 +160,7 @@ After syncing models into `config.json`, restart so the running server picks up 
 
 Cursor conversations are **stateful in-process**:
 
-- Session key from `x-ccr-cursor-session` header, Claude `metadata.user_id` (`…_session_…`), or a hash of model + system/first user text
+- Session key from `x-ccr-cursor-session` header, inbound-captured client session id (`protocolContext.sessionId` / `req.sessionId` / Claude `metadata.user_id`), or anonymous `hash(model + first user text)` — never system / harness version
 - LRU cap of **32** sessions; idle TTL **15 minutes**
 - In-flight sessions (live stream, running run, or parked tools) are not idle-evicted
 - If the stream dies mid-turn (disconnect / cancel), the next request uses a slim follow-up prompt when the agent session already has history

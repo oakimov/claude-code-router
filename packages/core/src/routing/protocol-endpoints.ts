@@ -49,6 +49,11 @@ export interface ClientProtocolContext {
   taggedSubagentModel?: string;
   /** Transformer that owns this client protocol */
   ownerTransformerName: string;
+  /**
+   * Client conversation id captured from the original wire (never harness
+   * version or system text). Used for prompt-cache affinity and Codex headers.
+   */
+  sessionId?: string;
 }
 
 export interface ProtocolRouteMatch {

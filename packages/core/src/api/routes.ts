@@ -85,6 +85,9 @@ import {
   compileTransformerPlan,
   cancelReplacedProviderResponse,
   isExactProtocolResponsePlan,
+  isExactProtocolRequestPlan,
+  isWireSafeMiddlewareForKeep,
+  planContains,
 } from "@/utils/transformer-plan";
 import {
   ensureRequestLatency,
@@ -119,6 +122,44 @@ function isThirdPartyInScopeAnthropic(protocolContext: any): boolean {
     protocolContext?.anthropicDestinationInScope === true &&
       protocolContext?.anthropicClientKind === "other"
   );
+}
+
+/**
+ * v1 wire-keep predicate: exact-protocol owner in compiled plan, third-party
+ * Anthropic never keeps, claude-auth chains excluded for v1.
+ * `anthropicNativeWire` and legacy passthrough are still covered by the
+ * caller's own booleans; this helper covers the automatic multi-transformer
+ * case only.
+ */
+function computeWireKeepForProvider(
+  provider: any,
+  endpointTransformer: Transformer,
+  protocolContext: any,
+  modelName: string | undefined
+): { useWire: boolean; plan: any | undefined; isAutoKeep: boolean } {
+  if (!protocolContext || isThirdPartyInScopeAnthropic(protocolContext)) {
+    return { useWire: false, plan: undefined, isAutoKeep: false };
+  }
+  const providerUse = provider?.transformer?.use as any[] | undefined;
+  const modelUse = (
+    modelName ? provider?.transformer?.[modelName]?.use : undefined
+  ) as any[] | undefined;
+  let plan: any | undefined;
+  try {
+    // Compile without skipName so the owner stays in plan for the predicate.
+    plan = compileTransformerPlan(providerUse, modelUse);
+  } catch {
+    return { useWire: false, plan: undefined, isAutoKeep: false };
+  }
+  if (planContains(plan, "claude-auth")) {
+    return { useWire: false, plan, isAutoKeep: false };
+  }
+  const isAutoKeep = isExactProtocolRequestPlan(
+    plan,
+    endpointTransformer,
+    protocolContext.ownerTransformerName
+  );
+  return { useWire: isAutoKeep, plan, isAutoKeep };
 }
 
 // Extend FastifyInstance to include custom services
@@ -196,6 +237,8 @@ async function handleTransformerEndpoint(
     protocol: prepared.protocolContext?.protocol,
     provider: prepared.providerName,
     model: prepared.modelName,
+    method: req.method,
+    url: req.url,
     scenario: (req as any).scenarioType,
     tokenCount: (req as any).tokenCount,
   });
@@ -205,15 +248,11 @@ async function handleTransformerEndpoint(
 
   try {
     // Native Anthropic clients use the original wire body; legacy exact
-    // protocol passthrough uses the adapted wire body. Both receive only the
-    // routed model substitution. Third-party Anthropic emulation and all
-    // cross-protocol routes use the Unified projection.
-    const willBypass = protocolAwareBypass(
-      provider,
-      transformer,
-      prepared.protocolContext,
-      prepared.modelName
-    ) && !isThirdPartyInScopeAnthropic(prepared.protocolContext);
+    // protocol passthrough uses the adapted wire body. Same-protocol wire
+    // keep (multi-transformer with owner in plan) also keeps clientWireBody
+    // so prefix + vision bytes stay intact. Third-party Anthropic emulation
+    // and all cross-protocol routes use the Unified projection.
+    const isNativeWire = Boolean(prepared.protocolContext.anthropicNativeWire);
     const preserveManualWire =
       !isThirdPartyInScopeAnthropic(prepared.protocolContext) &&
       isManualExactProtocolPassthrough(
@@ -221,11 +260,38 @@ async function handleTransformerEndpoint(
         transformer,
         prepared.protocolContext
       );
-    const exactWireSource = prepared.protocolContext.anthropicNativeWire
+    const deprecatedWillBypass =
+      protocolAwareBypass(
+        provider,
+        transformer,
+        prepared.protocolContext,
+        prepared.modelName
+      ) && !isThirdPartyInScopeAnthropic(prepared.protocolContext);
+    const autoKeep = computeWireKeepForProvider(
+      provider,
+      transformer,
+      prepared.protocolContext,
+      prepared.modelName
+    );
+    // Deprecated length-1 bypass that is not already covered by the new
+    // predicate: keep for compat but note that the plan predicate now covers
+    // every `use.length === 1` case. `claude-auth` chains are excluded from
+    // autoKeep and stay on Unified in v1.
+    if (deprecatedWillBypass && !autoKeep.isAutoKeep && !isNativeWire && !preserveManualWire) {
+      req.log.debug?.(
+        {
+          provider: provider?.name,
+          protocol: prepared.protocolContext?.protocol,
+          reason: "deprecated_protocolAwareBypass",
+        },
+        "wire keep via deprecated bypass (cover with owner in plan)"
+      );
+    }
+    const useWireKeep = isNativeWire || preserveManualWire || autoKeep.useWire || deprecatedWillBypass;
+    const exactWireSource = isNativeWire
       ? prepared.originalBody
       : prepared.clientWireBody ?? prepared.originalBody;
-    const pipelineBody = prepared.protocolContext.anthropicNativeWire ||
-      willBypass || preserveManualWire
+    const pipelineBody = useWireKeep
       ? {
           ...(typeof exactWireSource === "object" && exactWireSource
             ? cloneProtocolBody(exactWireSource)
@@ -233,10 +299,12 @@ async function handleTransformerEndpoint(
           model: prepared.modelName,
         }
       : cloneProtocolBody(prepared.unifiedBody);
+    (req as any)._wireKeep = useWireKeep;
+    (req as any)._autoWireKeep = autoKeep.isAutoKeep;
 
     recordClientCachePrefix(req, fastify, provider, pipelineBody);
 
-    const { requestBody, config, bypass } = await processRequestTransformers(
+    const { requestBody, config, bypass, wireKeep } = await processRequestTransformers(
       pipelineBody,
       provider,
       transformer,
@@ -252,9 +320,22 @@ async function handleTransformerEndpoint(
       }
     );
     markLatency(latency, "requestTransformers");
-    attachLatencyMeta(latency, { bypass });
+    attachLatencyMeta(latency, { bypass: bypass || wireKeep, wireKeep });
+    if (wireKeep) {
+      req.log.debug?.(
+        {
+          provider: provider?.name,
+          protocol: prepared.protocolContext?.protocol,
+          model: prepared.modelName,
+          pipeline: "wire-keep",
+        },
+        "same-protocol wire keep (owner skipped, middleware kept)"
+      );
+    }
 
-    markLatency(latency, "upstreamFetchStart");
+    // Fetch start/headers are stamped by sendUnifiedRequest or by ownsTransport
+    // transformers (cursor-sdk). Do not mark start here — that would freeze the
+    // stamp before the real POST and make upstreamTtftMs include auth/SDK setup.
     const response = await sendRequestToProvider(
       requestBody,
       config,
@@ -269,7 +350,14 @@ async function handleTransformerEndpoint(
       }
     );
 
-    markLatency(latency, "upstreamHeaders");
+    if (latency.stages.upstreamFetchStart === undefined) {
+      markLatency(latency, "upstreamFetchStart");
+    }
+    if (latency.stages.upstreamHeaders === undefined) {
+      markLatency(latency, "upstreamHeaders");
+    }
+    // Tap the raw provider body before response conversion so upstream TTFT
+    // is not delayed by Responses→Unified→Anthropic buffering.
     const timedResponse = tapResponseFirstByte(response, () => {
       markLatency(latency, "upstreamFirstByte");
     });
@@ -464,24 +552,36 @@ async function handleFallback(
         scenarioType,
       };
 
-      const willBypass = protocolAwareBypass(
-        provider,
-        transformer,
-        fallbackProtocolContext,
-        fallbackModelOnly
-      ) && !isThirdPartyInScopeAnthropic(fallbackProtocolContext);
-      const preserveManualWire =
+      const fallbackIsNativeWire = Boolean(fallbackProtocolContext?.anthropicNativeWire);
+      const fallbackPreserveManualWire =
         !isThirdPartyInScopeAnthropic(fallbackProtocolContext) &&
         isManualExactProtocolPassthrough(
           provider,
           transformer,
           fallbackProtocolContext
         );
-      const exactWireSource = fallbackProtocolContext?.anthropicNativeWire
+      const fallbackDeprecatedWillBypass =
+        protocolAwareBypass(
+          provider,
+          transformer,
+          fallbackProtocolContext,
+          fallbackModelOnly
+        ) && !isThirdPartyInScopeAnthropic(fallbackProtocolContext);
+      const fallbackAutoKeep = computeWireKeepForProvider(
+        provider,
+        transformer,
+        fallbackProtocolContext,
+        fallbackModelOnly
+      );
+      const fallbackUseWireKeep =
+        fallbackIsNativeWire ||
+        fallbackPreserveManualWire ||
+        fallbackAutoKeep.useWire ||
+        fallbackDeprecatedWillBypass;
+      const exactWireSource = fallbackIsNativeWire
         ? prepared?.originalBody
         : prepared?.clientWireBody ?? prepared?.originalBody;
-      const pipelineBody = fallbackProtocolContext?.anthropicNativeWire ||
-        willBypass || preserveManualWire
+      const pipelineBody = fallbackUseWireKeep
         ? {
             ...(typeof exactWireSource === "object" && exactWireSource
               ? cloneProtocolBody(exactWireSource)
@@ -492,7 +592,7 @@ async function handleFallback(
 
       recordClientCachePrefix(newReq, fastify, provider, pipelineBody);
 
-      const { requestBody, config, bypass } = await processRequestTransformers(
+      const { requestBody, config, bypass, wireKeep } = await processRequestTransformers(
         pipelineBody,
         provider,
         transformer,
@@ -506,7 +606,19 @@ async function handleFallback(
           skipClientNormalization: true,
         }
       );
+      if (wireKeep) {
+        req.log.debug?.(
+          {
+            provider: provider?.name,
+            protocol: fallbackProtocolContext?.protocol,
+            model: fallbackModelOnly,
+            pipeline: "wire-keep-fallback",
+          },
+          "same-protocol wire keep on fallback"
+        );
+      }
 
+      const fallbackLatency = (newReq as any)._latency;
       const response = await sendRequestToProvider(
         requestBody,
         config,
@@ -521,8 +633,14 @@ async function handleFallback(
         }
       );
 
+      if (fallbackLatency?.stages?.upstreamFetchStart === undefined) {
+        markLatency(fallbackLatency, "upstreamFetchStart");
+      }
+      if (fallbackLatency?.stages?.upstreamHeaders === undefined) {
+        markLatency(fallbackLatency, "upstreamHeaders");
+      }
       const timedResponse = tapResponseFirstByte(response, () => {
-        markLatency((newReq as any)._latency, "upstreamFirstByte");
+        markLatency(fallbackLatency, "upstreamFirstByte");
       });
       const finalResponse = await processResponseTransformers(
         requestBody,
@@ -629,19 +747,21 @@ async function processRequestTransformers(
   let requestBody = body;
   let config: any = {};
 
+  const thirdPartyAnthropic = isThirdPartyInScopeAnthropic(
+    context?.protocolContext
+  );
+  const isNativeWire = context?.protocolContext?.anthropicNativeWire === true;
   const protocolBypass = protocolAwareBypass(
     provider,
     transformer,
     context?.protocolContext,
     body?.model
   );
-  const bypass = Boolean(
-    context?.protocolContext?.anthropicNativeWire === true ||
-      (protocolBypass && !isThirdPartyInScopeAnthropic(context?.protocolContext))
+  const deprecatedBypass = Boolean(
+    isNativeWire ||
+      (protocolBypass && !thirdPartyAnthropic)
   );
-  const thirdPartyAnthropic = isThirdPartyInScopeAnthropic(
-    context?.protocolContext
-  );
+  const bypass = deprecatedBypass;
   const manualExactPassthrough =
     !thirdPartyAnthropic &&
     isManualExactProtocolPassthrough(
@@ -649,21 +769,66 @@ async function processRequestTransformers(
       transformer,
       context?.protocolContext
     );
+
+  // Automatic multi-transformer keep: plan contains the client owner, no
+  // claude-auth chain, not third-party emulation. This is distinct from
+  // `bypass` (native wire || deprecated length-1) so middleware still runs.
+  const rawProviderUse = provider.transformer?.use as Transformer[] | undefined;
+  const rawModelUse = provider.transformer?.[body.model]?.use as
+    | Transformer[]
+    | undefined;
+  let wireKeepPlan: any | undefined;
+  let isWireKeep = false;
+  if (!isNativeWire && !bypass && !thirdPartyAnthropic) {
+    try {
+      wireKeepPlan = compileTransformerPlan(rawProviderUse, rawModelUse);
+    } catch {
+      wireKeepPlan = undefined;
+    }
+    if (wireKeepPlan && !planContains(wireKeepPlan, "claude-auth")) {
+      const autoKeep = isExactProtocolRequestPlan(
+        wireKeepPlan,
+        transformer,
+        context?.protocolContext?.ownerTransformerName
+      );
+      if (autoKeep) isWireKeep = true;
+      if (!isWireKeep && manualExactPassthrough) {
+        // Legacy passthrough shim that is still same-protocol — treat as keep.
+        // Guard again for claude-auth (already excluded above).
+        isWireKeep = true;
+      }
+    } else if (wireKeepPlan && manualExactPassthrough && planContains(wireKeepPlan, "claude-auth")) {
+      // v1: claude-auth chains never wire-keep, even via passthrough shim.
+      isWireKeep = false;
+    }
+  }
+  const effectiveWireKeep = isWireKeep;
+
   const skipBodyConversion =
     bypass ||
+    effectiveWireKeep ||
     (!thirdPartyAnthropic && provider.transformer?.passthrough) ||
     context?.skipClientNormalization === true;
 
-  if (bypass) {
+  // Client header copy and Anthropic cache_control injection are Anthropic-wire
+  // only. Chat/Responses keep must not reuse this branch: a denylist copy
+  // forwards openai-*/stainless headers, and applyRawAnthropicPromptCaching
+  // stamps top-level cache_control that Chat Completions / Zen reject or ignore.
+  const anthropicWireKeep =
+    bypass ||
+    (effectiveWireKeep &&
+      (context?.protocolContext?.protocol === "anthropic_messages" ||
+        (transformer as any)?.name === "Anthropic"));
+  if (anthropicWireKeep) {
     config.headers = sanitizePassthroughHeaders(headers);
-    // Parity with native opencode anthropic caching (applyCaching): even in
-    // passthrough/bypass, Zen anthropic (Qwen/MiniMax via /v1/messages) benefits
-    // from cache_control. Claude Code's bypass body may already carry it, but we
-    // ensure at least the ephemeral system+tools breakpoints exist for opencode.
     if (isOpencodeProvider(provider)) {
       try {
-        // Only for Anthropic-shaped bodies (system/messages); no-op for others.
-        if (requestBody && typeof requestBody === "object" && (requestBody.system !== undefined || Array.isArray(requestBody.messages))) {
+        if (
+          requestBody &&
+          typeof requestBody === "object" &&
+          (requestBody.system !== undefined ||
+            Array.isArray(requestBody.messages))
+        ) {
           requestBody = applyRawAnthropicPromptCaching(requestBody);
         }
       } catch {
@@ -672,21 +837,25 @@ async function processRequestTransformers(
     }
   }
 
+  // prompt_cache_key is Responses-owner scoped — only keep when the compiled
+  // plan actually contains the Responses owner (either legacy or wire-keep).
+  const hasResponsesOwner = (() => {
+    if (wireKeepPlan) return planContains(wireKeepPlan, "openai-responses");
+    const use = provider.transformer?.use as any[] | undefined;
+    return Boolean(
+      Array.isArray(use) &&
+        use.some((t: any) => t?.name === "openai-responses")
+    );
+  })();
   if (
     !bypass &&
+    !effectiveWireKeep &&
     context?.protocolContext?.protocol === "openai_responses" &&
-    !provider.transformer?.use?.some(
-      (providerTransformer: Transformer) =>
-        providerTransformer?.name === "openai-responses"
-    )
+    !hasResponsesOwner
   ) {
-    // This key is an opaque hint scoped to the Responses destination that
-    // interprets it. It must not cross a protocol/provider boundary.
     delete requestBody.prompt_cache_key;
   }
 
-  // Legacy path: run transformRequestOut only when client normalization was not
-  // already performed by prepareInboundRequest.
   if (
     !skipBodyConversion &&
     typeof transformer.transformRequestOut === "function"
@@ -703,28 +872,110 @@ async function processRequestTransformers(
     }
   }
 
-  const modelUse = !bypass
-    ? (provider.transformer?.[body.model]?.use as Transformer[] | undefined)
-    : undefined;
-  const providerUse = !bypass
-    ? (provider.transformer?.use as Transformer[] | undefined)
-    : undefined;
-
-  if (providerUse?.length || modelUse?.length) {
-    let plan;
-    try {
-      plan = compileTransformerPlan(providerUse, modelUse, {
-        skipName: manualExactPassthrough ? transformer.name : undefined,
-      });
-    } catch (error: any) {
-      throw createApiError(
-        error?.message || "Invalid transformer configuration",
-        400,
-        "invalid_request_error",
-        "invalid_request_error"
-      );
+  // Build the plan for the middleware loop.
+  // - bypass: skip entire chain (native wire || deprecated)
+  // - wire keep: use the already-compiled plan, run allowlisted middleware + OpenAI owner
+  // - otherwise: legacy compile with skipName for passthrough shim
+  let plan: any | undefined;
+  if (bypass) {
+    plan = undefined;
+  } else if (effectiveWireKeep) {
+    plan = wireKeepPlan;
+  } else {
+    const modelUse = provider.transformer?.[body.model]?.use as
+      | Transformer[]
+      | undefined;
+    const providerUse = provider.transformer?.use as Transformer[] | undefined;
+    if (providerUse?.length || modelUse?.length) {
+      try {
+        plan = compileTransformerPlan(providerUse, modelUse, {
+          skipName: manualExactPassthrough ? transformer.name : undefined,
+        });
+      } catch (error: any) {
+        throw createApiError(
+          error?.message || "Invalid transformer configuration",
+          400,
+          "invalid_request_error",
+          "invalid_request_error"
+        );
+      }
     }
+  }
 
+  // Wire-keep filtered loop: skip body rebuild for Anthropic/Responses owners,
+  // run only wire-safe middleware + always run OpenAI owner (Chat === Unified).
+  if (effectiveWireKeep && plan) {
+    const ownerName = (transformer as any)?.name as string | undefined;
+    for (const chainTransformer of plan.request) {
+      if (
+        !chainTransformer ||
+        typeof chainTransformer.transformRequestIn !== "function"
+      ) {
+        continue;
+      }
+      const tName = (chainTransformer as any).name as string | undefined;
+      const isOwner = tName === ownerName;
+      if (isOwner) {
+        if (tName === "Anthropic" || tName === "openai-responses") {
+          continue;
+        }
+        // OpenAI owner: always run (policy + media extract) on kept wire
+      } else if (!isWireSafeMiddlewareForKeep(tName, ownerName)) {
+        continue;
+      }
+      const transformIn = await chainTransformer.transformRequestIn(
+        requestBody,
+        provider,
+        context
+      );
+      if (transformIn.body) {
+        requestBody = transformIn.body;
+        const nextConfig = transformIn.config || {};
+        const previousResponse = config.__providerResponse as
+          | Response
+          | undefined;
+        const nextResponse = nextConfig.__providerResponse as
+          | Response
+          | undefined;
+        cancelReplacedProviderResponse(previousResponse, nextResponse);
+        config = {
+          ...config,
+          ...nextConfig,
+          headers: mergeHeadersCaseInsensitive(
+            config.headers,
+            nextConfig.headers
+          ),
+        };
+      } else {
+        requestBody = transformIn;
+      }
+    }
+    // Transport URL/headers for Anthropic/Responses keep were in the owner
+    // In body rebuild; now pull them from auth() so fetch has a URL.
+    const authOwnerName = (transformer as any)?.name as string | undefined;
+    if (
+      (authOwnerName === "Anthropic" || authOwnerName === "openai-responses") &&
+      typeof transformer.auth === "function"
+    ) {
+      try {
+        const authOut = await transformer.auth(requestBody, provider, context);
+        if (authOut?.config?.url && !config.url) config.url = authOut.config.url;
+        if (authOut?.config?.headers) {
+          config.headers = mergeHeadersCaseInsensitive(
+            config.headers,
+            authOut.config.headers
+          );
+          if (authOut.config.__authRecovery) {
+            config.__authRecovery = authOut.config.__authRecovery;
+          }
+        } else if (authOut?.config?.__authRecovery) {
+          config.__authRecovery = authOut.config.__authRecovery;
+        }
+      } catch {
+        // auth failure will surface on fetch; don't hide the request path
+      }
+    }
+  } else if (plan) {
     for (const chainTransformer of plan.request) {
       if (
         !chainTransformer ||
@@ -763,6 +1014,7 @@ async function processRequestTransformers(
 
   if (
     !bypass &&
+    !effectiveWireKeep &&
     !provider.transformer?.use?.length &&
     Array.isArray(requestBody?.messages)
   ) {
@@ -774,7 +1026,7 @@ async function processRequestTransformers(
     );
   }
 
-  return { requestBody, config, bypass };
+  return { requestBody, config, bypass, wireKeep: effectiveWireKeep };
 }
 
 /**

@@ -83,14 +83,30 @@ function hashCacheKey(value: string): string {
   return `ccr_${createHash("sha256").update(value).digest("hex").slice(0, 48)}`;
 }
 
+function readHeaderSessionId(headers: unknown): string | undefined {
+  if (!headers || typeof headers !== "object") return undefined;
+  const expected = [
+    "x-claude-code-session-id",
+    "x-opencode-session",
+    "x-session-id",
+    "session-id",
+    "x-conversation-id",
+  ];
+  for (const [rawName, rawValue] of Object.entries(
+    headers as Record<string, unknown>
+  )) {
+    if (!expected.includes(rawName.toLowerCase()) || rawValue == null) continue;
+    const value = Array.isArray(rawValue)
+      ? rawValue.find((item) => item != null && String(item))
+      : rawValue;
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
 function metadataSessionId(metadataUserId: unknown): string | undefined {
   if (typeof metadataUserId !== "string" || !metadataUserId) {
     return undefined;
-  }
-
-  const parts = metadataUserId.split("_session_");
-  if (parts.length > 1 && parts[1]) {
-    return parts[1];
   }
 
   try {
@@ -102,7 +118,32 @@ function metadataSessionId(metadataUserId: unknown): string | undefined {
     // Non-JSON metadata.user_id is allowed.
   }
 
+  const parts = metadataUserId.split("_session_");
+  if (parts.length > 1 && parts[1]) {
+    return parts[1];
+  }
+
   return metadataUserId;
+}
+
+/**
+ * Conversation id from the client wire. Never uses harness version, billing
+ * markers, or system-prompt text.
+ */
+export function extractClientSessionId(input: {
+  body?: any;
+  headers?: unknown;
+}): string | undefined {
+  const body = input.body;
+  const fromMetadata = metadataSessionId(body?.metadata?.user_id);
+  if (fromMetadata) return fromMetadata;
+  if (typeof body?.conversation === "string" && body.conversation.trim()) {
+    return body.conversation.trim();
+  }
+  if (typeof body?.conversation_id === "string" && body.conversation_id.trim()) {
+    return body.conversation_id.trim();
+  }
+  return readHeaderSessionId(input.headers);
 }
 
 function contentText(content: UnifiedMessage["content"]): string {
@@ -125,21 +166,22 @@ export function deriveCacheSessionKey(
   request: UnifiedChatRequest
 ): string | undefined {
   const raw =
+    context?.protocolContext?.sessionId ||
+    context?.req?.protocolContext?.sessionId ||
     context?.req?.sessionId ||
-    metadataSessionId((request as any)?.metadata?.user_id);
+    extractClientSessionId({
+      body: request,
+      headers: context?.req?.headers,
+    });
 
   if (typeof raw === "string" && raw) {
     return hashCacheKey(raw);
   }
 
-  const firstSystemOrUser = (request.messages || []).find(
-    (msg) => msg.role === "system" || msg.role === "user"
-  );
-  const fallbackText = firstSystemOrUser
-    ? contentText(firstSystemOrUser.content)
-    : "";
-  const fallback = [request.model || "", fallbackText].join("\n");
-  return fallback.trim() ? hashCacheKey(fallback) : undefined;
+  // Anonymous clients only: first *user* text, never system (billing / CLAUDE.md).
+  const firstUser = (request.messages || []).find((msg) => msg.role === "user");
+  const fallbackText = firstUser ? contentText(firstUser.content) : "";
+  return fallbackText.trim() ? hashCacheKey(fallbackText) : undefined;
 }
 
 function messageHasCacheControl(message: UnifiedMessage): boolean {

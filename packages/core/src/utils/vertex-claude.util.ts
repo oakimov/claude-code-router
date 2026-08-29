@@ -14,7 +14,7 @@ import { unifiedToolContentToAnthropic } from "./tool-content";
 interface ClaudeMessage {
   role: "user" | "assistant";
   content: Array<{
-    type: "text" | "image" | "tool_use" | "tool_result";
+    type: "text" | "image" | "document" | "tool_use" | "tool_result";
     text?: string;
     source?: {
       type: "base64";
@@ -170,6 +170,12 @@ export function buildRequestBody(
       images.forEach((img) => {
         content.push(processImageContent(img, "claude"));
       });
+      // File parts (PDF / other) from Responses input_file → Anthropic document
+      for (const item of message.content) {
+        if ((item as any)?.type !== "file") continue;
+        const fileBlocks = unifiedToolContentToAnthropic([item]);
+        if (Array.isArray(fileBlocks)) content.push(...fileBlocks);
+      }
     }
 
     if (message.tool_calls && message.tool_calls.length > 0) {

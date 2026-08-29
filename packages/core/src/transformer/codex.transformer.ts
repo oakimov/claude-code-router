@@ -9,6 +9,7 @@ import {
   applyRequestCacheKey,
   validateOpenAIToolCalls,
 } from "../utils/openai.util";
+import { extractClientSessionId } from "@/utils/cacheControl";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
 import {
   getValidAccessToken,
@@ -364,31 +365,16 @@ function buildCodexCompatibilityHeaders(turnMetadata: CodexTurnMetadata): Record
   };
 }
 
-function inferSessionIdFromMetadata(request: UnifiedChatRequest): string | undefined {
-  const userId = (request as any)?.metadata?.user_id;
-  if (typeof userId !== "string" || !userId) {
-    return undefined;
-  }
-
-  const parts = userId.split("_session_");
-  if (parts.length > 1 && parts[1]) {
-    return parts[1];
-  }
-
-  try {
-    const parsed = JSON.parse(userId);
-    if (parsed && typeof parsed.session_id === "string" && parsed.session_id) {
-      return parsed.session_id;
-    }
-  } catch {
-    // Ignore non-JSON user_id formats.
-  }
-
-  return undefined;
-}
-
 function getCodexSessionId(context: any, request: UnifiedChatRequest): string | undefined {
-  return context?.req?.sessionId || inferSessionIdFromMetadata(request);
+  return (
+    context?.protocolContext?.sessionId ||
+    context?.req?.protocolContext?.sessionId ||
+    context?.req?.sessionId ||
+    extractClientSessionId({
+      body: request,
+      headers: context?.req?.headers,
+    })
+  );
 }
 
 function applyCodexTurnMetadata(request: UnifiedChatRequest, headers: Record<string, string>, sessionId?: string): void {

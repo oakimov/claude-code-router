@@ -5,6 +5,12 @@ import {
   interArrivalGaps,
 } from "../utils/paced-sse";
 import {
+  createRequestLatency,
+  emitLatencyRecord,
+  markLatency,
+  tapResponseFirstByte,
+} from "../utils/request-latency";
+import {
   createSSEStreamReader,
   forwardSSEEvent,
 } from "../utils/stream";
@@ -177,6 +183,41 @@ async function responsesCreatedImmediatelyBecomesUnifiedStart() {
   }
 }
 
+async function firstByteTapFiresOnRawProviderBody() {
+  const encoder = new TextEncoder();
+  const upstream = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("data: hello\n\n"));
+        controller.close();
+      },
+    }),
+    { headers: { "Content-Type": "text/event-stream" } }
+  );
+  const latency = createRequestLatency();
+  markLatency(latency, "upstreamFetchStart");
+  const tapped = tapResponseFirstByte(upstream, () => {
+    markLatency(latency, "upstreamFirstByte");
+  });
+  await tapped.text();
+  assert.ok(
+    latency.stages.upstreamFirstByte !== undefined,
+    "raw provider first byte must stamp upstreamFirstByte"
+  );
+}
+
+async function conversionDelayIsDownstreamMinusUpstream() {
+  const records: any[] = [];
+  const latency = createRequestLatency();
+  latency.stages.upstreamFetchStart = 5;
+  latency.stages.upstreamFirstByte = 15;
+  latency.stages.downstreamFirstByte = 20;
+  emitLatencyRecord({ info(obj) { records.push(obj); } }, latency);
+  assert.equal(records[0].conversionDelayMs, 5);
+  assert.equal(records[0].upstreamTtftMs, 10);
+  assert.equal(records[0].ccrTtftMs, 20);
+}
+
 async function unifiedRoleImmediatelyBecomesResponsesCreated() {
   const events = unifiedChunkToResponsesEvents(
     {
@@ -202,6 +243,8 @@ async function main() {
   await pacedMockDetectsCoalescing();
   await responsesCreatedImmediatelyBecomesUnifiedStart();
   await unifiedRoleImmediatelyBecomesResponsesCreated();
+  await firstByteTapFiresOnRawProviderBody();
+  await conversionDelayIsDownstreamMinusUpstream();
   console.log("latency-cadence: ok");
 }
 

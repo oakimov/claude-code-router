@@ -103,8 +103,8 @@ async function logsAnthropicUsageAndPreservesBytes() {
       )
   );
 
-  const received = records.filter((r) => r.type === "recieved data");
-  assert.ok(received.length >= 2, "expected recieved data logs");
+  const received = records.filter((r) => r.type === "received data");
+  assert.ok(received.length >= 2, "expected received data logs");
 
   const originals = records.filter((r) => r.tppe === "Original Response");
   assert.ok(originals.length >= 2, "expected Original Response logs");
@@ -188,7 +188,7 @@ async function logsJsonBody() {
     "application/json"
   );
   assert.deepEqual(JSON.parse(await tapped.text()), payload);
-  assert.ok(records.some((r) => r.type === "recieved data"));
+  assert.ok(records.some((r) => r.type === "received data"));
   assert.ok(
     records.some((r) => r.direction === "provider→ccr"),
     "upstream JSON tap must tag provider→ccr"
@@ -229,7 +229,7 @@ async function clientTapTagsDirection() {
   assert.ok(
     records.some(
       (r) =>
-        r.type === "recieved data" &&
+        r.type === "received data" &&
         r.direction === "ccr→client" &&
         String(r.data).includes("Checking .")
     )
@@ -403,7 +403,7 @@ async function clientOutrunsDebugConsumer() {
 
   await tapped.text();
   const loggedAtClientCompletion = records.filter(
-    (r) => r.type === "recieved data"
+    (r) => r.type === "received data"
   ).length;
 
   assert.ok(
@@ -413,7 +413,7 @@ async function clientOutrunsDebugConsumer() {
   );
 
   await waitFor(
-    () => records.filter((r) => r.type === "recieved data").length === FRAMES,
+    () => records.filter((r) => r.type === "received data").length === FRAMES,
     5000
   );
 }

@@ -558,6 +558,22 @@ async function getServer(options: RunOptions = {}) {
   });
 
   process.on("unhandledRejection", (reason, promise) => {
+    // Cursor SDK cancel/close can reject late with AbortError after CCR already
+    // moved on. Log at debug so Docker/Node do not spam "You have triggered an
+    // unhandledRejection" noise for expected aborts.
+    const err = reason as { name?: string; code?: string; message?: string } | null;
+    const isAbort =
+      err?.name === "AbortError" ||
+      err?.code === "ABORT_ERR" ||
+      (typeof err?.message === "string" &&
+        err.message.includes("This operation was aborted"));
+    if (isAbort) {
+      serverInstance.app.log.debug(
+        { err: reason },
+        "Unhandled AbortError rejection (expected on cancel)"
+      );
+      return;
+    }
     serverInstance.app.log.error("Unhandled rejection at:", promise, "reason:", reason);
   });
 

@@ -120,7 +120,7 @@ function logReceived(
 
   logger.debug({
     ...base,
-    type: "recieved data",
+    type: "received data",
     data: sanitizeBodyForLog(data, maxBytes),
   });
 
@@ -390,7 +390,7 @@ async function tapJsonBody(
  * Byte-preserving upstream response debug tap.
  *
  * For SSE: mirrors bytes to a background consumer that emits Codex-parity
- * `recieved data` / `Original Response` logs (including Anthropic usage /
+ * `received data` / `Original Response` logs (including Anthropic usage /
  * cache fields on message_start / message_delta).
  *
  * Important: do **not** use `ReadableStream.tee()` here. Tee couples

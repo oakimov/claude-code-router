@@ -432,6 +432,43 @@ async function testQwenChromeAndCursorSessions() {
     model: "cursor-model",
   });
   assert.equal(cursorA, cursorB);
+
+  // Inbound-captured session id beats system/prompt fingerprint.
+  const fromClient = buildSessionKey({
+    clientSessionId: "claude-session-stable",
+    model: "composer-2",
+    firstUserText: "hello",
+  });
+  const fromClientAgain = buildSessionKey({
+    clientSessionId: "claude-session-stable",
+    model: "composer-2",
+    firstUserText: "different user text",
+  });
+  assert.equal(fromClient, fromClientAgain);
+
+  // JSON metadata.user_id extracts session_id only.
+  const fromJson = buildSessionKey({
+    metadataUserId: JSON.stringify({ session_id: "claude-session-stable" }),
+    model: "composer-2",
+  });
+  assert.equal(fromJson, fromClient);
+
+  // Anonymous fallback ignores system / cc_version text.
+  const anonA = buildSessionKey({
+    model: "composer-2",
+    firstUserText: "first turn",
+  });
+  const anonB = buildSessionKey({
+    model: "composer-2",
+    firstUserText: "first turn",
+    systemAndFirstUser: "x-anthropic-billing-header: cc_version=old\nfirst turn",
+  });
+  assert.equal(anonA, anonB);
+  const anonDifferentUser = buildSessionKey({
+    model: "composer-2",
+    firstUserText: "other turn",
+  });
+  assert.notEqual(anonA, anonDifferentUser);
 }
 
 async function main() {

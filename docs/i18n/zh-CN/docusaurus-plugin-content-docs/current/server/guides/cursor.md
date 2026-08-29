@@ -160,7 +160,7 @@ ccr model get cursor
 
 Cursor 对话在进程内保持状态：
 
-- 会话键来自 `x-ccr-cursor-session` 头、Claude `metadata.user_id`（`…_session_…`），或 model + system/首条 user 文本的哈希
+- 会话键来自 `x-ccr-cursor-session` 头、入站捕获的客户端会话 id（`protocolContext.sessionId` / `req.sessionId` / Claude `metadata.user_id`），或匿名 `hash(model + 首条 user 文本)` —— 不使用 system / harness 版本
 - LRU 上限 **32**；空闲 TTL **15 分钟**
 - 进行中的会话（活动流、running run、或已挂起工具）不会被空闲淘汰
 - 流在中途失败时，若 agent 会话已有历史，下一次请求使用精简 follow-up，而不是重发全文

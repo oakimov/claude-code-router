@@ -51,9 +51,15 @@ async function main() {
 
   // Explicit provider,model beats everything, including long context.
   {
-    const result = await route({ model: "p,m", messages: [longMessage] });
-    assert.equal(result.model, "p,m");
-    assert.equal(result.scenarioType, "default");
+    const req = makeReq({ model: "p,m", messages: [longMessage] });
+    await router(req, null, { configService });
+    assert.equal(req.body.model, "p,m");
+    assert.equal(req.scenarioType, "default");
+    assert.ok(
+      req.tokenCount > 0,
+      "explicit provider,model still records a char-estimate tokenCount"
+    );
+    assert.equal(req._latency?.meta?.tokenCountSource, "estimate");
   }
 
   // Subagent tag beats long context.

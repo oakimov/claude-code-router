@@ -716,7 +716,7 @@ export class AnthropicTransformer implements Transformer {
                     : {}),
                 });
               }
-            } else if (part.type === "file") {
+            } else if ((part as any).type === "file") {
               const fileBlocks = unifiedToolContentToAnthropic([part]);
               if (Array.isArray(fileBlocks)) content.push(...fileBlocks);
             }
@@ -1098,7 +1098,7 @@ export class AnthropicTransformer implements Transformer {
 
               if (!line.startsWith("data:")) continue;
               const data = line.slice(5).trim();
-              // Upstream SSE debug (recieved data / Original Response) lives in
+              // Upstream SSE debug (received data / Original Response) lives in
               // tapUpstreamSSEDebug so exact-wire and conversion paths share one tap.
 
               if (data === "[DONE]") {

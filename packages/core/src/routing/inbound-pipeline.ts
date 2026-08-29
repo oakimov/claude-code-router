@@ -30,6 +30,7 @@ import { stripOneMillionContextMarker } from "@/utils/claude-model-catalog";
 import { decodeClaudeModelAlias } from "@caeliq/ccr-shared";
 import { ensureRequestLatency, markLatency } from "@/utils/request-latency";
 import { applyReasoningAutoSummary } from "@/utils/reasoning-effort";
+import { extractClientSessionId } from "@/utils/cacheControl";
 
 export interface PreparedInboundRequest {
   match: ProtocolRouteMatch;
@@ -103,6 +104,18 @@ export async function prepareInboundRequest(
     originalBody,
     query
   );
+
+  // Capture conversation id from the original client wire before Unified drops
+  // Anthropic metadata. Never use harness version / system text.
+  (req as any).protocolContext = context;
+  const sessionId = extractClientSessionId({
+    body: originalBody,
+    headers: req.headers,
+  });
+  if (sessionId) {
+    context.sessionId = sessionId;
+    (req as any).sessionId = sessionId;
+  }
 
   if (match.protocol === "anthropic_messages") {
     context.anthropicClientKind = classifyAnthropicClient(

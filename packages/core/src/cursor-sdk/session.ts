@@ -12,6 +12,7 @@ import type { OpenAiUsage } from "./usage";
 import type { CursorTranscriptCommit } from "./turn-identity";
 import { ensureDenyHooksWorkspace } from "./hooks-template";
 import { EMPTY_HOST_ENVIRONMENT, type HostEnvironment } from "./host-env";
+import { installCursorAuthExchangeCache } from "./auth-exchange-cache";
 import {
   CURSOR_SDK_WORKSPACES_ROOT,
   ORPHAN_WORKSPACE_TTL_MS,
@@ -371,25 +372,53 @@ function removeManagedWorkspace(
   }
 }
 
+function sessionIdFromMetadataUserId(metadataUserId: string): string {
+  try {
+    const parsed = JSON.parse(metadataUserId);
+    if (parsed && typeof parsed.session_id === "string" && parsed.session_id) {
+      return parsed.session_id;
+    }
+  } catch {
+    // Non-JSON metadata.user_id is allowed.
+  }
+  const parts = metadataUserId.split("_session_");
+  if (parts.length > 1 && parts[1]) {
+    return parts[1];
+  }
+  return metadataUserId;
+}
+
+/**
+ * Cursor SDK session directory key. Prefer explicit client conversation ids
+ * over hashing prompt text — never include system / harness version.
+ */
 export function buildSessionKey(input: {
   headerSession?: string;
+  /** Inbound-captured Claude/OpenCode session id (protocolContext / req). */
+  clientSessionId?: string;
   metadataUserId?: string;
   model?: string;
+  /** Anonymous clients only: first user text (not system). */
+  firstUserText?: string;
+  /** @deprecated Use firstUserText. Kept for call-site compatibility. */
   systemAndFirstUser?: string;
 }): string {
   if (input.headerSession) {
     return createHash("sha256").update(input.headerSession).digest("hex").slice(0, 32);
   }
-  if (input.metadataUserId) {
-    const parts = input.metadataUserId.split("_session_");
-    if (parts.length > 1 && parts[1]) {
-      return createHash("sha256").update(parts[1]).digest("hex").slice(0, 32);
-    }
-    return createHash("sha256").update(input.metadataUserId).digest("hex").slice(0, 32);
+  if (input.clientSessionId) {
+    return createHash("sha256").update(input.clientSessionId).digest("hex").slice(0, 32);
   }
+  if (input.metadataUserId) {
+    return createHash("sha256")
+      .update(sessionIdFromMetadataUserId(input.metadataUserId))
+      .digest("hex")
+      .slice(0, 32);
+  }
+  // Anonymous: model + first user text only (never system / cc_version).
   return hashSessionFingerprint([
     input.model || "",
-    input.systemAndFirstUser || "",
+    input.firstUserText || input.systemAndFirstUser || "",
   ]);
 }
 
@@ -534,6 +563,7 @@ export class SessionManager {
     sandboxEnabled?: boolean;
     hostEnv?: HostEnvironment;
   }): Promise<CursorSdkSession> {
+    installCursorAuthExchangeCache();
     // A client can reconnect before ReadableStream cancellation finishes, and
     // several reconnects can wake together. Wait for both retirement and any
     // in-progress replacement creation, then re-check the manager state.
@@ -630,6 +660,7 @@ export class SessionManager {
     sandboxEnabled?: boolean;
     hostEnv?: HostEnvironment;
   }): Promise<CursorSdkSession> {
+    installCursorAuthExchangeCache();
     const sandboxEnabled = shouldEnableCursorSandbox(options.sandboxEnabled);
     const hostEnv = options.hostEnv || EMPTY_HOST_ENVIRONMENT;
     if (options.mode === "bridge") {

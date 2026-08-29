@@ -7,6 +7,8 @@ import {
 import type { UnifiedChatRequest, UnifiedMessage } from "@/types/llm";
 import type { UnifiedTurnIntent } from "@/types/turn-intent";
 import { resolveCursorApiKey } from "@/utils/cursor-auth";
+import { installCursorAuthExchangeCache } from "./auth-exchange-cache";
+import { ensureRequestLatency, markLatency } from "@/utils/request-latency";
 import { accumulateChatCompletion, createSseHelpers } from "./events-to-sse";
 import {
   analyzeTrailingCursorToolTurn,
@@ -89,6 +91,7 @@ function apiKeyFingerprint(apiKey: string): string {
 }
 
 async function getModelCatalog(apiKey: string): Promise<ModelListItem[]> {
+  installCursorAuthExchangeCache();
   const fingerprint = apiKeyFingerprint(apiKey);
   if (
     modelCatalog &&
@@ -159,22 +162,19 @@ async function resolveModelSelection(
   return { id: found.id };
 }
 
-function firstSystemAndUserText(request: UnifiedChatRequest): string {
-  const parts: string[] = [];
+/** First user-turn text only — never system (billing / cc_version / CLAUDE.md). */
+function firstUserText(request: UnifiedChatRequest): string {
   for (const msg of request.messages || []) {
-    if (msg.role === "system" || msg.role === "user") {
-      if (typeof msg.content === "string") parts.push(msg.content);
-      else if (Array.isArray(msg.content)) {
-        parts.push(
-          msg.content
-            .map((p: any) => (typeof p === "string" ? p : p?.text || ""))
-            .join("")
-        );
-      }
-      if (msg.role === "user") break;
+    if (msg.role !== "user") continue;
+    if (typeof msg.content === "string") return msg.content;
+    if (Array.isArray(msg.content)) {
+      return msg.content
+        .map((p: any) => (typeof p === "string" ? p : p?.text || ""))
+        .join("");
     }
+    return "";
   }
-  return parts.join("\n");
+  return "";
 }
 
 function isSupportedIdleTranscriptSuffix(
@@ -423,6 +423,10 @@ function resolveCursorRequest(
   const headerSession =
     context?.req?.headers?.["x-ccr-cursor-session"] ||
     context?.req?.headers?.["X-Ccr-Cursor-Session"];
+  const clientSessionId =
+    context?.protocolContext?.sessionId ||
+    context?.req?.protocolContext?.sessionId ||
+    context?.req?.sessionId;
   const sourceSessionIdentity =
     options.sourceSessionIdentity ||
     context?.unifiedRequest?.sourceSessionIdentity ||
@@ -430,12 +434,16 @@ function resolveCursorRequest(
   const sessionKey = buildSessionKey({
     headerSession:
       typeof headerSession === "string" ? headerSession : undefined,
+    clientSessionId:
+      typeof clientSessionId === "string" && clientSessionId
+        ? clientSessionId
+        : undefined,
     metadataUserId:
       typeof sourceSessionIdentity === "string"
         ? sourceSessionIdentity
         : undefined,
     model: modelId,
-    systemAndFirstUser: firstSystemAndUserText(request),
+    firstUserText: firstUserText(request),
   });
 
   return {
@@ -535,7 +543,13 @@ async function runCursorOnce(
   const sessionKey = resolved.sessionKey;
 
   const effort = extractEffort(request);
-  const model = await resolveModelSelection(apiKey, modelId, effort);
+  // Reused sessions already have a live Agent. Skip Cursor.models.list (and its
+  // auth exchange) unless effort needs a catalog variant lookup.
+  const existingSession = globalSessionManager.get(sessionKey);
+  const model =
+    existingSession && !effort
+      ? { id: modelId }
+      : await resolveModelSelection(apiKey, modelId, effort);
   throwIfCursorProducerAborted(options.abortSignal);
 
   // Host facts are re-read every turn: the project root can change between
@@ -782,6 +796,7 @@ async function runCursorOnce(
       targetSession.activeRunToken = nextRunToken;
 
       try {
+        markLatency(ensureRequestLatency(context?.req), "upstreamFetchStart");
         const run = await sendCursorPrompt(
           targetSession,
           prompt,
@@ -791,6 +806,7 @@ async function runCursorOnce(
             logger,
           }
         );
+        markLatency(ensureRequestLatency(context?.req), "upstreamHeaders");
         targetSession.run = run;
         targetSession.activeRunToken = nextRunToken;
         targetSession.streamIterator = run.stream()[Symbol.asyncIterator]();
@@ -903,6 +919,7 @@ async function runCursorOnce(
       const enqueue = (chunk: Record<string, unknown>) => {
         collected.push(chunk);
         if (wantsStream) {
+          markLatency(ensureRequestLatency(context?.req), "upstreamFirstByte");
           controller.enqueue(helpers.encode(chunk));
         }
       };

@@ -480,8 +480,10 @@ export class OpencodeHeadersTransformer implements Transformer {
   private fingerprintConversation(request: any, context: any): string {
     const body = request.body || request;
     const model = body.model || "";
-    const msgs = body.messages || [];
-    const sample = JSON.stringify(msgs.slice(0, 3));
+    // Responses wire uses `input[]`, Chat/Anthropic uses `messages[]`.
+    // Hash the available shape so Responses keep does not churn session.
+    const msgs = body.messages || body.input || [];
+    const sample = JSON.stringify(Array.isArray(msgs) ? msgs.slice(0, 3) : []);
     const ip = context?.req?.headers?.["x-forwarded-for"] || context?.req?.ip || "";
     const ua = context?.req?.headers?.["user-agent"] || "";
     return createHash("sha256")

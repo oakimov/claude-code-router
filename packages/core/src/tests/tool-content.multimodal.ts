@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Multimodal tool-result round-trips across destination protocols.
  */
@@ -217,6 +218,34 @@ async function testVertexClaudeToolImages() {
   assert.equal(tr.content[1].type, "image");
 }
 
+async function testVertexClaudeUserFileParts() {
+  const { buildRequestBody } = await import("../utils/vertex-claude.util");
+  const body = buildRequestBody({
+    model: "claude-sonnet-4@20250514",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "see pdf" },
+          {
+            type: "file",
+            filename: "a.pdf",
+            file_data: "data:application/pdf;base64,BBBB",
+            media_type: "application/pdf",
+          },
+        ],
+      },
+    ],
+  } as any);
+  const user = body.messages.find((m: any) => m.role === "user");
+  assert.ok(user);
+  assert.equal(user.content[0].type, "text");
+  assert.equal(user.content[1].type, "document");
+  assert.equal(user.content[1].source.type, "base64");
+  assert.equal(user.content[1].source.media_type, "application/pdf");
+  assert.equal(user.content[1].title, "a.pdf");
+}
+
 async function testExtractHelperIsIdempotentOnStrings() {
   const msgs = [
     { role: "tool", tool_call_id: "c1", content: "plain" },
@@ -233,6 +262,7 @@ async function main() {
   await testChatExtractsToolMedia();
   await testMistralExtractsToolMedia();
   await testVertexClaudeToolImages();
+  await testVertexClaudeUserFileParts();
   await testExtractHelperIsIdempotentOnStrings();
   console.log("tool-content.multimodal: PASS");
 }

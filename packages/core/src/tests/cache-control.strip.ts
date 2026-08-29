@@ -4,6 +4,7 @@ import {
   applyQwenPromptCaching,
   applyRawAnthropicPromptCaching,
   deriveCacheSessionKey,
+  extractClientSessionId,
   stripToolsCacheControl,
   stripMessagesCacheControl,
 } from "../utils/cacheControl";
@@ -225,6 +226,48 @@ function testCacheSessionKeyIsHashed() {
   assert.equal(key?.includes("raw-session-secret"), false);
 }
 
+function testCacheSessionKeyIgnoresSystemTextWhenSessionPresent() {
+  const session = "32c43daa-888d-4573-a563-ee88b833801d";
+  const context = { protocolContext: { sessionId: session } };
+  const a = deriveCacheSessionKey(context, {
+    model: "grok-4.6",
+    messages: [
+      {
+        role: "system",
+        content: "x-anthropic-billing-header: cc_version=2.1.251.86c",
+      },
+      { role: "user", content: "hi" },
+    ],
+  } as any);
+  const b = deriveCacheSessionKey(context, {
+    model: "grok-4.6",
+    messages: [
+      {
+        role: "system",
+        content: "x-anthropic-billing-header: cc_version=2.1.251.e59; longer",
+      },
+      { role: "user", content: "hi" },
+    ],
+  } as any);
+  assert.equal(a, b);
+  assert.ok(a?.startsWith("ccr_"));
+}
+
+function testCacheSessionKeyFromAnthropicMetadataJson() {
+  const session = extractClientSessionId({
+    body: {
+      metadata: {
+        user_id: JSON.stringify({
+          device_id: "dev",
+          session_id: "32c43daa-888d-4573-a563-ee88b833801d",
+        }),
+      },
+      system: "x-anthropic-billing-header: cc_version=2.1.251.e59",
+    },
+  });
+  assert.equal(session, "32c43daa-888d-4573-a563-ee88b833801d");
+}
+
 async function testOpenAITransformerAddsNativeCacheFields() {
   const transformer = new OpenAITransformer();
   const out = await transformer.transformRequestIn(
@@ -425,6 +468,8 @@ async function main() {
   testAnthropicCachingDoesNotTouchToolSchemas();
   testQwenUsesLastMessageBreakpoint();
   testCacheSessionKeyIsHashed();
+  testCacheSessionKeyIgnoresSystemTextWhenSessionPresent();
+  testCacheSessionKeyFromAnthropicMetadataJson();
   await testOpenAITransformerAddsNativeCacheFields();
   await testOpenAITransformsImageCacheBreakpoint();
   await testOpenAICompatibleProviderDoesNotReceiveOpenAIFields();

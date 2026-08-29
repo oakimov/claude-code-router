@@ -15,7 +15,7 @@ import {
   countTokensInWorker,
   TOKEN_COUNT_WORKER_THRESHOLD_CHARS,
 } from "./token-count-worker";
-import { ensureRequestLatency, markLatency } from "./request-latency";
+import { attachLatencyMeta, ensureRequestLatency, markLatency } from "./request-latency";
 
 // Types from @anthropic-ai/sdk
 interface Tool {
@@ -662,10 +662,18 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
   const body = routingBody(req);
   const latency = ensureRequestLatency(req);
 
-  // Session identity: Anthropic metadata.user_id, or Unified metadata if present.
-  const sessionSource =
-    req.body?.metadata?.user_id ?? body?.metadata?.user_id;
-  req.sessionId = parseSessionId(sessionSource);
+  // Prefer the inbound-captured client session (original wire). Unified has no
+  // Anthropic metadata, so do not re-parse req.body after the protocol swap.
+  if (!req.sessionId) {
+    const sessionSource =
+      req.protocolContext?.sessionId ||
+      req.body?.metadata?.user_id ||
+      body?.metadata?.user_id;
+    req.sessionId =
+      typeof sessionSource === "string" && !sessionSource.includes("{")
+        ? sessionSource
+        : parseSessionId(sessionSource);
+  }
   const lastMessageUsage = sessionUsageCache.get(req.sessionId);
 
   // Token counting always uses the Unified projection when available.
@@ -684,8 +692,9 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
     const activeRouter = projectRouter || globalRouter;
     const longContextThreshold = activeRouter?.longContextThreshold || 60000;
 
-    // Explicit provider,model routes need no token count unless a custom router
-    // might still consume it. getUseModel returns those routes before longContext.
+    // Explicit provider,model routes skip exact tokenize (getUseModel returns
+    // before longContext). Still stamp a cheap char estimate so latency records
+    // are not stuck at tokenCount: 0 on 180k-token turns.
     if (!customRouterPath && modelForTokenizer.includes(",")) {
       const [provider, model] = modelForTokenizer.split(",");
       const finalProvider = providers.find(
@@ -694,7 +703,14 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
       const finalModel = finalProvider?.models?.find(
         (m: any) => m.toLowerCase() === model.toLowerCase()
       );
-      req.tokenCount = 0;
+      const estimated = estimateTokensFromChars(
+        estimateTokenizePayloadChars(messages, system, tools)
+      );
+      req.tokenCount = estimated;
+      attachLatencyMeta(latency, {
+        tokenCount: estimated,
+        tokenCountSource: "estimate",
+      });
       body.model =
         finalProvider && finalModel
           ? `${finalProvider.name},${finalModel}`
@@ -729,6 +745,12 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
     }
 
     req.tokenCount = tokenCount;
+    attachLatencyMeta(latency, {
+      tokenCount,
+      tokenCountSource: routerNeedsExactTokenCount(activeRouter, customRouterPath)
+        ? "exact"
+        : "skipped",
+    });
 
     let model;
     if (customRouterPath) {
