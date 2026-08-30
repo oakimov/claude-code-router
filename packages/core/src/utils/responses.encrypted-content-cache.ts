@@ -31,8 +31,277 @@ type CacheEntry = {
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 4096;
+const STREAM_MAX_ITEMS = 256;
+const STREAM_MAX_BYTES = 1024 * 1024;
 const CONTEXT_KEY = "__ccrResponsesEncryptedReasoning";
 const ENCRYPTED_INCLUDE = "reasoning.encrypted_content";
+
+type RecordedStreamItem = {
+  type: "reasoning" | "function_call" | "custom_tool_call" | "message";
+  sequence: number;
+  outputIndex?: number;
+  id?: string;
+  call_id?: string;
+  name?: string;
+  arguments?: string;
+  input?: string;
+  summaryText?: string;
+  encrypted_content?: string;
+  messageText?: string;
+};
+
+export type EncryptedReasoningStreamRecorder = {
+  observe(event: any): void;
+  completedOutput(): any[] | undefined;
+  discard(): void;
+};
+
+function streamItemType(
+  value: unknown
+): RecordedStreamItem["type"] | undefined {
+  return value === "reasoning" ||
+    value === "function_call" ||
+    value === "custom_tool_call" ||
+    value === "message"
+    ? value
+    : undefined;
+}
+
+function streamSummaryText(summary: unknown): string | undefined {
+  if (!Array.isArray(summary)) return undefined;
+  return summary
+    .map((part: any) =>
+      typeof part === "string"
+        ? part
+        : typeof part?.text === "string"
+          ? part.text
+          : ""
+    )
+    .filter(Boolean)
+    .join("\n");
+}
+
+function streamMessageText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  return content
+    .filter((part: any) => part?.type === "output_text")
+    .map((part: any) => (typeof part.text === "string" ? part.text : ""))
+    .join("");
+}
+
+/**
+ * Accumulate only the opaque reasoning/tool state needed for replay. Some
+ * Responses-compatible hosts omit full output from response.completed, so the
+ * cache cannot depend on that one event. Bounds make malformed streams fail
+ * closed (no cache write) without affecting client-visible stream conversion.
+ */
+export function createEncryptedReasoningStreamRecorder(): EncryptedReasoningStreamRecorder {
+  const entries = new Map<number, RecordedStreamItem>();
+  const aliases = new Map<string, number>();
+  let nextEntryId = 0;
+  let nextSequence = 0;
+  let bytesUsed = 0;
+  let discarded = false;
+
+  const discard = () => {
+    discarded = true;
+    entries.clear();
+    aliases.clear();
+    bytesUsed = 0;
+  };
+
+  const stringBytes = (value: string | undefined) =>
+    value ? Buffer.byteLength(value, "utf8") : 0;
+
+  const setString = (
+    entry: RecordedStreamItem,
+    field:
+      | "id"
+      | "call_id"
+      | "name"
+      | "arguments"
+      | "input"
+      | "summaryText"
+      | "encrypted_content"
+      | "messageText",
+    value: unknown,
+    append = false
+  ) => {
+    if (discarded || typeof value !== "string") return;
+    const previous = entry[field];
+    const next = append ? `${previous || ""}${value}` : value;
+    const nextBytes = bytesUsed - stringBytes(previous) + stringBytes(next);
+    if (nextBytes > STREAM_MAX_BYTES) {
+      discard();
+      return;
+    }
+    entry[field] = next;
+    bytesUsed = nextBytes;
+  };
+
+  const getEntry = (
+    event: any,
+    item: any,
+    fallbackType?: RecordedStreamItem["type"]
+  ): RecordedStreamItem | undefined => {
+    if (discarded) return undefined;
+    const type = streamItemType(item?.type) || fallbackType;
+    if (!type) return undefined;
+
+    const aliasCandidates: string[] = [];
+    const itemId =
+      (typeof item?.id === "string" && item.id) ||
+      (typeof event?.item_id === "string" && event.item_id) ||
+      undefined;
+    if (itemId) aliasCandidates.push(`id:${itemId}`);
+    if (typeof event?.output_index === "number") {
+      aliasCandidates.push(`output:${event.output_index}`);
+    }
+    if (typeof item?.call_id === "string" && item.call_id) {
+      aliasCandidates.push(`call:${item.call_id}`);
+    }
+
+    let entryId: number | undefined;
+    for (const alias of aliasCandidates) {
+      const existing = aliases.get(alias);
+      if (existing !== undefined) {
+        entryId = existing;
+        break;
+      }
+    }
+
+    if (entryId === undefined) {
+      if (entries.size >= STREAM_MAX_ITEMS) {
+        discard();
+        return undefined;
+      }
+      entryId = nextEntryId++;
+      entries.set(entryId, {
+        type,
+        sequence: nextSequence++,
+        ...(typeof event?.output_index === "number"
+          ? { outputIndex: event.output_index }
+          : {}),
+      });
+    }
+
+    for (const alias of aliasCandidates) aliases.set(alias, entryId);
+    const entry = entries.get(entryId)!;
+    entry.type = type;
+    if (entry.outputIndex === undefined && typeof event?.output_index === "number") {
+      entry.outputIndex = event.output_index;
+    }
+    return entry;
+  };
+
+  const mergeItem = (event: any, item: any) => {
+    const entry = getEntry(event, item);
+    if (!entry || discarded) return;
+    setString(entry, "id", item?.id);
+    setString(entry, "call_id", item?.call_id);
+    setString(entry, "name", item?.name);
+    setString(entry, "arguments", item?.arguments);
+    setString(entry, "input", item?.input);
+    setString(entry, "encrypted_content", item?.encrypted_content);
+    const summaryText = streamSummaryText(item?.summary);
+    if (summaryText !== undefined) setString(entry, "summaryText", summaryText);
+    const messageText = streamMessageText(item?.content);
+    if (messageText !== undefined) setString(entry, "messageText", messageText);
+  };
+
+  const observe = (event: any) => {
+    if (discarded || !event || typeof event !== "object") return;
+
+    if (
+      event.type === "response.output_item.added" ||
+      event.type === "response.output_item.done"
+    ) {
+      mergeItem(event, event.item);
+      return;
+    }
+
+    if (event.type === "response.reasoning_summary_text.delta") {
+      const entry = getEntry(event, undefined, "reasoning");
+      if (entry) setString(entry, "summaryText", event.delta, true);
+      return;
+    }
+
+    if (event.type === "response.function_call_arguments.delta") {
+      const entry = getEntry(event, undefined, "function_call");
+      if (entry) setString(entry, "arguments", event.delta, true);
+      return;
+    }
+
+    if (event.type === "response.function_call_arguments.done") {
+      const entry = getEntry(event, undefined, "function_call");
+      if (entry) setString(entry, "arguments", event.arguments);
+      return;
+    }
+
+    if (event.type === "response.custom_tool_call_input.delta") {
+      const entry = getEntry(event, undefined, "custom_tool_call");
+      if (entry) setString(entry, "input", event.delta, true);
+      return;
+    }
+
+    if (event.type === "response.custom_tool_call_input.done") {
+      const entry = getEntry(event, undefined, "custom_tool_call");
+      if (entry) setString(entry, "input", event.input);
+      return;
+    }
+
+    if (event.type === "response.completed" && Array.isArray(event.response?.output)) {
+      event.response.output.forEach((item: any, outputIndex: number) => {
+        mergeItem({ ...event, output_index: outputIndex }, item);
+      });
+    }
+  };
+
+  const completedOutput = (): any[] | undefined => {
+    if (discarded) return undefined;
+    return [...entries.values()]
+      .sort(
+        (left, right) =>
+          (left.outputIndex ?? Number.MAX_SAFE_INTEGER) -
+            (right.outputIndex ?? Number.MAX_SAFE_INTEGER) ||
+          left.sequence - right.sequence
+      )
+      .map((entry) => {
+        if (entry.type === "reasoning") {
+          return {
+            type: "reasoning",
+            ...(entry.id ? { id: entry.id } : {}),
+            summary: entry.summaryText
+              ? [{ type: "summary_text", text: entry.summaryText }]
+              : [],
+            ...(entry.encrypted_content
+              ? { encrypted_content: entry.encrypted_content }
+              : {}),
+          };
+        }
+        if (entry.type === "message") {
+          return {
+            type: "message",
+            ...(entry.id ? { id: entry.id } : {}),
+            content: entry.messageText
+              ? [{ type: "output_text", text: entry.messageText }]
+              : [],
+          };
+        }
+        return {
+          type: entry.type,
+          ...(entry.id ? { id: entry.id } : {}),
+          ...(entry.call_id ? { call_id: entry.call_id } : {}),
+          ...(entry.name ? { name: entry.name } : {}),
+          ...(entry.type === "custom_tool_call"
+            ? { input: entry.input || "" }
+            : { arguments: entry.arguments || "" }),
+        };
+      });
+  };
+
+  return { observe, completedOutput, discard };
+}
 
 class EncryptedReasoningCache {
   private readonly cache = new Map<string, CacheEntry>();
@@ -322,10 +591,22 @@ export function isCrossProtocolResponsesClient(
   return protocol === "anthropic_messages" || protocol === "openai_chat_completions";
 }
 
+function encryptedReasoningClientSession(
+  context?: TransformerContext
+): string | undefined {
+  const candidate =
+    (context as any)?.protocolContext?.sessionId ||
+    (context as any)?.req?.protocolContext?.sessionId ||
+    (context as any)?.req?.sessionId;
+  return typeof candidate === "string" && candidate ? candidate : undefined;
+}
+
 export function buildEncryptedReasoningCacheNamespace(
   request: Pick<UnifiedChatRequest, "model" | "thinking" | "reasoning">,
-  provider?: Pick<LLMProvider, "name" | "baseUrl">
+  provider?: Pick<LLMProvider, "name" | "baseUrl">,
+  context?: TransformerContext
 ): string {
+  const session = encryptedReasoningClientSession(context);
   return hash(
     stableStringify({
       provider: provider?.name || "",
@@ -333,6 +614,10 @@ export function buildEncryptedReasoningCacheNamespace(
       model: request.model || "",
       thinking: request.thinking || null,
       reasoning: request.reasoning || null,
+      // Opaque Responses state must never cross client conversations. Hash the
+      // stable session id before it enters the already-hashed namespace so raw
+      // identifiers are not retained in cache keys or diagnostics.
+      clientSession: session ? hash(session) : "anonymous",
     })
   );
 }
@@ -355,7 +640,11 @@ export function prepareEncryptedReasoningReplay(
     return { restoredFromCache: 0, includeRequested: false };
   }
 
-  const namespace = buildEncryptedReasoningCacheNamespace(request, provider);
+  const namespace = buildEncryptedReasoningCacheNamespace(
+    request,
+    provider,
+    context
+  );
   const priorMessages: MessageLike[] = [];
   let restoredFromCache = 0;
 

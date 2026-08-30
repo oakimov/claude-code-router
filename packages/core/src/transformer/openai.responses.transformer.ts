@@ -36,6 +36,7 @@ import {
 } from "../utils/openai.responses.util";
 import {
   assistantMessageFromResponsesOutput,
+  createEncryptedReasoningStreamRecorder,
   hasEncryptedReasoningContext,
   prepareEncryptedReasoningReplay,
   recordEncryptedReasoningResponseMessage,
@@ -94,11 +95,17 @@ interface ResponsesStreamEvent {
         b64_json?: string;
         mime_type?: string;
       };
+  arguments?: string;
+  input?: string;
   item?: {
     id?: string;
     type?: string;
     call_id?: string;
     name?: string;
+    arguments?: string;
+    input?: string;
+    summary?: Array<{ type?: string; text?: string } | string>;
+    encrypted_content?: string;
     content?: Array<{
       type: string;
       text?: string;
@@ -677,8 +684,12 @@ export class OpenAIResponsesTransformer implements Transformer {
       const toolIndexByKey = new Map<string, number>();
       const textByItemId = new Map<string, string>();
       const thinkingByItemId = new Map<string, string>();
+      const encryptedRecorder = shouldCacheEncrypted
+        ? createEncryptedReasoningStreamRecorder()
+        : undefined;
       let nextToolIndex = 0;
       let terminated = false;
+      let completed = false;
 
       const toolIndexFor = (
         data: ResponsesStreamEvent
@@ -699,9 +710,11 @@ export class OpenAIResponsesTransformer implements Transformer {
         return nextToolIndex++;
       };
 
-      const terminate = () => {
+      const terminate = (successful = false) => {
+        completed = completed || successful;
         terminated = true;
         toolIndexByKey.clear();
+        encryptedRecorder?.discard();
       };
 
       return createSSEStreamReader(
@@ -722,6 +735,7 @@ export class OpenAIResponsesTransformer implements Transformer {
 
             try {
               const data: ResponsesStreamEvent = JSON.parse(dataStr);
+              encryptedRecorder?.observe(data);
 
               // Terminal provider failure: emit one protocol-shaped streamed
               // error, then [DONE]. Partial output already delivered stays
@@ -772,19 +786,32 @@ export class OpenAIResponsesTransformer implements Transformer {
               if (data.type === "response.completed") {
                 if (shouldCacheEncrypted) {
                   recordEncryptedReasoningResponseMessage(
-                    assistantMessageFromResponsesOutput(data.response?.output),
+                    assistantMessageFromResponsesOutput(
+                      encryptedRecorder?.completedOutput()
+                    ),
                     context
                   );
                 }
                 ctx.controller.enqueue(encodeSSEData("[DONE]", ctx.encoder));
-                terminate();
+                terminate(true);
               }
             } catch {
+              encryptedRecorder?.discard();
               ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
             }
           } else {
             ctx.controller.enqueue(encodeSSELine(line, ctx.encoder));
           }
+        },
+        {
+          onComplete: () => {
+            if (!completed) encryptedRecorder?.discard();
+          },
+          onError: () => {
+            encryptedRecorder?.discard();
+            return false;
+          },
+          logger: this.logger,
         }
       );
     }
