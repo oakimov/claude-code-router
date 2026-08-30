@@ -1,6 +1,5 @@
 import { UnifiedChatRequest, MessageContent } from "@/types/llm";
 import { Transformer, TransformerContext } from "@/types/transformer";
-import { createApiError } from "@/api/middleware";
 import { sanitizeUpstreamErrorText } from "@/utils/redact";
 import { sanitizeResponsesCallId } from "@/utils/toolCallId";
 import {
@@ -35,6 +34,12 @@ import {
   uniquifyReasoningItemIds,
   type ResponsesCallIdMap,
 } from "../utils/openai.responses.util";
+import {
+  assistantMessageFromResponsesOutput,
+  hasEncryptedReasoningContext,
+  prepareEncryptedReasoningReplay,
+  recordEncryptedReasoningResponseMessage,
+} from "../utils/responses.encrypted-content-cache";
 
 interface ResponsesAPIOutputItem {
   type: string;
@@ -414,6 +419,10 @@ export class OpenAIResponsesTransformer implements Transformer {
 
     const model = request.model || "";
     request = applyOpenAIChatCaching(request, provider, context);
+    // Anthropic/Chat cannot round-trip Responses ciphertext. Request
+    // reasoning.encrypted_content and restore prior-turn ciphertext onto
+    // assistant tool turns before the Responses input is built.
+    prepareEncryptedReasoningReplay(request, provider, context);
     const messages = validateOpenAIToolCalls(request.messages);
     request.messages = messages;
 
@@ -609,8 +618,8 @@ export class OpenAIResponsesTransformer implements Transformer {
       (request as any).parallel_tool_calls = request.parallel_tool_calls;
     }
 
-    // Client-driven Responses hints: re-emit only what inbound preserved.
-    // Chat/Anthropic→Responses leave these unset (no synthesis).
+    // Client-driven Responses hints, plus encrypted_content for Anthropic/Chat
+    // (prepareEncryptedReasoningReplay already merged that include when needed).
     const include = normalizeResponsesInclude(request.include);
     if (include) {
       request.include = include;
@@ -626,13 +635,23 @@ export class OpenAIResponsesTransformer implements Transformer {
     return request;
   }
 
-  async transformResponseOut(response: Response): Promise<Response> {
+  async transformResponseOut(
+    response: Response,
+    context?: TransformerContext
+  ): Promise<Response> {
     const contentType = response.headers.get("Content-Type") || "";
+    const shouldCacheEncrypted = hasEncryptedReasoningContext(context);
 
     if (contentType.includes("application/json")) {
       const jsonResponse: any = await response.json();
 
       if (jsonResponse.object === "response" && jsonResponse.output) {
+        if (shouldCacheEncrypted) {
+          recordEncryptedReasoningResponseMessage(
+            assistantMessageFromResponsesOutput(jsonResponse.output),
+            context
+          );
+        }
         const chatResponse = this.convertResponseToChat(jsonResponse);
         return new Response(JSON.stringify(chatResponse), {
           status: response.status,
@@ -749,7 +768,14 @@ export class OpenAIResponsesTransformer implements Transformer {
 
               // Responses upstreams end after response.completed without a
               // [DONE]; Chat consumers rely on the terminator, so add it.
+              // Ciphertext often arrives only on the completed reasoning item.
               if (data.type === "response.completed") {
+                if (shouldCacheEncrypted) {
+                  recordEncryptedReasoningResponseMessage(
+                    assistantMessageFromResponsesOutput(data.response?.output),
+                    context
+                  );
+                }
                 ctx.controller.enqueue(encodeSSEData("[DONE]", ctx.encoder));
                 terminate();
               }

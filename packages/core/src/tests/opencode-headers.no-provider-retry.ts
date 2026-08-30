@@ -162,6 +162,17 @@ async function preserveTerminalErrors() {
         },
       }),
     },
+    {
+      status: 400,
+      body: JSON.stringify({
+        error: {
+          param: "input[2].call_id",
+          type: "invalid_request_error",
+          message:
+            "Error from provider (Console): Upstream request failed: [invalid_request_error] `input[2].call_id` The length of the value must be `<= 64`.",
+        },
+      }),
+    },
   ]) {
     const calls = installFetch([
       () => new Response(fixture.body, { status: fixture.status }),

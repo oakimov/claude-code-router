@@ -3,6 +3,7 @@ import type {
   AnthropicClientKind,
   AnthropicProviderMode,
 } from "@/utils/anthropic-client-policy";
+import type { ResponsesCallIdMap } from "@/utils/openai.responses.util";
 
 /**
  * Inbound client protocols supported by CCR's gateway lifecycle.
@@ -44,6 +45,9 @@ export interface ClientProtocolContext {
   anthropicPolicyApplied?: boolean;
   anthropicSystemTransformed?: boolean;
   claudeAuthToolNameMap?: Map<string, string>;
+  /** Per-request Responses call/result correlation across both pipeline legs. */
+  responsesCallIdMap?: ResponsesCallIdMap;
+  responsesCustomToolNames?: Set<string>;
   /** Claude Code routing metadata extracted without mutating the source billing block. */
   claudeCodeSubagent?: boolean;
   taggedSubagentModel?: string;

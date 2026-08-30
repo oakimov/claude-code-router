@@ -5,6 +5,8 @@ import { sanitizeResponsesCallId } from "../utils/toolCallId";
 
 const CURSOR_CONCATENATED_ID =
   "call-901b1ddc-d889-4a6e-8c58-564ad17bc095-3\nfc_b466705e-df33-9395-8d4a-21a95066affe_0";
+const CURSOR_RESPONSES_REPLAY_ID =
+  "call-66dbf0b1-aad7-482f-baa2-647748651824-0_fc_49ff1230-042d-97ce-b451-5e3f019a21d8_0";
 const RESPONSES_CALL_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 function sanitizerContract() {
@@ -62,6 +64,80 @@ async function perTurnMapAvoidsSanitizedCollisions() {
   assert.notEqual(collidingValidId, sanitized);
   assert.match(collidingValidId, RESPONSES_CALL_ID_PATTERN);
   assert.equal(mapCallId(map, sanitized), collidingValidId);
+}
+
+async function exactWireCallIdsAreSanitizedSelectively() {
+  const {
+    createCallIdMap,
+    responsesRequestToUnified,
+    sanitizeResponsesWireCallIds,
+  } = await import("../utils/openai.responses.util");
+  const map = createCallIdMap();
+  const imageOutput = [
+    { type: "input_text", text: "image" },
+    {
+      type: "input_image",
+      image_url: "data:image/png;base64,iVBOR",
+      detail: "high",
+    },
+  ];
+  const wire = {
+    model: "muse-spark-1.2-contributor-free",
+    input: [
+      {
+        type: "function_call",
+        id: "fc_original",
+        call_id: CURSOR_RESPONSES_REPLAY_ID,
+        name: "Read",
+        arguments: "{}",
+      },
+      {
+        type: "function_call_output",
+        call_id: CURSOR_RESPONSES_REPLAY_ID,
+        output: imageOutput,
+      },
+    ],
+    prompt_cache_key: "session-stable",
+    include: ["reasoning.encrypted_content"],
+    store: false,
+  };
+
+  // Normalization populates the same map that exact-wire repair later reuses.
+  responsesRequestToUnified(wire, map);
+  const repaired = sanitizeResponsesWireCallIds(wire, map);
+  const call = repaired.input[0];
+  const output = repaired.input[1];
+  assert.match(call.call_id, RESPONSES_CALL_ID_PATTERN);
+  assert.equal(call.call_id, output.call_id);
+  assert.equal(call.id, "fc_original");
+  assert.equal(repaired.prompt_cache_key, "session-stable");
+  assert.deepEqual(repaired.include, ["reasoning.encrypted_content"]);
+  assert.equal(repaired.store, false);
+  assert.strictEqual(repaired.input[1].output, imageOutput);
+  assert.strictEqual(wire.input[0].call_id, CURSOR_RESPONSES_REPLAY_ID);
+
+  const fallbackOnly = sanitizeResponsesWireCallIds({
+    model: wire.model,
+    input: [
+      {
+        type: "function_call",
+        id: CURSOR_RESPONSES_REPLAY_ID,
+        name: "Read",
+        arguments: "{}",
+      },
+      {
+        type: "function_call_output",
+        call_id: CURSOR_RESPONSES_REPLAY_ID,
+        output: "done",
+      },
+    ],
+  });
+  assert.equal(fallbackOnly.input[0].id, CURSOR_RESPONSES_REPLAY_ID);
+  assert.match(fallbackOnly.input[0].call_id, RESPONSES_CALL_ID_PATTERN);
+  assert.equal(
+    fallbackOnly.input[0].call_id,
+    fallbackOnly.input[1].call_id
+  );
 }
 
 function pairedRequest() {
@@ -806,6 +882,7 @@ async function main() {
   sanitizerContract();
   redosAdversarialInputIsLinear();
   await perTurnMapAvoidsSanitizedCollisions();
+  await exactWireCallIdsAreSanitizedSelectively();
   await codexRequestIsSanitized();
   await openAIResponsesRequestStripsStreamOptions();
   await openAIResponsesRequestIsSanitized();

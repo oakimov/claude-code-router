@@ -32,6 +32,7 @@ import {
   toClientAbortError,
 } from "@/utils/retry";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
+import { sanitizeResponsesWireCallIds } from "../utils/openai.responses.util";
 import { applyOpenAIChatReasoning } from "../utils/reasoning-effort";
 import { applyRawAnthropicPromptCaching } from "../utils/cacheControl";
 
@@ -291,7 +292,7 @@ async function handleTransformerEndpoint(
     const exactWireSource = isNativeWire
       ? prepared.originalBody
       : prepared.clientWireBody ?? prepared.originalBody;
-    const pipelineBody = useWireKeep
+    let pipelineBody = useWireKeep
       ? {
           ...(typeof exactWireSource === "object" && exactWireSource
             ? cloneProtocolBody(exactWireSource)
@@ -303,6 +304,18 @@ async function handleTransformerEndpoint(
     (req as any)._autoWireKeep = autoKeep.isAutoKeep;
 
     recordClientCachePrefix(req, fastify, provider, pipelineBody);
+    // Exact-wire keep skips the Responses owner's body rebuild, but call_id is
+    // still provider-validated (<=64). Repair only those correlation fields
+    // after the client snapshot so cache diagnostics attribute it to the wire.
+    if (
+      useWireKeep &&
+      prepared.protocolContext.protocol === "openai_responses"
+    ) {
+      pipelineBody = sanitizeResponsesWireCallIds(
+        pipelineBody,
+        prepared.protocolContext.responsesCallIdMap
+      );
+    }
 
     const { requestBody, config, bypass, wireKeep } = await processRequestTransformers(
       pipelineBody,
@@ -581,7 +594,7 @@ async function handleFallback(
       const exactWireSource = fallbackIsNativeWire
         ? prepared?.originalBody
         : prepared?.clientWireBody ?? prepared?.originalBody;
-      const pipelineBody = fallbackUseWireKeep
+      let pipelineBody = fallbackUseWireKeep
         ? {
             ...(typeof exactWireSource === "object" && exactWireSource
               ? cloneProtocolBody(exactWireSource)
@@ -591,6 +604,15 @@ async function handleFallback(
         : unifiedBody;
 
       recordClientCachePrefix(newReq, fastify, provider, pipelineBody);
+      if (
+        fallbackUseWireKeep &&
+        fallbackProtocolContext?.protocol === "openai_responses"
+      ) {
+        pipelineBody = sanitizeResponsesWireCallIds(
+          pipelineBody,
+          fallbackProtocolContext.responsesCallIdMap
+        );
+      }
 
       const { requestBody, config, bypass, wireKeep } = await processRequestTransformers(
         pipelineBody,

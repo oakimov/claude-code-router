@@ -28,6 +28,23 @@ interface CapturedRequest {
   body: any;
 }
 
+const LONG_RESPONSES_CALL_ID =
+  "call-66dbf0b1-aad7-482f-baa2-647748651824-0_fc_49ff1230-042d-97ce-b451-5e3f019a21d8_0";
+const ENCRYPTED_REPLAY_PROMPT = "Begin encrypted reasoning replay";
+const ENCRYPTED_REPLAY_RESULT = "distinctive tool result: 42";
+const ENCRYPTED_REPLAY_CIPHERTEXT =
+  "gAAAAABlroute-level-encrypted-reasoning-ciphertext";
+
+function findLastCaptured(
+  captured: CapturedRequest[],
+  predicate: (request: CapturedRequest) => boolean
+): CapturedRequest | undefined {
+  for (let index = captured.length - 1; index >= 0; index--) {
+    if (predicate(captured[index])) return captured[index];
+  }
+  return undefined;
+}
+
 async function buildApp() {
   const configService = new ConfigService({
     useJsonFile: false,
@@ -291,7 +308,84 @@ async function main() {
       );
     }
     if (request.url.includes("responses.invalid")) {
-      if (typeof request.body.input === "string") {
+      const input = Array.isArray(request.body.input) ? request.body.input : [];
+      const replayStart = input.some((item: any) => {
+        if (item?.role !== "user") return false;
+        if (item?.content === ENCRYPTED_REPLAY_PROMPT) return true;
+        return item?.content?.some?.(
+          (content: any) =>
+            content?.type === "input_text" &&
+            content?.text === ENCRYPTED_REPLAY_PROMPT
+        );
+      });
+      const replayResult = input.some(
+        (item: any) =>
+          item?.type === "function_call_output" &&
+          JSON.stringify(item.output).includes(ENCRYPTED_REPLAY_RESULT)
+      );
+
+      if (replayStart && !replayResult) {
+        return new Response(
+          JSON.stringify({
+            id: "resp_replay_first",
+            object: "response",
+            created_at: 1,
+            status: "completed",
+            model: "gpt",
+            output: [
+              {
+                id: "rs_replay_first",
+                type: "reasoning",
+                summary: [
+                  {
+                    type: "summary_text",
+                    text: "I should read the distinctive value.",
+                  },
+                ],
+                encrypted_content: ENCRYPTED_REPLAY_CIPHERTEXT,
+              },
+              {
+                id: "fc_replay_first",
+                type: "function_call",
+                call_id: "call_replay_first",
+                name: "Read",
+                arguments: '{"path":"/tmp/distinctive"}',
+                status: "completed",
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          }),
+          { headers: { "content-type": "application/json" } }
+        );
+      }
+
+      if (replayResult) {
+        return new Response(
+          JSON.stringify({
+            id: "resp_replay_second",
+            object: "response",
+            created_at: 2,
+            status: "completed",
+            model: "gpt",
+            output: [
+              {
+                id: "msg_replay_second",
+                type: "message",
+                role: "assistant",
+                status: "completed",
+                content: [{ type: "output_text", text: "The result is 42." }],
+              },
+            ],
+            usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+          }),
+          { headers: { "content-type": "application/json" } }
+        );
+      }
+
+      if (
+        typeof request.body.input === "string" ||
+        request.body.prompt_cache_key === "same-protocol-cache-key"
+      ) {
         return new Response(
           JSON.stringify({
             id: "resp_exact",
@@ -938,15 +1032,38 @@ async function main() {
       );
     }
 
-    // An opaque cache key survives only an exact Responses destination.
+    // Exact Responses keeps every wire field except provider-invalid call ids.
+    // Cursor composite ids are deterministically bounded and paired before the
+    // kept wire reaches the provider; cache/media fields remain untouched.
     {
       const result = await app.inject({
         method: "POST",
         url: "/v1/responses",
         payload: {
           model: "responses,gpt",
-          input: "exact responses",
+          input: [
+            {
+              type: "function_call",
+              call_id: LONG_RESPONSES_CALL_ID,
+              name: "Read",
+              arguments: "{}",
+            },
+            {
+              type: "function_call_output",
+              call_id: LONG_RESPONSES_CALL_ID,
+              output: [
+                { type: "input_text", text: "image" },
+                {
+                  type: "input_image",
+                  image_url: "data:image/png;base64,iVBOR",
+                  detail: "high",
+                },
+              ],
+            },
+          ],
           prompt_cache_key: "same-protocol-cache-key",
+          include: ["reasoning.encrypted_content"],
+          store: false,
         },
       });
       assert.equal(result.statusCode, 200, result.body);
@@ -955,7 +1072,137 @@ async function main() {
         upstream.body.prompt_cache_key,
         "same-protocol-cache-key"
       );
+      assert.match(upstream.body.input[0].call_id, /^[a-zA-Z0-9_-]{1,64}$/);
+      assert.equal(
+        upstream.body.input[0].call_id,
+        upstream.body.input[1].call_id
+      );
+      assert.equal(upstream.body.input[1].output[1].detail, "high");
+      assert.deepEqual(upstream.body.include, ["reasoning.encrypted_content"]);
+      assert.equal(upstream.body.store, false);
       assert.equal(result.json().object, "response");
+    }
+
+    // Anthropic cannot carry opaque Responses reasoning ciphertext through its
+    // tool-use wire format. The Responses owner must request and record that
+    // state on the first turn, then restore it ahead of the matching call and
+    // result on the next provider request.
+    {
+      const first = await app.inject({
+        method: "POST",
+        url: "/v1/messages",
+        payload: {
+          model: "responses,gpt",
+          max_tokens: 128,
+          tools: [
+            {
+              name: "Read",
+              description: "Read a distinctive value",
+              input_schema: {
+                type: "object",
+                properties: { path: { type: "string" } },
+                required: ["path"],
+              },
+            },
+          ],
+          messages: [{ role: "user", content: ENCRYPTED_REPLAY_PROMPT }],
+        },
+      });
+      assert.equal(first.statusCode, 200, first.body);
+
+      const firstUpstream = findLastCaptured(captured, (request) => {
+        const input = Array.isArray(request.body.input) ? request.body.input : [];
+        return input.some((item: any) => {
+          if (item?.role !== "user") return false;
+          if (item?.content === ENCRYPTED_REPLAY_PROMPT) return true;
+          return item?.content?.some?.(
+            (content: any) =>
+              content?.type === "input_text" &&
+              content?.text === ENCRYPTED_REPLAY_PROMPT
+          );
+        });
+      })!;
+      assert.ok(firstUpstream, JSON.stringify(captured.at(-1)?.body));
+      assert.deepEqual(firstUpstream.body.include, [
+        "reasoning.encrypted_content",
+      ]);
+      const firstBody = first.json();
+      assert.ok(
+        !first.body.includes(ENCRYPTED_REPLAY_CIPHERTEXT),
+        "Responses ciphertext leaked across the Anthropic boundary"
+      );
+      const toolUse = firstBody.content.find(
+        (block: any) => block?.type === "tool_use"
+      );
+      assert.ok(toolUse, first.body);
+      assert.equal(toolUse.id, "call_replay_first");
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/v1/messages",
+        payload: {
+          model: "responses,gpt",
+          max_tokens: 128,
+          tools: [
+            {
+              name: "Read",
+              description: "Read a distinctive value",
+              input_schema: {
+                type: "object",
+                properties: { path: { type: "string" } },
+                required: ["path"],
+              },
+            },
+          ],
+          messages: [
+            { role: "user", content: ENCRYPTED_REPLAY_PROMPT },
+            { role: "assistant", content: [toolUse] },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: toolUse.id,
+                  content: ENCRYPTED_REPLAY_RESULT,
+                },
+              ],
+            },
+          ],
+        },
+      });
+      assert.equal(second.statusCode, 200, second.body);
+      assert.equal(second.json().content[0].text, "The result is 42.");
+
+      const secondUpstream = findLastCaptured(captured, (request) => {
+        const input = Array.isArray(request.body.input) ? request.body.input : [];
+        return input.some(
+          (item: any) =>
+            item?.type === "function_call_output" &&
+            JSON.stringify(item.output).includes(ENCRYPTED_REPLAY_RESULT)
+        );
+      })!;
+      assert.ok(secondUpstream, JSON.stringify(captured.at(-1)?.body));
+      assert.deepEqual(secondUpstream.body.include, [
+        "reasoning.encrypted_content",
+      ]);
+      const restoredReasoning = secondUpstream.body.input.find(
+        (item: any) => item?.type === "reasoning"
+      );
+      assert.equal(
+        restoredReasoning?.encrypted_content,
+        ENCRYPTED_REPLAY_CIPHERTEXT
+      );
+      const restoredCall = secondUpstream.body.input.find(
+        (item: any) => item?.type === "function_call"
+      );
+      const restoredOutput = secondUpstream.body.input.find(
+        (item: any) => item?.type === "function_call_output"
+      );
+      assert.equal(restoredCall?.call_id, toolUse.id);
+      assert.equal(restoredOutput?.call_id, restoredCall?.call_id);
+      assert.ok(
+        JSON.stringify(restoredOutput?.output).includes(ENCRYPTED_REPLAY_RESULT)
+      );
     }
 
     // A Responses provider mutates its attempt body into input[]. Its failed

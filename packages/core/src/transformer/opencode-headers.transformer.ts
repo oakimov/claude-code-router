@@ -400,6 +400,13 @@ export class OpencodeHeadersTransformer implements Transformer {
       return false;
     }
     const message = String(parsed?.error?.message || "");
+    const errorParam = parsed?.error?.param;
+    // A concrete parameter names a request-shape failure, even when Zen wraps
+    // it in the same `Upstream request failed` Console message as a bad bucket.
+    // Re-rolling cannot repair fields such as `input[2].call_id` being too long.
+    if (errorParam !== null && errorParam !== undefined && errorParam !== "") {
+      return false;
+    }
     // 401: the hashed slot has no provider at all.
     if (
       status === 401 &&

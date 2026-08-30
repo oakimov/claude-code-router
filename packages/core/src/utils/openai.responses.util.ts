@@ -47,6 +47,50 @@ export function mapCallId(
 }
 
 /**
+ * Enforce the Responses call_id contract without rebuilding an exact-wire body.
+ *
+ * Same-protocol wire keep deliberately skips the Responses owner's full
+ * transformRequestIn so images/files/reasoning/cache fields remain byte-faithful.
+ * Call ids are still a provider validation boundary, though: Cursor-style
+ * composite ids can exceed 64 characters. Rewrite only the identity field on
+ * call/output items and reuse the normalization map so paired items and hash
+ * collisions resolve identically in both directions.
+ */
+export function sanitizeResponsesWireCallIds(
+  body: any,
+  callIdMap: ResponsesCallIdMap = createCallIdMap()
+): any {
+  if (!body || typeof body !== "object" || !Array.isArray(body.input)) {
+    return body;
+  }
+
+  let changed = false;
+  const input = body.input.map((item: any) => {
+    if (!item || typeof item !== "object") return item;
+
+    const isCall =
+      item.type === "function_call" || item.type === "custom_tool_call";
+    const isOutput =
+      item.type === "function_call_output" ||
+      item.type === "custom_tool_call_output";
+    const rawCallId = isCall
+      ? item.call_id || item.id
+      : isOutput
+        ? item.call_id
+        : undefined;
+    const mapped = mapCallId(callIdMap, rawCallId);
+    if (!mapped || item.call_id === mapped) return item;
+
+    // Calls may use id as a client-side fallback, but provider-bound Responses
+    // input requires call_id. Keep the opaque item id and add/repair call_id.
+    changed = true;
+    return { ...item, call_id: mapped };
+  });
+
+  return changed ? { ...body, input } : body;
+}
+
+/**
  * Client Responses wire → Unified (Chat Completions shape).
  * Supports the Responses MVP subset; rejects CCR-unsupported stateful fields.
  */
