@@ -357,6 +357,62 @@ async function parentIsPreservedAcrossZenRetries() {
   assert.equal(calls[0].headers["x-opencode-request"], calls[1].headers["x-opencode-request"]);
 }
 
+async function exhaustedRoutingFailureInvalidatesSessionForNextTurn() {
+  // Regression for /tmp/ccr-logs ccr-20260830000000_1.log L6772-L6817:
+  // req-1fa exhausted 5 routing 400s and cached poisoned g0sb; req-1fc
+  // reused it and burned its first attempt on the same bad bucket.
+  const transformer = new OpencodeHeadersTransformer();
+  const ctx = makeContext(); // conv-1
+
+  const calls = installFetch(
+    Array.from({ length: 5 }, () => () => new Response(UPSTREAM_FAILED_BODY, { status: 400 }))
+  );
+  await assert.rejects(
+    () => transformer.transformRequestIn(body, provider, ctx),
+    (error: any) => {
+      assert.equal(error.statusCode, 400);
+      return true;
+    }
+  );
+  assert.equal(calls.length, 5);
+  // Each attempt re-rolled — 5 distinct sessions exhausted.
+  assert.equal(new Set(calls.map((c) => c.headers["x-opencode-session"])).size, 5);
+  const poisoned = calls[4].headers["x-opencode-session"];
+
+  // Next turn in the same conversation must not reuse the poisoned session.
+  const nextCalls = installFetch([okResponse]);
+  const result = await transformer.transformRequestIn(body, provider, ctx);
+  assert.equal(result.config.__providerResponse.status, 200);
+  assert.equal(nextCalls.length, 1);
+  assert.notEqual(nextCalls[0].headers["x-opencode-session"], poisoned);
+}
+
+async function exhaustedTransientKeepsSessionForNextTurn() {
+  const transformer = new OpencodeHeadersTransformer();
+  const ctx = { signal: undefined, req: { sessionId: "conv-transient-exhaust", log: { warn() {}, info() {}, debug() {} }, server: { configService: { getHttpsProxy: () => undefined } } } };
+
+  const calls = installFetch(
+    Array.from({ length: 5 }, () => () =>
+      new Response(JSON.stringify({ error: { message: "busy" } }), { status: 529, headers: { "retry-after-ms": "0" } })
+    )
+  );
+  await assert.rejects(
+    () => transformer.transformRequestIn(body, provider, ctx),
+    (error: any) => {
+      assert.equal(error.statusCode, 529);
+      return true;
+    }
+  );
+  assert.equal(calls.length, 5);
+  assert.equal(new Set(calls.map((c) => c.headers["x-opencode-session"])).size, 1);
+  const sticky = calls[4].headers["x-opencode-session"];
+
+  const nextCalls = installFetch([okResponse]);
+  const result = await transformer.transformRequestIn(body, provider, ctx);
+  assert.equal(result.config.__providerResponse.status, 200);
+  assert.equal(nextCalls[0].headers["x-opencode-session"], sticky);
+}
+
 async function main() {
   const originalFetch = (globalThis as any).fetch;
   try {
@@ -372,6 +428,8 @@ async function main() {
     await zenModelIsNeverSent();
     await forwardsParentSessionIdWhenPresent();
     await parentIsPreservedAcrossZenRetries();
+    await exhaustedRoutingFailureInvalidatesSessionForNextTurn();
+    await exhaustedTransientKeepsSessionForNextTurn();
     console.log("opencode-headers reliability: PASS");
   } finally {
     (globalThis as any).fetch = originalFetch;

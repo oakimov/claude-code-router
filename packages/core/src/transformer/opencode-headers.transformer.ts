@@ -209,6 +209,14 @@ export class OpencodeHeadersTransformer implements Transformer {
       // Not retryable, or retries exhausted: reproduce the generic provider
       // error so auth, validation, permissions, and final transient failures
       // keep flowing through CCR's normal error and fallback handling.
+      // If the exhausting error was a deterministic bad bucket, invalidate so
+      // the next turn in this conversation does not start from a poisoned
+      // x-opencode-session (e.g. req-1fa g0sb → req-1fc reuse; see /tmp/ccr-logs
+      // ccr-20260830000000_1.log L6772-L6817). Transient exhaustion keeps the
+      // session for provider/cache affinity.
+      if (routingFailure) {
+        this.invalidateSession(conversationId);
+      }
       const safeErrorText =
         sanitizeUpstreamErrorText(errorText) || errorText.slice(0, 240);
       throw createApiError(
@@ -334,6 +342,7 @@ export class OpencodeHeadersTransformer implements Transformer {
     model?: string,
     context?: any
   ): Record<string, any> {
+    void model;
     const sessionId = this.getOrCreateSessionId(conversationId);
     const parentSessionId = this.resolveParentSessionId(context);
     return {
