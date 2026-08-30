@@ -1095,11 +1095,14 @@ async function sendRequestToProvider(
   };
 
   const tapProviderResponse = async (response: Response) => {
+    const cursorLifecycle = context?.req?._cursorCacheLifecycle ?? null;
     const cacheDiff = logOutboundCacheStructure(requestBody, {
       ...debugOpts,
       stage: "wire",
       responseStatus: response?.status,
       clientStageDiff: context?.req?._cachePrefixClientDiff,
+      outboundBody: requestBody,
+      cursorLifecycle,
       cacheAffinity: {
         sessionId: config?.headers?.["session-id"],
         threadId: config?.headers?.["thread-id"],
@@ -1111,6 +1114,8 @@ async function sendRequestToProvider(
       responseStatus: response?.status,
       clientStageDiff: context?.req?._cachePrefixClientDiff,
       cacheDiff,
+      outboundBody: requestBody,
+      cursorLifecycle,
       direction: "provider→ccr",
       maxBytes: resolveLogBodyMaxBytes(fastify.configService),
       rawEvents: shouldLogSSEEvents(fastify.configService),

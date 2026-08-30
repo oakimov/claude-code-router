@@ -12,6 +12,12 @@ import {
   type CachePrefixDiff,
   type CachePrefixStage,
 } from "./cache-prefix-debug";
+import {
+  buildCachePrediction,
+  classifyCacheOutcome,
+  type CachePrediction,
+  type CursorCacheLifecycle,
+} from "./cache-outcome";
 import type { MessageDebugDirection } from "./message-debug";
 
 export type UpstreamSSEDebugOptions = {
@@ -32,6 +38,12 @@ export type UpstreamSSEDebugOptions = {
   clientStageDiff?: CachePrefixDiff | null;
   /** Outbound diff for this request, joined with the observed cache usage. */
   cacheDiff?: CachePrefixDiff | null;
+  /** Outbound body used to resolve Anthropic/Gemini family signals. */
+  outboundBody?: Record<string, any> | null;
+  /** Precomputed prediction; built from cacheDiff + family when absent. */
+  cachePrediction?: CachePrediction | null;
+  /** Cursor lifecycle plan for conversation-cache prediction. */
+  cursorLifecycle?: CursorCacheLifecycle | null;
   /** Cap for a single logged payload string (raw `data` field). */
   maxBytes?: number;
   /**
@@ -199,7 +211,11 @@ function mergeCacheUsage(acc: CacheUsage, event: unknown): CacheUsage {
       cachedTokens: pickMax(next.cachedTokens, cached),
       cacheWriteTokens: pickMax(
         next.cacheWriteTokens,
-        num(usage.cache_creation_input_tokens)
+        pickMax(
+          num(usage.cache_creation_input_tokens),
+          // Cursor accurate usage projects write onto this diagnostic field.
+          num(usage._cacheWriteTokens)
+        )
       ),
       outputTokens: pickMax(
         next.outputTokens,
@@ -213,24 +229,22 @@ function mergeCacheUsage(acc: CacheUsage, event: unknown): CacheUsage {
   return next;
 }
 
-/**
- * One-line triage verdict joining what we predicted against what upstream did.
- * `unexpected-miss` is the row worth chasing: the prefix we sent was intact and
- * the provider still charged full price.
- */
-function cacheVerdict(
-  diff: CachePrefixDiff | null | undefined,
-  hitRatio: number | undefined
-): string {
-  if (hitRatio === undefined) return "unknown";
-  if (!diff || diff.firstTurn) return hitRatio > 0 ? "warm-start" : "cold";
-  if (diff.prefixIntact) return hitRatio > 0 ? "hit" : "unexpected-miss";
-  return hitRatio > 0 ? "partial" : "expected-miss";
+function resolvePrediction(opts: UpstreamSSEDebugOptions): CachePrediction {
+  if (opts.cachePrediction) return opts.cachePrediction;
+  return buildCachePrediction({
+    provider: opts.provider,
+    model: opts.model,
+    body: opts.outboundBody,
+    diff: opts.cacheDiff,
+    cursorLifecycle: opts.cursorLifecycle,
+    conversationId: opts.conversationId,
+  });
 }
 
 function logCacheOutcome(opts: UpstreamSSEDebugOptions, usage: CacheUsage): void {
   if (!isDebugEnabled(opts.logger)) return;
   const diff = opts.cacheDiff;
+  const prediction = resolvePrediction(opts);
   const cached = usage.cachedTokens;
   const prompt = usage.promptTokens;
   // Anthropic reports the uncached remainder, so the billable prompt is the sum.
@@ -245,7 +259,9 @@ function logCacheOutcome(opts: UpstreamSSEDebugOptions, usage: CacheUsage): void
       ? undefined
       : Math.round((cached / promptTotal) * 1000) / 1000;
 
-  if (cached === undefined && prompt === undefined && !diff) return;
+  if (cached === undefined && prompt === undefined && !diff && !opts.cursorLifecycle) {
+    return;
+  }
 
   const divergenceStage = diff
     ? attributeDivergenceStage(opts.clientStageDiff, diff)
@@ -255,25 +271,47 @@ function logCacheOutcome(opts: UpstreamSSEDebugOptions, usage: CacheUsage): void
     reqId: opts.reqId,
     provider: opts.provider,
     type: "cache outcome",
-    verdict: cacheVerdict(diff, hitRatio),
+    verdict: classifyCacheOutcome(prediction, hitRatio),
+    cacheFamily: prediction.family,
+    predictedHit: prediction.predictedHit,
+    predictionReason: prediction.reason,
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.responseStatus ? { status: opts.responseStatus } : {}),
+    ...(prediction.lifecycleAction
+      ? { lifecycleAction: prediction.lifecycleAction }
+      : {}),
+    ...(prediction.hostPrefixIntact !== undefined
+      ? { hostPrefixIntact: prediction.hostPrefixIntact }
+      : {}),
     ...(diff
       ? {
-          conversationId: diff.conversationId,
-          conversationIdSource: diff.conversationIdSource,
+          conversationId: prediction.conversationId || diff.conversationId,
+          conversationIdSource:
+            prediction.conversationIdSource || diff.conversationIdSource,
           predictedChange: diff.change,
-          prefixIntact: diff.prefixIntact,
-          ...(diff.firstDivergencePath
-            ? { firstDivergencePath: diff.firstDivergencePath }
+          prefixIntact:
+            prediction.prefixIntact !== undefined
+              ? prediction.prefixIntact
+              : diff.prefixIntact,
+          ...(prediction.firstDivergencePath || diff.firstDivergencePath
+            ? {
+                firstDivergencePath:
+                  prediction.firstDivergencePath || diff.firstDivergencePath,
+              }
             : {}),
-          approxPrefixTokensLost: diff.approxPrefixTokensLost,
+          approxPrefixTokensLost:
+            prediction.approxPrefixTokensLost ?? diff.approxPrefixTokensLost,
           ...(diff.msSinceLastTurn !== undefined
             ? { msSinceLastTurn: diff.msSinceLastTurn }
             : {}),
           ...(divergenceStage ? { divergenceStage } : {}),
         }
-      : {}),
+      : prediction.conversationId
+        ? {
+            conversationId: prediction.conversationId,
+            conversationIdSource: prediction.conversationIdSource,
+          }
+        : {}),
     ...(promptTotal !== undefined ? { promptTokens: promptTotal } : {}),
     ...(cached !== undefined ? { cachedTokens: cached } : {}),
     ...(usage.cacheWriteTokens !== undefined

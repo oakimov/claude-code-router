@@ -7,6 +7,14 @@ export type OpenAiUsage = {
   prompt_tokens_details?: { cached_tokens?: number };
 };
 
+export type CursorUsageCounters = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoningTokens: number;
+};
+
 /**
  * Rough char→token estimate for mid-turn usage before Cursor emits a usage
  * event (and as the host-facing request usage even when it does).
@@ -73,35 +81,132 @@ function tokenValue(value: unknown): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+function truncNonNegative(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+}
+
+export function cursorUsageCountersFromSdk(
+  raw: OpenAiUsage | undefined
+): CursorUsageCounters | undefined {
+  if (!raw) return undefined;
+  // OpenAiUsage here is the SDK TokenUsage projected onto flat fields; also
+  // accept the SDK's native TokenUsage shape when passed directly.
+  const anyRaw: any = raw as any;
+  const inputTokens =
+    truncNonNegative(anyRaw.prompt_tokens ?? anyRaw.inputTokens ?? anyRaw.input_tokens);
+  const outputTokens =
+    truncNonNegative(anyRaw.completion_tokens ?? anyRaw.outputTokens ?? anyRaw.output_tokens);
+  const cacheRead = Math.min(
+    inputTokens,
+    truncNonNegative(
+      anyRaw.prompt_tokens_details?.cached_tokens ??
+        anyRaw.cacheReadTokens ??
+        anyRaw.cache_read_input_tokens ??
+        anyRaw.cacheRead
+    )
+  );
+  const cacheWrite = Math.min(
+    Math.max(0, inputTokens - cacheRead),
+    truncNonNegative(
+      anyRaw.cacheWriteTokens ??
+        anyRaw.cache_write_input_tokens ??
+        anyRaw.cacheWrite ??
+        // usageFromSdk projects SDK write onto this diagnostic field
+        anyRaw._cacheWriteTokens
+    )
+  );
+  const reasoningTokens = Math.min(
+    outputTokens,
+    truncNonNegative(anyRaw.reasoningTokens ?? anyRaw.reasoning_tokens)
+  );
+  if (!inputTokens && !outputTokens && !cacheRead && !cacheWrite && !reasoningTokens) {
+    return undefined;
+  }
+  return { inputTokens, outputTokens, cacheRead, cacheWrite, reasoningTokens };
+}
+
 /**
  * Cursor SDK usage is session-cumulative, while Claude Code needs per-request
  * usage. Use SDK usage only as a cache-read ratio and apply it to CCR's
  * current-request prompt estimate.
+ *
+ * Kept for tests; prefer buildAccurateUsageFromSdk for turn-end reporting.
  */
 export function cacheReadFromSdkDelta(
   current: OpenAiUsage | undefined,
   previous: OpenAiUsage | undefined,
   promptTokens: number
 ): number {
+  const counters = cursorUsageCountersFromSdk(current);
+  const prior = cursorUsageCountersFromSdk(previous);
+  if (!counters) return 0;
+  return accurateCacheReadForPrompt(counters, promptTokens, prior?.inputTokens);
+}
+
+function accurateCacheReadForPrompt(
+  counters: CursorUsageCounters,
+  promptTokens: number,
+  priorInputTokens?: number
+): number {
   const prompt = Math.max(0, Math.trunc(promptTokens) || 0);
-  if (!prompt || !current) return 0;
+  if (!prompt || !counters.inputTokens) return 0;
+  const rawInput = Math.max(0, Math.trunc(counters.inputTokens));
+  const rawCacheRead = Math.min(rawInput, Math.max(0, Math.trunc(counters.cacheRead)));
+  if (!rawCacheRead) return 0;
+  // Port of cursor-opencode-provider usage.ts: preserve cache proportions while
+  // normalizing to the per-request prompt size. priorInputTokens is the
+  // previous turn's occupancy — when the cache read covers that window, do not
+  // dilute the hit by multi-step TurnEnded aggregates.
+  const proportionalRead = Math.min(prompt, Math.round(prompt * rawCacheRead / rawInput));
+  const prefixRead =
+    typeof priorInputTokens === "number" &&
+    Number.isFinite(priorInputTokens) &&
+    priorInputTokens > 0 &&
+    rawCacheRead >= priorInputTokens
+      ? Math.min(prompt, Math.trunc(priorInputTokens))
+      : 0;
+  return Math.min(prompt, Math.max(proportionalRead, prefixRead));
+}
 
-  const currentPrompt = tokenValue(current.prompt_tokens);
-  const currentCached = tokenValue(current.prompt_tokens_details?.cached_tokens);
-  if (!currentPrompt || !currentCached) return 0;
-
-  const previousPrompt = tokenValue(previous?.prompt_tokens);
-  const previousCached = tokenValue(previous?.prompt_tokens_details?.cached_tokens);
-
-  const deltaPrompt = currentPrompt - previousPrompt;
-  const deltaCached = currentCached - previousCached;
-  const ratio =
-    deltaPrompt > 0 && deltaCached > 0
-      ? deltaCached / deltaPrompt
-      : currentCached / currentPrompt;
-
-  const boundedRatio = Math.min(1, Math.max(0, ratio));
-  return Math.min(prompt, Math.floor(prompt * boundedRatio));
+/**
+ * Build per-request OpenAI usage from SDK TurnEnded counters, normalized to
+ * the per-request prompt estimate but preserving Cursor's cache proportions
+ * (same math as cursor-opencode-provider buildLanguageModelV3UsageFromCounters).
+ * Falls back to chars/4-based completion tokens when SDK output is absent.
+ */
+export function buildAccurateUsageFromSdk(
+  sdkRaw: OpenAiUsage | undefined,
+  promptTokens: number,
+  outputChars: number,
+  priorRaw?: OpenAiUsage | undefined
+): OpenAiUsage {
+  const prompt_tokens = Math.max(0, Math.trunc(promptTokens) || 0);
+  const fallbackCompletion = estimateTokens(outputChars);
+  const counters = cursorUsageCountersFromSdk(sdkRaw);
+  if (!counters) {
+    return requestUsageFromEstimate(prompt_tokens, outputChars, 0);
+  }
+  const cacheRead = accurateCacheReadForPrompt(counters, prompt_tokens, cursorUsageCountersFromSdk(priorRaw)?.inputTokens);
+  const rawCacheWrite = Math.min(
+    Math.max(0, counters.inputTokens - counters.cacheRead),
+    Math.max(0, counters.cacheWrite)
+  );
+  const cacheWrite =
+    counters.inputTokens > 0
+      ? Math.min(prompt_tokens - cacheRead, Math.round(prompt_tokens * rawCacheWrite / counters.inputTokens))
+      : 0;
+  const completion_tokens =
+    counters.outputTokens > 0 ? Math.min(fallbackCompletion || counters.outputTokens, counters.outputTokens) || fallbackCompletion : fallbackCompletion;
+  // Keep total as prompt+completion; expose cached via details. reasoning stays in completion.
+  return {
+    prompt_tokens,
+    completion_tokens,
+    total_tokens: prompt_tokens + completion_tokens,
+    prompt_tokens_details: { cached_tokens: cacheRead },
+    // Carry cacheWrite for diagnostics without changing the OpenAI shape
+    ...(cacheWrite ? { _cacheWriteTokens: cacheWrite } as any : {}),
+  };
 }
 
 /** Map SDK TokenUsage / usage message into OpenAI shape (diagnostics only). */
@@ -114,13 +219,16 @@ export function usageFromSdk(message: any): OpenAiUsage | undefined {
   const prompt_tokens = Number(input) || 0;
   const completion_tokens = Number(output) || 0;
   const cacheRead =
-    Number(u.cacheReadTokens ?? u.cache_read_input_tokens ?? 0) || 0;
+    Number(u.cacheReadTokens ?? u.cache_read_input_tokens ?? u.cacheRead ?? 0) || 0;
+  const cacheWrite =
+    Number(u.cacheWriteTokens ?? u.cache_write_input_tokens ?? u.cacheWrite ?? 0) || 0;
+  const total =
+    Number(u.totalTokens ?? u.total_tokens ?? prompt_tokens + completion_tokens) || 0;
   return {
     prompt_tokens,
     completion_tokens,
-    total_tokens:
-      Number(u.totalTokens ?? u.total_tokens ?? prompt_tokens + completion_tokens) ||
-      0,
+    total_tokens: total || prompt_tokens + completion_tokens,
     prompt_tokens_details: { cached_tokens: cacheRead },
+    ...(cacheWrite ? { _cacheWriteTokens: cacheWrite } as any : {}),
   };
 }

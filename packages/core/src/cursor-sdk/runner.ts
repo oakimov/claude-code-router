@@ -47,9 +47,8 @@ import {
 } from "./shared";
 import { createTurnToolMetrics, toCustomTools } from "./tools";
 import {
-  cacheReadFromSdkDelta,
+  buildAccurateUsageFromSdk,
   estimateRequestPromptTokens,
-  requestUsageFromEstimate,
   usageFromSdk,
   type OpenAiUsage,
 } from "./usage";
@@ -675,6 +674,15 @@ async function runCursorOnce(
     },
   });
 
+  // Capture the pre-retirement action for cache-outcome prediction. After we
+  // remint the session, lifecyclePlan becomes send-full, which would hide why
+  // this turn was predicted as a miss (divergent alignment, etc.).
+  const lifecycleForCache = {
+    sessionKey: session.key,
+    action: lifecyclePlan.action,
+    reason: "reason" in lifecyclePlan ? lifecyclePlan.reason : undefined,
+  };
+
   if (lifecyclePlan.action === "retire-and-replay-full") {
     logger?.info?.(
       {
@@ -715,6 +723,11 @@ async function runCursorOnce(
         "cursor-sdk lifecycle changed while resolving exact parked tools"
       );
     }
+  }
+
+  // Stash for cache-outcome judgement (conversation cache, not prompt_cache_key).
+  if (context?.req) {
+    context.req._cursorCacheLifecycle = lifecycleForCache;
   }
 
   const shouldSendNewPrompt = lifecyclePlan.action !== "resume-parked";
@@ -960,17 +973,24 @@ async function runCursorOnce(
       };
 
       const finishUsage = (): OpenAiUsage => {
-        const cacheReadTokens = cacheReadFromSdkDelta(
+        const usage = buildAccurateUsageFromSdk(
           sdkUsageRaw,
-          session.lastSdkUsageRaw,
-          promptTokens
-        );
-        const usage = requestUsageFromEstimate(
           promptTokens,
           outputChars,
-          cacheReadTokens
+          session.lastSdkUsageRaw
         );
         if (sdkUsageRaw) session.lastSdkUsageRaw = sdkUsageRaw;
+        // Trace parity with cursor-opencode-provider formatTurnUsageValidation
+        logger?.debug?.(
+          {
+            promptTokens,
+            outputChars,
+            sdkUsageRaw,
+            priorRaw: session.lastSdkUsageRaw,
+            usage,
+          },
+          "cursor-sdk accurate usage"
+        );
         return usage;
       };
 
