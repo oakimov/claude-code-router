@@ -55,7 +55,7 @@ function isCursorHost(url: string): boolean {
       host.endsWith(".cursor.com")
     );
   } catch {
-    return url.includes("cursor.sh") || url.includes("cursor.com");
+    return false;
   }
 }
 
