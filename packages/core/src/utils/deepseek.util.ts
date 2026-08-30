@@ -297,13 +297,25 @@ export function isDeepSeekThinkingRequest(
   return targetsDeepSeek && thinkingEnabled;
 }
 
+function reasoningClientSession(
+  context?: TransformerContext
+): string | undefined {
+  const candidate =
+    (context as any)?.protocolContext?.sessionId ||
+    (context as any)?.req?.protocolContext?.sessionId ||
+    (context as any)?.req?.sessionId;
+  return typeof candidate === "string" && candidate ? candidate : undefined;
+}
+
 export function buildReasoningCacheNamespace(
   request: Pick<
     UnifiedChatRequest,
     "model" | "thinking" | "enable_thinking" | "reasoning"
   >,
-  provider?: Pick<LLMProvider, "name" | "baseUrl">
+  provider?: Pick<LLMProvider, "name" | "baseUrl">,
+  context?: TransformerContext
 ): string {
+  const session = reasoningClientSession(context);
   return hash(
     stableStringify({
       provider: provider?.name || "",
@@ -312,6 +324,7 @@ export function buildReasoningCacheNamespace(
       thinking: request.thinking || null,
       enable_thinking: request.enable_thinking || false,
       reasoning: request.reasoning || null,
+      clientSession: session ? hash(session) : "anonymous",
     })
   );
 }
@@ -328,7 +341,7 @@ export function prepareReasoningReplay(
     return { restoredFromCache: 0, restoredFromThinking: 0 };
   }
 
-  const namespace = buildReasoningCacheNamespace(request, provider);
+  const namespace = buildReasoningCacheNamespace(request, provider, context);
   const priorMessages: MessageLike[] = [];
   let restoredFromCache = 0;
   let restoredFromThinking = 0;
