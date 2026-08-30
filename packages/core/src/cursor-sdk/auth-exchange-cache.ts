@@ -120,15 +120,41 @@ function rememberToken(crsrBearer: string, entry: CachedToken): void {
   crsrByAccessToken.set(entry.accessToken, crsrBearer);
 }
 
+function forgetCrsrKey(crsrKey: string): void {
+  const entry = tokenByCrsr.get(crsrKey);
+  if (entry) crsrByAccessToken.delete(entry.accessToken);
+  tokenByCrsr.delete(crsrKey);
+}
+
 function invalidateByAccessBearer(authorization: string | undefined): void {
   if (!authorization) return;
   const token = authorization.replace(/^Bearer\s+/i, "").trim();
   if (!token) return;
   const crsr = crsrByAccessToken.get(token);
   if (!crsr) return;
-  const entry = tokenByCrsr.get(crsr);
-  if (entry) crsrByAccessToken.delete(entry.accessToken);
-  tokenByCrsr.delete(crsr);
+  forgetCrsrKey(crsr);
+}
+
+/**
+ * Drop a cached exchanged token for a dashboard API key (crsr_... or Bearer).
+ * Call when Cursor reports auth failure via run status / AuthenticationError —
+ * those paths often never surface as an HTTP 401 on the wrapped fetch.
+ */
+export function invalidateCursorAuthExchange(crsrApiKey: string): void {
+  const key = crsrApiKey.replace(/^Bearer\s+/i, "").trim();
+  if (!key) return;
+  // Cache keys are the Authorization header as the SDK sends it ("Bearer crsr_...").
+  // Callers may also pass a bare crsr_ key or (rarely) an access token.
+  const bearerForm = `Bearer ${key}`;
+  if (tokenByCrsr.has(bearerForm)) {
+    forgetCrsrKey(bearerForm);
+    return;
+  }
+  if (tokenByCrsr.has(key)) {
+    forgetCrsrKey(key);
+    return;
+  }
+  invalidateByAccessBearer(key);
 }
 
 /** Drop AbortSignal so one canceled Agent.create cannot abort a shared exchange. */

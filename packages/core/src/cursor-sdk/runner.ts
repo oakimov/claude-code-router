@@ -7,7 +7,10 @@ import {
 import type { UnifiedChatRequest, UnifiedMessage } from "@/types/llm";
 import type { UnifiedTurnIntent } from "@/types/turn-intent";
 import { resolveCursorApiKey } from "@/utils/cursor-auth";
-import { installCursorAuthExchangeCache } from "./auth-exchange-cache";
+import {
+  installCursorAuthExchangeCache,
+  invalidateCursorAuthExchange,
+} from "./auth-exchange-cache";
 import { ensureRequestLatency, markLatency } from "@/utils/request-latency";
 import { accumulateChatCompletion, createSseHelpers } from "./events-to-sse";
 import {
@@ -88,6 +91,32 @@ let modelCatalog: InMemoryModelCatalog | null = null;
 
 function apiKeyFingerprint(apiKey: string): string {
   return hashSessionFingerprint([apiKey]);
+}
+
+/** Cursor agent auth often arrives as run status ERROR / AuthenticationError, not HTTP 401. */
+function isCursorAuthenticationError(err: unknown): boolean {
+  const e = (err || {}) as {
+    name?: unknown;
+    code?: unknown;
+    message?: unknown;
+  };
+  const name = typeof e.name === "string" ? e.name : "";
+  const code = typeof e.code === "string" ? e.code : "";
+  const message = (
+    typeof e.message === "string" ? e.message : String(err ?? "")
+  ).toLowerCase();
+  return (
+    name === "AuthenticationError" ||
+    code === "unauthenticated" ||
+    message.includes("authentication error") ||
+    message.includes("try logging out and back in")
+  );
+}
+
+function dropCachedExchangeOnAuthError(apiKey: string, err: unknown): void {
+  if (isCursorAuthenticationError(err)) {
+    invalidateCursorAuthExchange(apiKey);
+  }
 }
 
 async function getModelCatalog(apiKey: string): Promise<ModelListItem[]> {
@@ -728,12 +757,14 @@ async function runCursorOnce(
   // cumulative session metrics and any mid-request session replacement.
   const turnToolMetrics = createTurnToolMetrics();
 
-  const toProviderError = (err: any) =>
-    Object.assign(new Error(`Cursor SDK error: ${err?.message || err}`), {
+  const toProviderError = (err: any) => {
+    dropCachedExchangeOnAuthError(apiKey, err);
+    return Object.assign(new Error(`Cursor SDK error: ${err?.message || err}`), {
       statusCode: 502,
       code: "provider_response_error",
       type: "api_error",
     });
+  };
 
   const shouldReplayWithFreshSession = (err: any, targetSession: CursorSdkSession) =>
     targetSession.hasSentPrompt &&
@@ -1143,7 +1174,7 @@ async function runCursorOnce(
               sdkUsageRaw = usageFromSdk(message);
             } else if (message.type === "status") {
               if (message.status === "ERROR" || message.status === "CANCELLED") {
-                throw Object.assign(
+                const statusError = Object.assign(
                   new Error(
                     message.message ||
                       `Cursor run ${message.status.toLowerCase()}`
@@ -1154,6 +1185,8 @@ async function runCursorOnce(
                     type: "api_error",
                   }
                 );
+                dropCachedExchangeOnAuthError(apiKey, statusError);
+                throw statusError;
               }
               // Drain the SDK iterator after FINISHED. The SDK emits this status
               // before it persists terminal metadata and closes the event buffer;
@@ -1180,6 +1213,7 @@ async function runCursorOnce(
         if (wantsStream) controller.enqueue(helpers.encodeDone());
         controller.close();
       } catch (err: any) {
+        dropCachedExchangeOnAuthError(apiKey, err);
         logger?.error?.(
           {
             err,

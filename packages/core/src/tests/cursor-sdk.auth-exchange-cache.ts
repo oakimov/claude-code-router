@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   __resetCursorAuthExchangeCacheForTests,
   installCursorAuthExchangeCache,
+  invalidateCursorAuthExchange,
 } from "../cursor-sdk/auth-exchange-cache";
 
 const EXCHANGE = "https://api2.cursor.sh/auth/exchange_user_api_key";
@@ -99,6 +100,44 @@ async function main() {
       exchanges,
       1,
       "401 must drop the cached token so the next exchange hits the network"
+    );
+
+    // Explicit invalidate (auth status ERROR path) must also force a re-exchange.
+    exchanges = 0;
+    const warm = await fetch(EXCHANGE, {
+      method: "POST",
+      headers: { Authorization: "Bearer crsr_test" },
+      body: "{}",
+    });
+    assert.equal((await warm.json()).accessToken, "tok_live");
+    assert.equal(exchanges, 0, "warm path must still use the cached token");
+
+    invalidateCursorAuthExchange("crsr_test");
+    exchanges = 0;
+    const afterExplicit = await fetch(EXCHANGE, {
+      method: "POST",
+      headers: { Authorization: "Bearer crsr_test" },
+      body: "{}",
+    });
+    assert.equal((await afterExplicit.json()).accessToken, "tok_live");
+    assert.equal(
+      exchanges,
+      1,
+      "invalidateCursorAuthExchange must drop the cached token"
+    );
+
+    invalidateCursorAuthExchange("Bearer crsr_test");
+    exchanges = 0;
+    const afterBearerForm = await fetch(EXCHANGE, {
+      method: "POST",
+      headers: { Authorization: "Bearer crsr_test" },
+      body: "{}",
+    });
+    assert.equal((await afterBearerForm.json()).accessToken, "tok_live");
+    assert.equal(
+      exchanges,
+      1,
+      "Bearer-prefixed invalidate must also drop the cached token"
     );
 
     // Cancel during coalesce must not abort the shared network exchange.
