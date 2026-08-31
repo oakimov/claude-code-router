@@ -53,6 +53,8 @@ import {
   thinkingFromUnifiedAssistant,
 } from "../utils/openai.responses.util";
 
+import { estimateRequestPromptTokens } from "../cursor-sdk/usage";
+
 function toAnthropicCacheUsage(usage: any): Record<string, number> {
   const cached = usage?.prompt_tokens_details?.cached_tokens || 0;
   const written = usage?.prompt_tokens_details?.cache_write_tokens || 0;
@@ -69,6 +71,62 @@ function toAnthropicCacheUsage(usage: any): Record<string, number> {
     cache_creation_input_tokens: written,
     cache_read_input_tokens: cached,
   };
+}
+
+function toAnthropicMessageStartUsage(usage: any): Record<string, number> {
+  return {
+    ...toAnthropicCacheUsage(usage),
+    // Native Anthropic puts input/cache on message_start and leaves
+    // output_tokens for message_delta. Emitting completion tokens here would
+    // double-count clients that sum start+delta.
+    output_tokens: 0,
+  };
+}
+
+function estimateAnthropicMessageStartUsage(
+  context?: TransformerContext
+): Record<string, number> {
+  const estimateSource = (context as any)?.anthropicEstimateRequest as
+    | UnifiedChatRequest
+    | undefined;
+  if (!estimateSource) {
+    return {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    };
+  }
+
+  try {
+    // Claude Code's meter is input+cache_creation+cache_read. An early estimate
+    // of the request body is enough to trip autocompact before the final
+    // provider usage arrives on message_delta.
+    const estimated = estimateRequestPromptTokens(estimateSource);
+    return {
+      input_tokens: Math.max(0, Math.floor(estimated)),
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    };
+  } catch {
+    return {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    };
+  }
+}
+
+function resolveMessageStartUsage(
+  chunkUsage: any,
+  context?: TransformerContext
+): Record<string, number> {
+  if (chunkUsage) {
+    return toAnthropicMessageStartUsage(chunkUsage);
+  }
+  return estimateAnthropicMessageStartUsage(context);
 }
 
 function normalizeAnthropicOutputConfig(
@@ -530,6 +588,12 @@ export class AnthropicTransformer implements Transformer {
           ...(format.strict !== undefined ? { strict: format.strict } : {}),
         },
       };
+    }
+
+    if (context) {
+      // Keep a full Unified request for early message_start usage estimates.
+      // context.unifiedRequest is turn-intent only and is too sparse to meter.
+      (context as any).anthropicEstimateRequest = result;
     }
 
     return result;
@@ -1139,12 +1203,7 @@ export class AnthropicTransformer implements Transformer {
                       model: model,
                       stop_reason: null,
                       stop_sequence: null,
-                      usage: {
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        cache_creation_input_tokens: 0,
-                        cache_read_input_tokens: 0,
-                      },
+                      usage: resolveMessageStartUsage(chunk.usage, context),
                     },
                   };
 
@@ -1621,7 +1680,14 @@ export class AnthropicTransformer implements Transformer {
                         stop_reason: anthropicStopReason,
                         stop_sequence: null,
                       },
-                      usage: toAnthropicCacheUsage(chunk.usage),
+                      usage: chunk.usage
+                        ? toAnthropicCacheUsage(chunk.usage)
+                        : stopReasonMessageDelta?.usage ?? {
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            cache_creation_input_tokens: 0,
+                            cache_read_input_tokens: 0,
+                          },
                     };
                   }
 
