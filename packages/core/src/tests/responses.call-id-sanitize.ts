@@ -245,18 +245,93 @@ async function openAIResponsesProviderRequestPreservesAssistantText() {
     {}
   );
   const input = (result as any).input;
-  assert.ok(
-    input.some(
-      (item: any) =>
-        item.role === "assistant" && item.content === "I will use a tool"
-    )
+  const assistant = input.find(
+    (item: any) => item.type === "message" && item.role === "assistant"
   );
-  assert.ok(input.some((item: any) => item.type === "function_call"));
+  assert.deepEqual(assistant?.content, [
+    { type: "output_text", text: "I will use a tool" },
+  ]);
+  const call = input.find((item: any) => item.type === "function_call");
+  assert.equal(call?.name, "Read");
+  assert.equal(call?.status, "completed");
+  const output = input.find((item: any) => item.type === "function_call_output");
+  assert.equal(output?.output, "done");
+  assert.equal(output?.call_id, call?.call_id);
   assert.deepEqual((result as any).tool_choice, {
     type: "function",
     name: "Read",
   });
   assert.equal((result as any).reasoning.summary, undefined);
+}
+
+async function openAIResponsesToolHistoryUsesNativeMessageItems() {
+  const transformer = new OpenAIResponsesTransformer();
+  const result = await transformer.transformRequestIn(
+    {
+      model: "muse-spark-1.2-contributor-free",
+      messages: [
+        { role: "user", content: "fix the registry" },
+        {
+          role: "assistant",
+          content: "Planning the parallel-subagent fix.",
+          tool_calls: [
+            {
+              id: "call_01a05565ef6878229046cf7eaee1fa97",
+              type: "function",
+              function: {
+                name: "Bash",
+                arguments: '{"command":"rg TaskCreate"}',
+              },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "call_01a05565ef6878229046cf7eaee1fa97",
+          content: "packages/core/src/cursor-sdk/session.ts",
+        },
+        { role: "user", content: "continue" },
+      ],
+    } as any,
+    {},
+    {}
+  );
+  const input = (result as any).input as any[];
+  assert.equal(
+    input.some((item) => item.role && item.content === "" && !item.type),
+    false,
+    "Chat dummy assistant leftovers cause Muse to ignore prior tool turns"
+  );
+  assert.equal(
+    input.some(
+      (item) =>
+        item.role === "assistant" &&
+        typeof item.content === "string" &&
+        !item.type
+    ),
+    false
+  );
+  const assistant = input.find(
+    (item) =>
+      item.type === "message" &&
+      item.role === "assistant" &&
+      Array.isArray(item.content) &&
+      item.content[0]?.text?.includes("Planning")
+  );
+  assert.ok(assistant);
+  const call = input.find((item) => item.type === "function_call");
+  const output = input.find((item) => item.type === "function_call_output");
+  assert.equal(call?.status, "completed");
+  assert.equal(call?.call_id, output?.call_id);
+  assert.equal(output?.output, "packages/core/src/cursor-sdk/session.ts");
+  const followUp = input.find(
+    (item) =>
+      item.type === "message" &&
+      item.role === "user" &&
+      item.content?.[0]?.type === "input_text" &&
+      item.content?.[0]?.text === "continue"
+  );
+  assert.ok(followUp);
 }
 
 function functionCallEvent() {
@@ -887,6 +962,7 @@ async function main() {
   await openAIResponsesRequestStripsStreamOptions();
   await openAIResponsesRequestIsSanitized();
   await openAIResponsesProviderRequestPreservesAssistantText();
+  await openAIResponsesToolHistoryUsesNativeMessageItems();
   await streamingResponsesAreSanitized();
   await streamingFlatJsonIsReEmittedAsSse();
   await nonStreamingResponsesAreSanitized();

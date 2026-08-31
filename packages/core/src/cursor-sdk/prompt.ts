@@ -4,7 +4,11 @@ import {
   type UnifiedTurnIntent,
 } from "@/types/turn-intent";
 import type { SDKImage, SDKUserMessage } from "@cursor/sdk";
-import { contentToText, CUSTOM_USER_TOOLS_SERVER } from "./shared";
+import {
+  contentToText,
+  CUSTOM_USER_TOOLS_SERVER,
+  hashSessionFingerprint,
+} from "./shared";
 import {
   describeHostEnvironment,
   extractHostEnvironment,
@@ -94,6 +98,22 @@ export function buildBridgeSystemGuidance(
     "Available host tools:",
     toolCatalog(request),
   ].join("\n");
+}
+
+/**
+ * Identity of the bridge preamble actually sent on an agent. Unchanged
+ * follow-ups skip re-sending it so Cursor history does not stack copies.
+ */
+export function bridgePromptGuidanceFingerprint(
+  request: UnifiedChatRequest,
+  workspaceDir: string,
+  hostEnv: HostEnvironment
+): string {
+  return hashSessionFingerprint([
+    hostEnv.fingerprint || "",
+    workspaceDir,
+    toolCatalog(request),
+  ]);
 }
 
 /**
@@ -229,13 +249,19 @@ export function toSdkPrompt(
     hostEnv?: HostEnvironment;
     /** Protocol semantics recovered before Anthropic content was flattened. */
     turnIntent?: UnifiedTurnIntent;
+    /**
+     * Bridge preamble + tail reminder. Default true. Set false on follow-ups
+     * whose tool catalog and host env already went out on this agent.
+     */
+    includeBridgeGuidance?: boolean;
   }
 ): SDKUserMessage {
   const messages = request.messages || [];
   const parts: string[] = [];
   const hostEnv = options.hostEnv || extractHostEnvironment(request);
+  const includeBridgeGuidance = options.includeBridgeGuidance !== false;
 
-  if (options.mode === "bridge") {
+  if (options.mode === "bridge" && includeBridgeGuidance) {
     parts.push(
       buildBridgeSystemGuidance(request, options.workspaceDir, hostEnv)
     );
@@ -295,7 +321,7 @@ export function toSdkPrompt(
 
   // Recency guard: the guidance above is far from the generation point once the
   // transcript is flattened in, so restate the topology rule last.
-  if (options.mode === "bridge") {
+  if (options.mode === "bridge" && includeBridgeGuidance) {
     parts.push(buildBridgeTailReminder(options.workspaceDir, hostEnv));
   }
 

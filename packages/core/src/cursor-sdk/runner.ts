@@ -15,6 +15,7 @@ import { ensureRequestLatency, markLatency } from "@/utils/request-latency";
 import { accumulateChatCompletion, createSseHelpers } from "./events-to-sse";
 import {
   analyzeTrailingCursorToolTurn,
+  bridgePromptGuidanceFingerprint,
   progressOnlyContinuationPrompt,
   shouldContinueProgressOnlyTurn,
   toSdkPrompt,
@@ -58,7 +59,10 @@ import {
   fingerprintCursorTurn,
   getStrictCursorTranscriptSuffix,
 } from "./turn-identity";
-import { planCursorLifecycle } from "./lifecycle-planner";
+import {
+  CURSOR_SOFT_CANCEL_THEN_INCREMENTAL,
+  planCursorLifecycle,
+} from "./lifecycle-planner";
 import {
   globalCursorTurnRegistry,
   type CursorTurnLease,
@@ -459,6 +463,9 @@ function resolveCursorRequest(
     options.sourceSessionIdentity ||
     context?.unifiedRequest?.sourceSessionIdentity ||
     (request as any)?.metadata?.user_id;
+  const protocolContext =
+    context?.protocolContext || context?.req?.protocolContext;
+  const isSubagent = protocolContext?.claudeCodeSubagent === true;
   const sessionKey = buildSessionKey({
     headerSession:
       typeof headerSession === "string" ? headerSession : undefined,
@@ -472,6 +479,7 @@ function resolveCursorRequest(
         : undefined,
     model: modelId,
     firstUserText: firstUserText(request),
+    isSubagent,
   });
 
   return {
@@ -674,9 +682,8 @@ async function runCursorOnce(
     },
   });
 
-  // Capture the pre-retirement action for cache-outcome prediction. After we
-  // remint the session, lifecyclePlan becomes send-full, which would hide why
-  // this turn was predicted as a miss (divergent alignment, etc.).
+  // Capture the pre-execution action for cache-outcome prediction. After a hard
+  // remint, lifecyclePlan becomes send-full; soft paths stay send-incremental.
   const lifecycleForCache = {
     sessionKey: session.key,
     action: lifecyclePlan.action,
@@ -684,6 +691,7 @@ async function runCursorOnce(
   };
 
   if (lifecyclePlan.action === "retire-and-replay-full") {
+    // Hard remint only (poisoned-session). Soft alignment never reaches here.
     logger?.info?.(
       {
         sessionKey: session.key,
@@ -707,6 +715,41 @@ async function runCursorOnce(
       action: "send-full",
       reason: "unused-session",
     };
+  } else if (
+    (lifecyclePlan.action === "send-incremental" ||
+      lifecyclePlan.action === "send-full") &&
+    (session.run ||
+      session.streamIterator ||
+      session.streamNext ||
+      session.activeRunToken ||
+      session.parked.length > 0)
+  ) {
+    // Soft sticky path (or first send after inconsistent unused): clear prior
+    // run/parked without reminting. Reason alone is not enough — unknown/
+    // divergent alignment can still leave a live parked/active run that would
+    // fail admission and force a hard remint.
+    const softReason =
+      "reason" in lifecyclePlan ? lifecyclePlan.reason : "soft-cancel";
+    logger?.info?.(
+      {
+        sessionKey: session.key,
+        agentId: session.agentId,
+        alignment,
+        lifecycleReason: softReason,
+        softCancelHint: CURSOR_SOFT_CANCEL_THEN_INCREMENTAL.has(
+          softReason as any
+        ),
+        toolResultCount: toolResults.length,
+      },
+      "cursor-sdk cancelling prior run then sending on sticky agent"
+    );
+    await cancelActiveRun(session, {
+      rejectParked: true,
+      reason: `cursor-sdk lifecycle: ${softReason}`,
+      timeoutMs: 2_000,
+      poisonOnFailure: true,
+    });
+    throwIfCursorProducerAborted(options.abortSignal);
   }
 
   throwIfCursorProducerAborted(options.abortSignal);
@@ -828,12 +871,27 @@ async function runCursorOnce(
         );
       }
 
+      const bridgeGuidanceFingerprint =
+        mode === "bridge"
+          ? bridgePromptGuidanceFingerprint(
+              request,
+              targetSession.workspaceDir,
+              promptHostEnv
+            )
+          : undefined;
+      const includeBridgeGuidance =
+        mode === "bridge" &&
+        (!followUpOnlyForPrompt ||
+          targetSession.lastBridgePromptGuidanceFingerprint !==
+            bridgeGuidanceFingerprint);
+
       const prompt = toSdkPrompt(request, {
         mode,
         workspaceDir: targetSession.workspaceDir,
         followUpOnly: followUpOnlyForPrompt,
         hostEnv: promptHostEnv,
         turnIntent: options.turnIntent,
+        includeBridgeGuidance,
       });
 
       nextRunToken = Symbol("cursor-sdk-run");
@@ -857,6 +915,10 @@ async function runCursorOnce(
         targetSession.streamNext = undefined;
         targetSession.streamNextRunToken = undefined;
         targetSession.hasSentPrompt = true;
+        if (bridgeGuidanceFingerprint) {
+          targetSession.lastBridgePromptGuidanceFingerprint =
+            bridgeGuidanceFingerprint;
+        }
         throwIfCursorProducerAborted(options.abortSignal);
       } catch (err: any) {
         if (nextRunToken && targetSession.activeRunToken === nextRunToken) {

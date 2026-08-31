@@ -79,7 +79,7 @@ async function testResponsesOrder() {
     types.indexOf("reasoning"),
     types.indexOf("function_call") + 1
   );
-  assert.deepEqual(assistantSlice, ["reasoning", "assistant", "function_call"]);
+  assert.deepEqual(assistantSlice, ["reasoning", "message", "function_call"]);
 }
 
 async function testCodexKeepsTextWithTools() {

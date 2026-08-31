@@ -159,16 +159,28 @@ function brokenDiff(): CachePrefixDiff {
   });
   assert.equal(resume.predictedHit, true);
 
-  const retire = predictCursorConversation({
+  const softDivergent = predictCursorConversation({
     lifecycle: {
       sessionKey: "sk",
-      action: "retire-and-replay-full",
+      action: "send-incremental",
       reason: "divergent-context-alignment",
     },
     diff: brokenDiff(),
   });
+  assert.equal(softDivergent.predictedHit, true);
+  assert.equal(softDivergent.reason, "divergent-context-alignment");
+  assert.equal(classifyCacheOutcome(softDivergent, 0.3), "hit");
+
+  const retire = predictCursorConversation({
+    lifecycle: {
+      sessionKey: "sk",
+      action: "retire-and-replay-full",
+      reason: "poisoned-session",
+    },
+    diff: brokenDiff(),
+  });
   assert.equal(retire.predictedHit, false);
-  assert.equal(retire.reason, "divergent-context-alignment");
+  assert.equal(retire.reason, "poisoned-session");
   assert.equal(classifyCacheOutcome(retire, 0), "expected-miss");
   assert.equal(classifyCacheOutcome(retire, 0.3), "partial");
 

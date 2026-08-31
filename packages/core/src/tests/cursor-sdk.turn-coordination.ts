@@ -637,16 +637,16 @@ async function testStrictExtensionReusesIdleAgent() {
       structuredClone(context),
       { cursorMode: "bridge" }
     );
-    assert.match(await replayed.text(), /fresh answer/);
+    // Divergent idle suffix (two trailing user messages) stays on the sticky
+    // agent via send-incremental — no remint. followUpOnly sends the last user
+    // turn only.
+    assert.match(await replayed.text(), /second answer/);
     assert.equal(sendCalls, 3);
-    assert.equal(freshPrompts.length, 1);
-    assert.match(freshPrompts[0], /third user, part one/);
-    assert.match(freshPrompts[0], /third user, part two/);
-    assert.equal(
-      prompts.length,
-      2,
-      "a multi-message suffix must not be truncated onto the old agent"
-    );
+    assert.equal(freshPrompts.length, 0);
+    assert.equal(prompts.length, 3);
+    assert.match(prompts[2], /third user, part two/);
+    assert.equal(prompts[2].includes("first user"), false);
+    assert.equal(session.poisoned, undefined);
   } finally {
     (globalSessionManager as any).getOrCreate = originalGetOrCreate;
     globalCursorTurnRegistry.clear();
@@ -996,6 +996,51 @@ async function testSupersededProducerCannotMutateNewerSession() {
   }
 }
 
+async function testDistinctSessionKeysRunInParallel() {
+  const makeHangingResponse = (onCancel: () => void) =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data"));
+        },
+        cancel() {
+          onCancel();
+        },
+      })
+    );
+
+  const registry = new CursorTurnRegistry();
+  let aCancels = 0;
+  let bCancels = 0;
+  const a = await registry.admit({
+    sessionKey: "subagent-a",
+    fingerprint: "turn-a",
+    responseKind: "stream",
+  });
+  await a.attach(makeHangingResponse(() => aCancels++));
+  const aResponse = await a.response();
+  const aReader = aResponse.body!.getReader();
+  await aReader.read();
+
+  const b = await registry.admit({
+    sessionKey: "subagent-b",
+    fingerprint: "turn-b",
+    responseKind: "stream",
+  });
+  assert.equal(aCancels, 0, "a different sessionKey must not supersede");
+  assert.equal(a.producerSignal.aborted, false);
+  await b.attach(makeHangingResponse(() => bCancels++));
+  const bResponse = await b.response();
+  const bReader = bResponse.body!.getReader();
+  await bReader.read();
+  assert.equal(bCancels, 0);
+  assert.equal(b.producerSignal.aborted, false);
+
+  await aReader.cancel();
+  await bReader.cancel();
+  registry.clear();
+}
+
 async function main() {
   const originalModelList = Cursor.models.list;
   (Cursor.models as any).list = async () => [];
@@ -1008,6 +1053,7 @@ async function main() {
     await testOversizedFirstChunkReachesLeader();
     await testConcurrentSupersessionsStayInAdmissionOrder();
     await testSupersededProducerCannotMutateNewerSession();
+    await testDistinctSessionKeysRunInParallel();
   } finally {
     (Cursor.models as any).list = originalModelList;
     globalCursorTurnRegistry.clear();

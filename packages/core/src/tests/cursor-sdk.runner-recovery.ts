@@ -150,9 +150,13 @@ async function main() {
     );
     const body = await response.text();
 
+    // Soft path: unknown alignment stays sticky and attempts incremental send
+    // first. AgentBusyError then triggers hard remint + full replay.
     assert.equal(getCalls, 2);
-    assert.equal(oldOptions.length, 0);
-    assert.equal(oldPrompts.length, 0);
+    assert.equal(oldPrompts.length, 1);
+    assert.equal(oldOptions.length, 1);
+    assert.doesNotMatch(oldPrompts[0], /\[user\]\nfirst user/);
+    assert.match(oldPrompts[0], /\[user\]\nsecond user/);
     assert.equal(invalidated.some((entry) => entry.startsWith("old-agent:")), true);
     assert.equal(freshPrompts.length, 1);
     assert.equal(freshOptions[0]?.local?.force, undefined);

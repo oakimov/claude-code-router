@@ -226,7 +226,7 @@ async function testResponsesAndCodexPrefix() {
   const start = short.input.findIndex((item: any) => item.type === "reasoning");
   assert.deepEqual(
     short.input.slice(start, start + 3).map((item: any) => item.type || item.role),
-    ["reasoning", "assistant", "function_call"]
+    ["reasoning", "message", "function_call"]
   );
 
   const gpt = (await toResponses(await inboundConversation(), "gpt-5.6")) as any;

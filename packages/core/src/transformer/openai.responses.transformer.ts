@@ -499,16 +499,12 @@ export class OpenAIResponsesTransformer implements Transformer {
       }
 
       if (message.role === "tool") {
-        const toolMessage: any = { ...message };
-        toolMessage.type = "function_call_output";
-        toolMessage.call_id =
-          sanitizeResponsesCallId(message.tool_call_id) ?? message.tool_call_id;
-        toolMessage.output = message.content;
-        delete toolMessage.cache_control;
-        delete toolMessage.role;
-        delete toolMessage.tool_call_id;
-        delete toolMessage.content;
-        input.push(toolMessage);
+        input.push({
+          type: "function_call_output",
+          call_id:
+            sanitizeResponsesCallId(message.tool_call_id) ?? message.tool_call_id,
+          output: message.content,
+        });
         lastWasTool = true;
         return;
       }
@@ -519,14 +515,22 @@ export class OpenAIResponsesTransformer implements Transformer {
           lastWasTool = false;
           if (turn.thinking) pushReasoningFromMessage(message);
           if (assistantTurnHasText(turn) || turn.images.length) {
-            const contentMessage: any = { ...message };
-            delete contentMessage.tool_calls;
-            delete contentMessage.thinking;
-            delete contentMessage.reasoning_content;
-            if (turn.texts.length === 1 && turn.images.length === 0) {
-              contentMessage.content = turn.texts[0].text;
-            }
-            input.push(contentMessage);
+            // Native Responses items (`type: "message"` + output_text), not Chat
+            // `{role, content: string}`. Muse Spark / Zen treats Chat leftovers as
+            // foreign text and re-issues the same tools even when outputs exist.
+            input.push({
+              type: "message",
+              role: "assistant",
+              content:
+                turn.images.length > 0
+                  ? message.content
+                  : [
+                      {
+                        type: "output_text",
+                        text: turn.texts.map((part) => part.text).join("\n"),
+                      },
+                    ],
+            });
           }
           for (const tool of turn.toolCalls) {
             input.push({
@@ -534,6 +538,7 @@ export class OpenAIResponsesTransformer implements Transformer {
               arguments: tool.function.arguments,
               name: tool.function.name,
               call_id: sanitizeResponsesCallId(tool.id) ?? tool.id,
+              status: "completed",
             });
           }
           return;
@@ -543,12 +548,30 @@ export class OpenAIResponsesTransformer implements Transformer {
       // If a user message follows a tool output, insert a dummy assistant message
       if (lastWasTool && message.role === "user") {
         input.push({
+          type: "message",
           role: "assistant",
-          content: "",
+          content: [{ type: "output_text", text: "" }],
         });
       }
       lastWasTool = false;
-      input.push(message);
+      if (typeof message.content === "string") {
+        input.push({
+          type: "message",
+          role: message.role,
+          content: [
+            {
+              type: message.role === "assistant" ? "output_text" : "input_text",
+              text: message.content,
+            },
+          ],
+        });
+      } else {
+        input.push({
+          type: "message",
+          role: message.role,
+          content: message.content,
+        });
+      }
     });
 
     (request as any).input = input;

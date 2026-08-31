@@ -158,7 +158,7 @@ const lifecycleCases: Array<{
     reason: "exact-parked-tool-results",
   },
   {
-    name: "parked result plus steering retires and replays",
+    name: "parked result plus steering stays sticky incremental",
     input: {
       ...baseInput,
       session: {
@@ -170,11 +170,11 @@ const lifecycleCases: Array<{
         toolResults: [buildResult],
       },
     },
-    action: "retire-and-replay-full",
+    action: "send-incremental",
     reason: "parked-turn-has-steering",
   },
   {
-    name: "missing parked result retires and replays",
+    name: "missing parked result stays sticky incremental",
     input: {
       ...baseInput,
       session: {
@@ -186,11 +186,11 @@ const lifecycleCases: Array<{
         toolResults: [buildResult],
       },
     },
-    action: "retire-and-replay-full",
+    action: "send-incremental",
     reason: "parked-tool-results-mismatch",
   },
   {
-    name: "extra parked result retires and replays",
+    name: "extra parked result stays sticky incremental",
     input: {
       ...baseInput,
       session: {
@@ -202,11 +202,11 @@ const lifecycleCases: Array<{
         toolResults: [buildResult, testResult],
       },
     },
-    action: "retire-and-replay-full",
+    action: "send-incremental",
     reason: "parked-tool-results-mismatch",
   },
   {
-    name: "dead parked run retires even with exact results",
+    name: "dead parked run stays sticky incremental even with exact results",
     input: {
       ...baseInput,
       session: {
@@ -218,11 +218,11 @@ const lifecycleCases: Array<{
         toolResults: [buildResult],
       },
     },
-    action: "retire-and-replay-full",
+    action: "send-incremental",
     reason: "dead-parked-run",
   },
   {
-    name: "different turn while active retires and replays",
+    name: "different turn while active stays sticky incremental",
     input: {
       ...baseInput,
       session: {
@@ -230,7 +230,7 @@ const lifecycleCases: Array<{
         run: { kind: "active-different-turn" },
       },
     },
-    action: "retire-and-replay-full",
+    action: "send-incremental",
     reason: "active-different-turn",
   },
   {
@@ -243,25 +243,25 @@ const lifecycleCases: Array<{
     reason: "poisoned-session",
   },
   {
-    name: "unknown context alignment retires and replays",
+    name: "unknown context alignment stays sticky incremental",
     input: {
       ...baseInput,
       session: { ...baseInput.session, alignment: "unknown" },
     },
-    action: "retire-and-replay-full",
+    action: "send-incremental",
     reason: "unknown-context-alignment",
   },
   {
-    name: "divergent context alignment retires and replays",
+    name: "divergent context alignment stays sticky incremental",
     input: {
       ...baseInput,
       session: { ...baseInput.session, alignment: "divergent" },
     },
-    action: "retire-and-replay-full",
+    action: "send-incremental",
     reason: "divergent-context-alignment",
   },
   {
-    name: "tool result without a parked run retires and replays",
+    name: "tool result without a parked run stays sticky incremental",
     input: {
       ...baseInput,
       turn: {
@@ -269,11 +269,11 @@ const lifecycleCases: Array<{
         toolResults: [buildResult],
       },
     },
-    action: "retire-and-replay-full",
+    action: "send-incremental",
     reason: "orphaned-tool-results",
   },
   {
-    name: "unused session with a live run is retired as inconsistent",
+    name: "unused session with a live run clears then send-full",
     input: {
       ...baseInput,
       session: {
@@ -282,7 +282,7 @@ const lifecycleCases: Array<{
         run: { kind: "active-different-turn" },
       },
     },
-    action: "retire-and-replay-full",
+    action: "send-full",
     reason: "inconsistent-unused-session",
   },
 ];

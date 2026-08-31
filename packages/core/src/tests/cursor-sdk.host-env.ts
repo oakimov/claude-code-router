@@ -8,6 +8,7 @@ import {
   extractHostEnvironment,
 } from "../cursor-sdk/host-env";
 import {
+  bridgePromptGuidanceFingerprint,
   buildBridgeSystemGuidance,
   buildBridgeTailReminder,
   buildWorkspaceRulesDocument,
@@ -133,6 +134,33 @@ const planPrompt = toSdkPrompt(request, {
   hostEnv: env,
 });
 assert.doesNotMatch(planPrompt.text, /\[bridge reminder\]/);
+
+// Unchanged follow-up omits preamble + reminder so history does not stack copies.
+const followUp = toSdkPrompt(request, {
+  mode: "bridge",
+  workspaceDir: WORKSPACE,
+  hostEnv: env,
+  followUpOnly: true,
+  includeBridgeGuidance: false,
+});
+assert.doesNotMatch(followUp.text, /You are a remote reasoning agent/);
+assert.doesNotMatch(followUp.text, /\[bridge reminder\]/);
+assert.doesNotMatch(followUp.text, /Available host tools:/);
+assert.match(followUp.text, /\[user\]/);
+
+const sameStamp = bridgePromptGuidanceFingerprint(request, WORKSPACE, env);
+assert.equal(
+  bridgePromptGuidanceFingerprint(request, WORKSPACE, env),
+  sameStamp
+);
+assert.notEqual(
+  bridgePromptGuidanceFingerprint(
+    { ...request, tools: [] } as any,
+    WORKSPACE,
+    env
+  ),
+  sameStamp
+);
 
 // --- workspace files --------------------------------------------------------
 

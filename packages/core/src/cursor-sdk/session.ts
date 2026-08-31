@@ -86,6 +86,11 @@ export type CursorSdkSession = {
   /** Fingerprint of the host env baked into the workspace rules/deny hooks. */
   guidanceFingerprint?: string;
   /**
+   * Bridge preamble last actually sent on this agent (host env + tool catalog).
+   * Unchanged follow-ups omit the preamble so history does not stack copies.
+   */
+  lastBridgePromptGuidanceFingerprint?: string;
+  /**
    * Set when the local SDK handles are no longer trustworthy. The manager must
    * not hand this agent out for a future request.
    */
@@ -388,9 +393,30 @@ function sessionIdFromMetadataUserId(metadataUserId: string): string {
   return metadataUserId;
 }
 
+function hashSessionKeyMaterial(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 32);
+}
+
+function parentSessionIdentity(input: {
+  headerSession?: string;
+  clientSessionId?: string;
+  metadataUserId?: string;
+}): string | undefined {
+  if (input.headerSession) return input.headerSession;
+  if (input.clientSessionId) return input.clientSessionId;
+  if (input.metadataUserId) {
+    return sessionIdFromMetadataUserId(input.metadataUserId);
+  }
+  return undefined;
+}
+
 /**
  * Cursor SDK session directory key. Prefer explicit client conversation ids
  * over hashing prompt text — never include system / harness version.
+ *
+ * Claude Code subagents share the parent session id. Mix first-user text so
+ * parallel Task agents each get their own Cursor Agent instead of collapsing
+ * onto one turn registry slot.
  */
 export function buildSessionKey(input: {
   headerSession?: string;
@@ -402,24 +428,22 @@ export function buildSessionKey(input: {
   firstUserText?: string;
   /** @deprecated Use firstUserText. Kept for call-site compatibility. */
   systemAndFirstUser?: string;
+  /**
+   * Claude Code Task / subagent turn. Parent session id alone is not unique
+   * across parallel subagents.
+   */
+  isSubagent?: boolean;
 }): string {
-  if (input.headerSession) {
-    return createHash("sha256").update(input.headerSession).digest("hex").slice(0, 32);
+  const parent = parentSessionIdentity(input);
+  const firstUser = input.firstUserText || input.systemAndFirstUser || "";
+  if (input.isSubagent && parent) {
+    return hashSessionKeyMaterial(`${parent}\n${firstUser}`);
   }
-  if (input.clientSessionId) {
-    return createHash("sha256").update(input.clientSessionId).digest("hex").slice(0, 32);
-  }
-  if (input.metadataUserId) {
-    return createHash("sha256")
-      .update(sessionIdFromMetadataUserId(input.metadataUserId))
-      .digest("hex")
-      .slice(0, 32);
+  if (parent) {
+    return hashSessionKeyMaterial(parent);
   }
   // Anonymous: model + first user text only (never system / cc_version).
-  return hashSessionFingerprint([
-    input.model || "",
-    input.firstUserText || input.systemAndFirstUser || "",
-  ]);
+  return hashSessionFingerprint([input.model || "", firstUser]);
 }
 
 /** True while a session has a live run, open stream, or unresolved host tools. */

@@ -89,9 +89,11 @@ export type CursorLifecycleInput<
   };
 };
 
-export type CursorLifecycleRetirementReason =
-  | "poisoned-session"
-  | "inconsistent-unused-session"
+/** Hard remint only — soft alignment cases stay on the same agent. */
+export type CursorLifecycleRetirementReason = "poisoned-session";
+
+export type CursorLifecycleIncrementalReason =
+  | "strictly-aligned-idle-session"
   | "unknown-context-alignment"
   | "divergent-context-alignment"
   | "active-different-turn"
@@ -116,11 +118,11 @@ export type CursorLifecyclePlan<
     }
   | {
       action: "send-full";
-      reason: "unused-session";
+      reason: "unused-session" | "inconsistent-unused-session";
     }
   | {
       action: "send-incremental";
-      reason: "strictly-aligned-idle-session";
+      reason: CursorLifecycleIncrementalReason;
     }
   | CursorLifecycleRetirementPlan;
 
@@ -131,8 +133,36 @@ const retireAndReplay = (
   reason,
 });
 
+const sendIncremental = (
+  reason: CursorLifecycleIncrementalReason
+): {
+  action: "send-incremental";
+  reason: CursorLifecycleIncrementalReason;
+} => ({
+  action: "send-incremental",
+  reason,
+});
+
 /**
- * Choose the only safe lifecycle action for a new, non-coalesced host turn.
+ * Soft incremental reasons where the runner must cancel/abandon any prior
+ * active or parked run before `agent.send` — without reminting the agent.
+ */
+export const CURSOR_SOFT_CANCEL_THEN_INCREMENTAL = new Set<
+  CursorLifecycleIncrementalReason
+>([
+  "active-different-turn",
+  "dead-parked-run",
+  "parked-turn-has-steering",
+  "parked-tool-results-mismatch",
+]);
+
+/**
+ * Choose the lifecycle action for a new, non-coalesced host turn.
+ *
+ * Soft transcript-alignment mismatches stay on the same Cursor agent via
+ * `send-incremental` (caller cancels parked/active runs when needed). Hard
+ * remint (`retire-and-replay-full`) is reserved for poisoned sessions; send/
+ * stream failure recovery remints in the runner, not here.
  *
  * This function is intentionally pure. It neither resolves parked tools nor
  * changes session state; the caller executes the returned plan under its
@@ -151,28 +181,30 @@ export function planCursorLifecycle<
   }
 
   if (!session.hasSentPrompt) {
+    // Unused session with a stray run: clear in the runner, then first send.
+    // Do not remint — there is no agent cache to preserve yet.
     return session.run.kind === "idle"
       ? { action: "send-full", reason: "unused-session" }
-      : retireAndReplay("inconsistent-unused-session");
+      : { action: "send-full", reason: "inconsistent-unused-session" };
   }
 
   if (session.alignment === "unknown") {
-    return retireAndReplay("unknown-context-alignment");
+    return sendIncremental("unknown-context-alignment");
   }
   if (session.alignment === "divergent") {
-    return retireAndReplay("divergent-context-alignment");
+    return sendIncremental("divergent-context-alignment");
   }
 
   if (session.run.kind === "active-different-turn") {
-    return retireAndReplay("active-different-turn");
+    return sendIncremental("active-different-turn");
   }
 
   if (session.run.kind === "parked") {
     if (!session.run.live) {
-      return retireAndReplay("dead-parked-run");
+      return sendIncremental("dead-parked-run");
     }
     if (turn.hasMeaningfulSteering) {
-      return retireAndReplay("parked-turn-has-steering");
+      return sendIncremental("parked-turn-has-steering");
     }
 
     const matches = matchParkedToolResultsExactly(
@@ -185,15 +217,12 @@ export function planCursorLifecycle<
           reason: "exact-parked-tool-results",
           matches,
         }
-      : retireAndReplay("parked-tool-results-mismatch");
+      : sendIncremental("parked-tool-results-mismatch");
   }
 
   if (turn.toolResults.length > 0) {
-    return retireAndReplay("orphaned-tool-results");
+    return sendIncremental("orphaned-tool-results");
   }
 
-  return {
-    action: "send-incremental",
-    reason: "strictly-aligned-idle-session",
-  };
+  return sendIncremental("strictly-aligned-idle-session");
 }

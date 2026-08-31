@@ -469,6 +469,39 @@ async function testQwenChromeAndCursorSessions() {
     firstUserText: "other turn",
   });
   assert.notEqual(anonA, anonDifferentUser);
+
+  // Subagents share the parent session id; first user text splits Cursor agents.
+  const parent = {
+    clientSessionId: "claude-session-stable",
+    model: "composer-2",
+  };
+  const parentOnly = buildSessionKey(parent);
+  const subA = buildSessionKey({
+    ...parent,
+    isSubagent: true,
+    firstUserText: "task alpha",
+  });
+  const subAFollowUp = buildSessionKey({
+    ...parent,
+    isSubagent: true,
+    firstUserText: "task alpha",
+  });
+  const subB = buildSessionKey({
+    ...parent,
+    isSubagent: true,
+    firstUserText: "task beta",
+  });
+  assert.equal(subA, subAFollowUp);
+  assert.notEqual(subA, subB);
+  assert.notEqual(subA, parentOnly);
+  assert.equal(
+    buildSessionKey({
+      ...parent,
+      firstUserText: "task alpha",
+    }),
+    parentOnly,
+    "non-subagent must ignore first user text when a parent session id exists"
+  );
 }
 
 async function main() {

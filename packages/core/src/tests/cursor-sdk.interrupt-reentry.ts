@@ -325,38 +325,35 @@ async function main() {
   const markerParked = parkTool(markerSession, "tool-build");
 
   const markerDeadPrompts: string[] = [];
+  const markerDeadOptions: any[] = [];
   const markerDeadSession = fakeSession({
     key: "marker-only-dead-run",
     agentId: "agent-marker-only-dead-run",
     hasSentPrompt: true,
-    async send(prompt) {
+    async send(prompt, options) {
       markerDeadPrompts.push(prompt.text);
+      markerDeadOptions.push(options);
       return fakeRun("marker-only-dead-run-recovered");
     },
   });
   markerDeadSession.activeRunToken = Symbol("marker-only-dead-run");
   const markerDeadParked = parkTool(markerDeadSession, "tool-build");
-  const markerDeadFreshSession = fakeSession({
-    key: "marker-only-dead-run",
-    agentId: "agent-marker-only-dead-run-fresh",
-    hasSentPrompt: false,
-    async send(prompt) {
-      markerDeadPrompts.push(prompt.text);
-      return fakeRun("marker-only-dead-run-recovered");
-    },
-  });
 
   const interruptedToken = Symbol("interrupted-run");
   let interruptedCancelCalls = 0;
   let interruptedIteratorReturns = 0;
   let interruptedSendCalls = 0;
+  const interruptedPrompts: string[] = [];
+  const interruptedOptions: any[] = [];
   const interruptedSession = fakeSession({
     key: "interrupted",
     agentId: "agent-interrupted",
     hasSentPrompt: true,
-    async send() {
+    async send(prompt, options) {
       interruptedSendCalls += 1;
-      return fakeRun("unexpected-old-session-send");
+      interruptedPrompts.push(prompt.text);
+      interruptedOptions.push(options);
+      return fakeRun("post-abort-ok");
     },
   });
   interruptedSession.activeRunToken = interruptedToken;
@@ -377,19 +374,6 @@ async function main() {
     },
   };
   const interruptedParked = parkTool(interruptedSession, "tool-build");
-
-  const freshPrompts: string[] = [];
-  const freshOptions: any[] = [];
-  const freshSession = fakeSession({
-    key: "interrupted",
-    agentId: "agent-fresh",
-    hasSentPrompt: false,
-    async send(prompt, options) {
-      freshPrompts.push(prompt.text);
-      freshOptions.push(options);
-      return fakeRun("post-abort-ok");
-    },
-  });
 
   let releaseIteratorReturn!: () => void;
   const iteratorReturnGate = new Promise<void>((resolve) => {
@@ -497,9 +481,7 @@ async function main() {
     pureSession,
     markerSession,
     markerDeadSession,
-    markerDeadFreshSession,
     interruptedSession,
-    freshSession,
     cancelSession,
     progressSession,
   ];
@@ -619,15 +601,16 @@ async function main() {
       markerDeadParked.rejectedWith || "",
       /dead-parked-run/
     );
+    // Sticky agent: cancel dead parked, then incremental on the same session.
     assert.equal(markerDeadPrompts.length, 1);
-    assert.match(
-      markerDeadPrompts[0],
-      /\[assistant tool_call id=tool-build name=Bash\]/
-    );
     assert.match(markerDeadPrompts[0], /\[tool_result id=tool-build\]/);
     assert.match(
       markerDeadPrompts[0],
       /\[Request interrupted by user for tool use\]/
+    );
+    assert.doesNotMatch(
+      markerDeadPrompts[0],
+      /preserve sentinel ALPHA-42/
     );
 
     const mixedContext: any = {
@@ -672,17 +655,28 @@ async function main() {
     );
     assert.equal(interruptedIteratorReturns, 1);
     assert.equal(interruptedCancelCalls, 1);
-    assert.equal(interruptedSendCalls, 0);
-    assert.equal(freshPrompts.length, 1);
-    assert.match(freshPrompts[0], /preserve sentinel ALPHA-42/);
-    assert.match(freshPrompts[0], /acknowledged sentinel BETA-73/);
-    assert.match(freshPrompts[0], /Do not downgrade\. Use only current versions\./);
-    assert.match(freshPrompts[0], /\[tool_result id=tool-build\]/);
-    assert.equal(freshOptions[0]?.local?.force, undefined);
+    // Sticky agent: cancel parked, then incremental send on the same session.
+    // Meaningful steering is followUpOnly — trailing user text only, not a full
+    // transcript remint (no ALPHA-42 / earlier assistant context).
+    assert.equal(interruptedSendCalls, 1);
+    assert.equal(interruptedPrompts.length, 1);
+    assert.match(
+      interruptedPrompts[0],
+      /Do not downgrade\. Use only current versions\./
+    );
+    assert.doesNotMatch(
+      interruptedPrompts[0],
+      /preserve sentinel ALPHA-42/
+    );
+    assert.doesNotMatch(
+      interruptedPrompts[0],
+      /acknowledged sentinel BETA-73/
+    );
+    assert.equal(interruptedOptions[0]?.local?.force, undefined);
     assert.match(mixedBody, /post-abort-ok/);
     assert.equal(
       invalidated.some((entry) => entry.startsWith("agent-interrupted:")),
-      true
+      false
     );
 
     const cancelResponse = await runCursor(
@@ -773,7 +767,7 @@ async function main() {
     assert.equal(progressSession.run, undefined);
     assert.equal(progressSession.streamIterator, undefined);
     assert.equal(progressSession.activeRunToken, undefined);
-    assert.equal(getCalls, 8);
+    assert.equal(getCalls, 6);
   } finally {
     (Cursor.models as any).list = originalModelList;
     (globalSessionManager as any).getOrCreate = originalGetOrCreate;
