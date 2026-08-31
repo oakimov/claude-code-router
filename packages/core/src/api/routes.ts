@@ -58,6 +58,7 @@ import {
   tapUpstreamSSEDebug,
 } from "../utils/sse-debug-tap";
 import {
+  logKeepWire,
   logMessageBody,
   resolveLogBodyMaxBytes,
   shouldLogRequestBodies,
@@ -1144,14 +1145,27 @@ async function sendRequestToProvider(
   };
 
   const logOutboundRequestBody = () => {
+    const logger = context?.req?.log ?? fastify.log;
+    const model =
+      typeof requestBody?.model === "string" ? requestBody.model : undefined;
+    if (context?.req?._wireKeep) {
+      // Keep has no Anthropic-style inbound `request body` info log, and the
+      // global fetch wrapper omits bodies unless LOG_REQUEST_BODY. Digest the
+      // kept wire at debug so encrypted replay is greppable without a dump.
+      logKeepWire(requestBody, {
+        logger,
+        reqId: context?.req?.id,
+        provider: provider?.name,
+        model,
+      });
+    }
     if (!shouldLogRequestBodies(fastify.configService)) return;
     logMessageBody(requestBody, {
-      logger: context?.req?.log ?? fastify.log,
+      logger,
       direction: "ccr→provider",
       reqId: context?.req?.id,
       provider: provider?.name,
-      model:
-        typeof requestBody?.model === "string" ? requestBody.model : undefined,
+      model,
       maxBytes: resolveLogBodyMaxBytes(fastify.configService),
     });
   };

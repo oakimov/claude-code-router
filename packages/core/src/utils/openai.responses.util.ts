@@ -4,6 +4,14 @@ import { createApiError } from "@/api/middleware";
 import { sanitizeResponsesCallId } from "@/utils/toolCallId";
 import { canonicalReasoning } from "@/utils/reasoning-effort";
 
+function shouldLogResponsesPassthrough(): boolean {
+  const env =
+    process.env.LOG_RESPONSES_PASSTHROUGH ??
+    process.env.CCR_LOG_RESPONSES_PASSTHROUGH ??
+    process.env.CCR_DEBUG_RESPONSES_PASSTHROUGH;
+  return env === "1" || env === "true";
+}
+
 export interface ResponsesCallIdMap {
   /** Original client call_id → sanitized id (and reverse). */
   forward: Map<string, string>;
@@ -908,18 +916,28 @@ function appendInputItem(
         "invalid_request_error"
       );
     }
+    let rawContent = item.content;
     if (
-      typeof item.content !== "string" &&
-      !Array.isArray(item.content)
+      typeof rawContent !== "string" &&
+      !Array.isArray(rawContent)
     ) {
-      throw createApiError(
-        "Responses message items require string or array content",
-        400,
-        "invalid_content",
-        "invalid_request_error"
-      );
+      if (shouldLogResponsesPassthrough()) {
+        try {
+          // eslint-disable-next-line no-console
+          console.debug(
+            `[responses passthrough] message ${role} with non-string/array content ${String(typeof rawContent)} ${JSON.stringify(rawContent)?.slice(0, 400) ?? ""}`
+          );
+        } catch {}
+      }
+      if (rawContent == null) {
+        rawContent = "";
+      } else if (typeof rawContent === "object" && !Array.isArray(rawContent)) {
+        rawContent = [rawContent as any];
+      } else {
+        rawContent = String(rawContent);
+      }
     }
-    const content = flattenResponsesContent(item.content);
+    const content = flattenResponsesContent(rawContent);
     if (role === "assistant" && appendAssistantContent(messages, content)) {
       return;
     }
@@ -1011,6 +1029,41 @@ function appendInputItem(
         },
       ],
     });
+    return;
+  }
+
+  // Hosted calls (web_search_call, file_search_call, etc.) are ChatGPT-backend
+  // state. With store:false Codex replays them verbatim like reasoning
+  // encrypted_content. Keep forwards the original input[] unchanged, but this
+  // Unified projection is only for routing — so passthrough (drop from Unified)
+  // and log rather than 400 or synthesizing an assistant artifact.
+  if (
+    item.type === "web_search_call" ||
+    (typeof item.type === "string" &&
+      item.type.endsWith("_call") &&
+      item.type !== "function_call" &&
+      item.type !== "custom_tool_call")
+  ) {
+    const action = (item as any).action;
+    const hint =
+      (typeof action?.query === "string" && action.query) ||
+      (Array.isArray(action?.queries) && action.queries[0]) ||
+      (typeof action?.url === "string" && action.url) ||
+      "";
+    // Only when explicitly enabled via config/env — avoids noise on every
+    // Codex turn with web_search. Keep wire already logs the full input[]
+    // when LOG_REQUEST_BODY is on.
+    if (shouldLogResponsesPassthrough()) {
+      try {
+        const id = (item as any).id || (item as any).call_id || "";
+        // eslint-disable-next-line no-console
+        console.debug(
+          `[responses passthrough] ${item.type}${id ? ` ${id}` : ""}${hint ? ` — ${String(hint).slice(0, 200)}` : ""}`
+        );
+      } catch {
+        // ignore logging failures
+      }
+    }
     return;
   }
 
