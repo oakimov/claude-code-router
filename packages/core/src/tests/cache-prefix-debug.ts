@@ -8,8 +8,13 @@ import {
   attributeDivergenceStage,
   diffCachePrefixSnapshots,
   rememberAndDiffOutboundCachePrefix,
+  resolveCachePrefixConversationId,
   snapshotOutboundCachePrefix,
 } from "../utils/cache-prefix-debug";
+import {
+  detectNestedAgent,
+  firstSubstantiveUserText,
+} from "../utils/nested-agent";
 import {
   logOutboundCacheStructure,
   tapUpstreamSSEDebug,
@@ -151,6 +156,161 @@ function testConversationsAreIsolated() {
   const again = rememberAndDiffOutboundCachePrefix("a", anthropicBody("next"));
   assert.equal(again?.firstTurn, false);
   assert.equal(again?.prefixIntact, true);
+}
+
+function testSubagentCacheIdsDoNotCollideOnParentSession() {
+  const parent = "2338e2e3-4073-4e7c-9081-81a0fccca65b";
+  const reminder = {
+    messages: [
+      {
+        role: "user" as const,
+        content: [
+          { type: "text", text: "<system-reminder>\n# claudeMd\n" },
+          { type: "text", text: "<local-command-caveat>Caveat" },
+        ],
+      },
+      { role: "user" as const, content: "task alpha investigate the registry" },
+    ],
+  };
+  const fork = {
+    messages: [
+      {
+        role: "user" as const,
+        content: [
+          { type: "text", text: "<system-reminder>\n# claudeMd\n" },
+        ],
+      },
+      {
+        role: "user" as const,
+        content: "<fork-boilerplate> You are a worker fork.",
+      },
+    ],
+  };
+  const parentId = resolveCachePrefixConversationId({
+    sessionId: parent,
+    firstUserText: "try the same, using the subagent",
+  });
+  const taskId = resolveCachePrefixConversationId({
+    sessionId: parent,
+    nestedAgent: true,
+    firstUserText: firstSubstantiveUserText(reminder),
+  });
+  const forkId = resolveCachePrefixConversationId({
+    sessionId: parent,
+    nestedAgent: true,
+    firstUserText: firstSubstantiveUserText(fork),
+  });
+  const taskIdNoFlag = resolveCachePrefixConversationId({
+    sessionId: parent,
+    firstUserText: firstSubstantiveUserText(reminder),
+  });
+  assert.equal(parentId.source, "session");
+  assert.equal(taskId.source, "subagent");
+  assert.equal(forkId.source, "subagent");
+  assert.notEqual(taskId.id, parentId.id);
+  assert.notEqual(taskId.id, forkId.id);
+  assert.equal(
+    taskIdNoFlag.id,
+    taskId.id,
+    "shared session + opening text isolates without a nested flag"
+  );
+  assert.equal(
+    firstSubstantiveUserText(reminder),
+    "task alpha investigate the registry"
+  );
+
+  __resetCachePrefixSnapshotsForTests();
+  const taskFirst = rememberAndDiffOutboundCachePrefix(
+    taskId.id,
+    anthropicBody(),
+    undefined,
+    { conversationIdSource: "subagent", provider: "cursor" }
+  );
+  const forkFirst = rememberAndDiffOutboundCachePrefix(
+    forkId.id,
+    anthropicBody(),
+    undefined,
+    { conversationIdSource: "subagent", provider: "cursor" }
+  );
+  assert.equal(taskFirst?.firstTurn, true);
+  assert.equal(forkFirst?.firstTurn, true);
+  assert.equal(taskFirst?.conversationIdSource, "subagent");
+
+  const parentBody = anthropicBody("is it running?");
+  const parentDiff = rememberAndDiffOutboundCachePrefix(
+    parentId.id,
+    parentBody,
+    undefined,
+    { provider: "cursor" }
+  );
+  assert.equal(parentDiff?.firstTurn, true, "parent must not inherit fork baseline");
+
+  const taskNext = rememberAndDiffOutboundCachePrefix(
+    taskId.id,
+    anthropicBody("continue"),
+    undefined,
+    { conversationIdSource: "subagent", provider: "cursor" }
+  );
+  assert.equal(taskNext?.firstTurn, false);
+  assert.equal(taskNext?.prefixIntact, true);
+  assert.equal(taskNext?.change, "appended");
+
+  assert.equal(
+    firstSubstantiveUserText({
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "<system-reminder>\nskip" }],
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "opencode child task" }],
+        },
+      ],
+    }),
+    "opencode child task"
+  );
+
+  assert.equal(
+    detectNestedAgent({ claudeCodeSubagent: true }),
+    true
+  );
+  assert.equal(
+    detectNestedAgent({
+      headers: { "x-parent-session-id": "sess-parent" },
+    }),
+    true
+  );
+  assert.equal(
+    detectNestedAgent({
+      headers: { "x-openai-subagent": "explore" },
+    }),
+    true
+  );
+  assert.equal(
+    detectNestedAgent({
+      headers: { "X-KILOCODE-PARENT-TASKID": "parent-task" },
+    }),
+    true
+  );
+  assert.equal(
+    detectNestedAgent({
+      body: {
+        messages: [
+          { role: "user", content: "<fork-boilerplate> You are a worker fork." },
+        ],
+      },
+    }),
+    true
+  );
+  assert.equal(
+    detectNestedAgent({
+      body: { messages: [{ role: "user", content: "normal parent turn" }] },
+    }),
+    false
+  );
 }
 
 function testSnapshotOmitsMessageText() {
@@ -480,6 +640,7 @@ async function main() {
   testReasoningIdChangeIsACacheBreak();
   testPromptCacheKeyAndAffinity();
   testConversationsAreIsolated();
+  testSubagentCacheIdsDoNotCollideOnParentSession();
   testSnapshotOmitsMessageText();
   testLogEmitsSearchableType();
   testDebugOffDoesNotStore();

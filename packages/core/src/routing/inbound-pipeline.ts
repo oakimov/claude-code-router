@@ -31,6 +31,7 @@ import { decodeClaudeModelAlias } from "@caeliq/ccr-shared";
 import { ensureRequestLatency, markLatency } from "@/utils/request-latency";
 import { applyReasoningAutoSummary } from "@/utils/reasoning-effort";
 import { extractClientSessionId } from "@/utils/cacheControl";
+import { detectNestedAgent } from "@/utils/nested-agent";
 
 export interface PreparedInboundRequest {
   match: ProtocolRouteMatch;
@@ -142,6 +143,12 @@ export async function prepareInboundRequest(
     // profile, never native pass-through.
     context.anthropicClientKind = "other";
   }
+
+  context.nestedAgent = detectNestedAgent({
+    headers: req.headers,
+    body: originalBody,
+    claudeCodeSubagent: context.claudeCodeSubagent,
+  });
 
   const transformerContext = {
     req,

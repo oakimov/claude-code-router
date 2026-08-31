@@ -10,6 +10,7 @@ import {
   rememberAndDiffOutboundCachePrefix,
   type CacheAffinityHeaders,
   type CachePrefixDiff,
+  type CachePrefixIdSource,
   type CachePrefixStage,
 } from "./cache-prefix-debug";
 import {
@@ -28,6 +29,9 @@ export type UpstreamSSEDebugOptions = {
   model?: string;
   /** Conversation / Claude session id used to pair consecutive cache snapshots. */
   conversationId?: string;
+  conversationIdSource?: CachePrefixIdSource;
+  /** When false, diff against the last baseline but do not replace it. */
+  commitCachePrefix?: boolean;
   /** Pipeline position this body was captured at. Defaults to `wire`. */
   stage?: CachePrefixStage;
   /** Codex (and similar) routing headers that pin prompt-cache affinity. */
@@ -692,6 +696,8 @@ export function logOutboundCacheStructure(
   }
 
   const status = opts.responseStatus;
+  const accepted =
+    status === undefined || (status >= 200 && status < 300);
   const diff = rememberAndDiffOutboundCachePrefix(
     opts.conversationId,
     body,
@@ -700,9 +706,10 @@ export function logOutboundCacheStructure(
       stage: opts.stage ?? "wire",
       provider: opts.provider,
       model: opts.model,
+      conversationIdSource: opts.conversationIdSource,
       // A rejected request was never cached upstream; keeping it as the
       // baseline would report the next turn as a phantom prefix break.
-      commit: status === undefined || (status >= 200 && status < 300),
+      commit: opts.commitCachePrefix !== false && accepted,
     }
   );
   if (!diff) return null;

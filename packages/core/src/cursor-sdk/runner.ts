@@ -48,6 +48,11 @@ import {
 } from "./shared";
 import { createTurnToolMetrics, toCustomTools } from "./tools";
 import {
+  firstSubstantiveUserText,
+  firstUserText,
+  isStatuslinePollTurn,
+} from "@/utils/nested-agent";
+import {
   buildAccurateUsageFromSdk,
   estimateRequestPromptTokens,
   usageFromSdk,
@@ -194,19 +199,42 @@ async function resolveModelSelection(
   return { id: found.id };
 }
 
-/** First user-turn text only — never system (billing / cc_version / CLAUDE.md). */
-function firstUserText(request: UnifiedChatRequest): string {
-  for (const msg of request.messages || []) {
-    if (msg.role !== "user") continue;
-    if (typeof msg.content === "string") return msg.content;
-    if (Array.isArray(msg.content)) {
-      return msg.content
-        .map((p: any) => (typeof p === "string" ? p : p?.text || ""))
-        .join("");
-    }
-    return "";
+function statuslineBusyResponse(stream: boolean): Response {
+  const content = "Working";
+  if (!stream) {
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl-cursor-statusline",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "cursor",
+        choices: [
+          {
+            index: 0,
+            finish_reason: "stop",
+            message: { role: "assistant", content },
+          },
+        ],
+        usage: { prompt_tokens: 0, completion_tokens: 1, total_tokens: 1 },
+      }),
+      { headers: { "content-type": "application/json" } }
+    );
   }
-  return "";
+  const chunk = (delta: object, finish: string | null) =>
+    `data: ${JSON.stringify({
+      id: "chatcmpl-cursor-statusline",
+      object: "chat.completion.chunk",
+      created: Math.floor(Date.now() / 1000),
+      model: "cursor",
+      choices: [{ index: 0, delta, finish_reason: finish }],
+    })}\n\n`;
+  const body =
+    chunk({ role: "assistant", content }, null) +
+    chunk({}, "stop") +
+    "data: [DONE]\n\n";
+  return new Response(body, {
+    headers: { "content-type": "text/event-stream" },
+  });
 }
 
 function isSupportedIdleTranscriptSuffix(
@@ -465,7 +493,9 @@ function resolveCursorRequest(
     (request as any)?.metadata?.user_id;
   const protocolContext =
     context?.protocolContext || context?.req?.protocolContext;
-  const isSubagent = protocolContext?.claudeCodeSubagent === true;
+  const isSubagent =
+    protocolContext?.claudeCodeSubagent === true ||
+    protocolContext?.nestedAgent === true;
   const sessionKey = buildSessionKey({
     headerSession:
       typeof headerSession === "string" ? headerSession : undefined,
@@ -478,7 +508,7 @@ function resolveCursorRequest(
         ? sourceSessionIdentity
         : undefined,
     model: modelId,
-    firstUserText: firstUserText(request),
+    firstUserText: firstSubstantiveUserText(request) || firstUserText(request),
     isSubagent,
   });
 
@@ -525,6 +555,16 @@ export async function runCursor(
     compatibilityStamp: admissionCompatibility,
     turnIntent: resolved.turnIntent,
   });
+  const activeTurn = globalCursorTurnRegistry.peekActive(resolved.sessionKey);
+  if (
+    activeTurn &&
+    activeTurn.fingerprint !== fingerprint &&
+    isStatuslinePollTurn(request)
+  ) {
+    // Claude Code polls statusline on the same session id. That must not
+    // supersede an in-flight Task/tool turn (15-minute 409 poison).
+    return statuslineBusyResponse(request.stream === true);
+  }
   const lease: CursorTurnLease = await globalCursorTurnRegistry.admit({
     sessionKey: resolved.sessionKey,
     fingerprint,

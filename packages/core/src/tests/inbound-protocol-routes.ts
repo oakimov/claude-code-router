@@ -34,6 +34,77 @@ const ENCRYPTED_REPLAY_PROMPT = "Begin encrypted reasoning replay";
 const ENCRYPTED_REPLAY_RESULT = "distinctive tool result: 42";
 const ENCRYPTED_REPLAY_CIPHERTEXT =
   "gAAAAABlroute-level-encrypted-reasoning-ciphertext";
+const KEEP_CIPHERTEXT = "gAAAAABlkept-client-reasoning-ciphertext";
+const KEEP_TOOL_OUTPUT = "keep-tool-output-unique";
+
+function responsesKeepOk(): Response {
+  return new Response(
+    JSON.stringify({
+      id: "resp_keep",
+      object: "response",
+      created_at: 1,
+      status: "completed",
+      model: "spark",
+      output: [
+        {
+          type: "message",
+          id: "msg_keep",
+          status: "completed",
+          role: "assistant",
+          content: [{ type: "output_text", text: "kept" }],
+        },
+      ],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    }),
+    { headers: { "content-type": "application/json" } }
+  );
+}
+
+function keepResponsesPayload(model: string) {
+  return {
+    model,
+    store: false,
+    include: ["reasoning.encrypted_content"],
+    input: [
+      {
+        type: "reasoning",
+        id: "rs_keep_client",
+        summary: [],
+        encrypted_content: KEEP_CIPHERTEXT,
+      },
+      {
+        type: "function_call",
+        call_id: "call_keep_client",
+        name: "Read",
+        arguments: '{"path":"a.ts"}',
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_keep_client",
+        output: KEEP_TOOL_OUTPUT,
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "continue from kept wire" }],
+      },
+    ],
+  };
+}
+
+function assertKeptResponsesWire(body: any) {
+  assert.ok(Array.isArray(body.input), JSON.stringify(body));
+  assert.equal(body.messages, undefined);
+  const reasoning = body.input.find((item: any) => item?.type === "reasoning");
+  assert.equal(reasoning?.encrypted_content, KEEP_CIPHERTEXT);
+  assert.equal(reasoning?.id, "rs_keep_client");
+  const output = body.input.find(
+    (item: any) => item?.type === "function_call_output"
+  );
+  assert.equal(output?.output, KEEP_TOOL_OUTPUT);
+  assert.deepEqual(body.include, ["reasoning.encrypted_content"]);
+  assert.equal(body.store, false);
+}
 
 function findLastCaptured(
   captured: CapturedRequest[],
@@ -66,6 +137,20 @@ async function buildApp() {
           api_key: "responses-provider-key",
           models: ["gpt"],
           transformer: { use: ["openai-responses"] },
+        },
+        {
+          name: "zen",
+          api_base_url: "https://zen.invalid/v1/responses",
+          api_key: "zen-provider-key",
+          models: ["spark"],
+          transformer: { use: ["openai-responses", "opencode-headers"] },
+        },
+        {
+          name: "xai",
+          api_base_url: "https://xai.invalid/v1",
+          api_key: "xai-hermetic-test-key",
+          models: ["grok"],
+          transformer: { use: ["xai-auth", "openai-responses"] },
         },
         {
           name: "generic",
@@ -306,6 +391,12 @@ async function main() {
         }),
         { headers: { "content-type": "application/json" } }
       );
+    }
+    if (
+      request.url.includes("zen.invalid") ||
+      request.url.includes("xai.invalid")
+    ) {
+      return responsesKeepOk();
     }
     if (request.url.includes("responses.invalid")) {
       const input = Array.isArray(request.body.input) ? request.body.input : [];
@@ -1203,6 +1294,65 @@ async function main() {
       assert.ok(
         JSON.stringify(restoredOutput?.output).includes(ENCRYPTED_REPLAY_RESULT)
       );
+    }
+
+    {
+      const before = captured.length;
+      const result = await app.inject({
+        method: "POST",
+        url: "/v1/responses",
+        payload: keepResponsesPayload("zen,spark"),
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      const upstream = captured
+        .slice(before)
+        .find((request) => request.url.includes("zen.invalid"));
+      assert.ok(upstream, JSON.stringify(captured.slice(before)));
+      assertKeptResponsesWire(upstream!.body);
+    }
+
+    {
+      const before = captured.length;
+      const result = await app.inject({
+        method: "POST",
+        url: "/v1/responses",
+        payload: keepResponsesPayload("xai,grok"),
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      const upstream = captured
+        .slice(before)
+        .find((request) => request.url.includes("xai.invalid"));
+      assert.ok(upstream, JSON.stringify(captured.slice(before)));
+      assertKeptResponsesWire(upstream!.body);
+    }
+
+    {
+      const before = captured.length;
+      const result = await app.inject({
+        method: "POST",
+        url: "/v1/messages",
+        payload: {
+          model: "zen,spark",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "convert me to zen" }],
+        },
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      const upstream = captured
+        .slice(before)
+        .find((request) => request.url.includes("zen.invalid"));
+      assert.ok(upstream, JSON.stringify(captured.slice(before)));
+      assert.ok(Array.isArray(upstream!.body.input));
+      assert.equal(upstream!.body.messages, undefined);
+      assert.deepEqual(upstream!.body.include, [
+        "reasoning.encrypted_content",
+      ]);
+      const user = upstream!.body.input.find(
+        (item: any) =>
+          item?.role === "user" ||
+          (item?.type === "message" && item?.role === "user")
+      );
+      assert.ok(user, JSON.stringify(upstream!.body.input));
     }
 
     // A Responses provider mutates its attempt body into input[]. Its failed

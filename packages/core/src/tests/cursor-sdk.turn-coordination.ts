@@ -947,7 +947,10 @@ async function testSupersededProducerCannotMutateNewerSession() {
       {
         model: "composer-2.5",
         stream: true,
-        messages: [{ role: "user", content: "older request" }],
+        messages: [
+          { role: "user", content: "shared opening" },
+          { role: "user", content: "older request" },
+        ],
       } as any,
       provider,
       structuredClone(context),
@@ -959,7 +962,10 @@ async function testSupersededProducerCannotMutateNewerSession() {
       {
         model: "composer-2.5",
         stream: true,
-        messages: [{ role: "user", content: "newer request" }],
+        messages: [
+          { role: "user", content: "shared opening" },
+          { role: "user", content: "newer request" },
+        ],
       } as any,
       provider,
       structuredClone(context),
@@ -1041,6 +1047,99 @@ async function testDistinctSessionKeysRunInParallel() {
   registry.clear();
 }
 
+async function testStatuslineDoesNotSupersedeActiveTurn() {
+  globalCursorTurnRegistry.clear();
+  const sendGate = deferred();
+  const finishGate = deferred();
+  let sendCalls = 0;
+  const session = fakeSession({
+    key: "turn-statusline",
+    agentId: "agent-turn-statusline",
+    async send() {
+      sendCalls += 1;
+      await sendGate.promise;
+      let emitted = false;
+      return {
+        id: "run-turn-statusline",
+        status: "running",
+        usage: undefined,
+        stream() {
+          return {
+            [Symbol.asyncIterator]() {
+              return {
+                async next() {
+                  if (!emitted) {
+                    emitted = true;
+                    return {
+                      done: false,
+                      value: {
+                        type: "assistant",
+                        message: {
+                          content: [{ type: "text", text: "real work" }],
+                        },
+                      },
+                    };
+                  }
+                  await finishGate.promise;
+                  return { done: true, value: undefined };
+                },
+                async return() {
+                  return { done: true, value: undefined };
+                },
+              };
+            },
+          };
+        },
+        async cancel() {},
+      };
+    },
+  });
+
+  const originalGetOrCreate = (globalSessionManager as any).getOrCreate;
+  (globalSessionManager as any).getOrCreate = async () => session;
+  try {
+    const work = requestFor("turn-statusline");
+    const leader = runCursor(
+      structuredClone(work.request),
+      { apiKey: "crsr_test" },
+      structuredClone(work.context),
+      { cursorMode: "bridge" }
+    );
+    await waitFor(() => sendCalls === 1, "leader send");
+
+    const statusline = await runCursor(
+      {
+        model: "composer-2.5",
+        stream: false,
+        messages: [
+          { role: "user", content: "Return the shared result." },
+          {
+            role: "user",
+            content:
+              'Describe your most recent action in 3-5 words using present tense (-ing). Name the file or function, not the branch. Do not use tools.\n\nGood: "Reading runAgent.ts"',
+          },
+        ],
+      } as any,
+      { apiKey: "crsr_test" },
+      structuredClone(work.context),
+      { cursorMode: "bridge" }
+    );
+    assert.equal(statusline.status, 200);
+    const body = await statusline.json();
+    assert.equal(body.choices[0].message.content, "Working");
+    assert.equal(sendCalls, 1, "statusline must not start a second Cursor send");
+
+    sendGate.resolve();
+    finishGate.resolve();
+    const leaderResponse = await leader;
+    assert.equal(leaderResponse.ok, true);
+    assert.match(await leaderResponse.text(), /real work/);
+  } finally {
+    (globalSessionManager as any).getOrCreate = originalGetOrCreate;
+    globalCursorTurnRegistry.clear();
+  }
+}
+
 async function main() {
   const originalModelList = Cursor.models.list;
   (Cursor.models as any).list = async () => [];
@@ -1054,6 +1153,7 @@ async function main() {
     await testConcurrentSupersessionsStayInAdmissionOrder();
     await testSupersededProducerCannotMutateNewerSession();
     await testDistinctSessionKeysRunInParallel();
+    await testStatuslineDoesNotSupersedeActiveTurn();
   } finally {
     (Cursor.models as any).list = originalModelList;
     globalCursorTurnRegistry.clear();

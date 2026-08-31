@@ -18,6 +18,7 @@ packages/server/ccr-config
 
 # Claude
 .claude/settings.local.json
+.claude/plans
 
 # Cursor artifacts
 .cursor/

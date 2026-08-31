@@ -268,6 +268,50 @@ function testCacheSessionKeyFromAnthropicMetadataJson() {
   assert.equal(session, "32c43daa-888d-4573-a563-ee88b833801d");
 }
 
+function testCacheSessionKeyFromOpenCodeAndAffinityHeaders() {
+  assert.equal(
+    extractClientSessionId({
+      headers: { "x-opencode-session": "child-session-1" },
+    }),
+    "child-session-1"
+  );
+  assert.equal(
+    extractClientSessionId({
+      headers: {
+        "x-session-affinity": "child-session-2",
+        "x-parent-session-id": "parent-must-not-win",
+      },
+    }),
+    "child-session-2"
+  );
+  assert.equal(
+    extractClientSessionId({
+      headers: { "x-kilo-session": "kilo-child" },
+    }),
+    "kilo-child"
+  );
+  assert.equal(
+    extractClientSessionId({
+      headers: { "x-grok-session-id": "grok-child" },
+    }),
+    "grok-child"
+  );
+  assert.equal(
+    extractClientSessionId({
+      headers: { "x-parent-session-id": "parent-only" },
+    }),
+    undefined,
+    "parent header is not the conversation id"
+  );
+  assert.equal(
+    extractClientSessionId({
+      headers: { "x-kilocode-parent-taskid": "parent-task" },
+    }),
+    undefined,
+    "Kilocode parent task id is not the conversation id"
+  );
+}
+
 async function testOpenAITransformerAddsNativeCacheFields() {
   const transformer = new OpenAITransformer();
   const out = await transformer.transformRequestIn(
@@ -470,6 +514,7 @@ async function main() {
   testCacheSessionKeyIsHashed();
   testCacheSessionKeyIgnoresSystemTextWhenSessionPresent();
   testCacheSessionKeyFromAnthropicMetadataJson();
+  testCacheSessionKeyFromOpenCodeAndAffinityHeaders();
   await testOpenAITransformerAddsNativeCacheFields();
   await testOpenAITransformsImageCacheBreakpoint();
   await testOpenAICompatibleProviderDoesNotReceiveOpenAIFields();

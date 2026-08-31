@@ -50,6 +50,11 @@ export interface ClientProtocolContext {
   responsesCustomToolNames?: Set<string>;
   /** Claude Code routing metadata extracted without mutating the source billing block. */
   claudeCodeSubagent?: boolean;
+  /**
+   * Nested/worker agent on any inbound protocol (Claude Code Task, OpenCode
+   * child session, Codex x-openai-subagent, Cursor fork boilerplate).
+   */
+  nestedAgent?: boolean;
   taggedSubagentModel?: string;
   /** Transformer that owns this client protocol */
   ownerTransformerName: string;

@@ -712,6 +712,12 @@ export class CursorTurnRegistry {
     }
   }
 
+  peekActive(sessionKey: string): { fingerprint: string } | undefined {
+    const active = this.sessions.get(sessionKey)?.active;
+    if (!active) return undefined;
+    return { fingerprint: active.fingerprint };
+  }
+
   clear(): void {
     for (const turns of this.sessions.values()) {
       if (turns.active) {

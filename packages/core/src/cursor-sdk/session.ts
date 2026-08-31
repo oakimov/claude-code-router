@@ -436,7 +436,10 @@ export function buildSessionKey(input: {
 }): string {
   const parent = parentSessionIdentity(input);
   const firstUser = input.firstUserText || input.systemAndFirstUser || "";
-  if (input.isSubagent && parent) {
+  if (parent && firstUser) {
+    // Mix opening user text for every harness. Claude Code Tasks share the
+    // parent session id; OpenCode sends a child session plus x-parent-session-id
+    // but first-user mix is still stable. Skip reminder/caveat at the call site.
     return hashSessionKeyMaterial(`${parent}\n${firstUser}`);
   }
   if (parent) {

@@ -476,7 +476,6 @@ export class CodexTransformer implements Transformer {
     request.messages = messages;
 
     const input: any[] = [];
-    let lastWasTool = false;
     const customToolNames = getCustomToolNames(context);
     // Populated while walking assistant tool_calls below (messages arrive in
     // causal order, so a custom tool's call is always seen before its
@@ -513,7 +512,6 @@ export class CodexTransformer implements Transformer {
             call_id: callId,
             output: message.content,
           });
-          lastWasTool = true;
           return;
         }
         const toolMessage: any = { ...message };
@@ -525,14 +523,12 @@ export class CodexTransformer implements Transformer {
         delete toolMessage.tool_call_id;
         delete toolMessage.content;
         input.push(toolMessage);
-        lastWasTool = true;
         return;
       }
 
       if (message.role === "assistant") {
         const turn = canonicalAssistantTurn(message);
         if (turn.thinking || turn.toolCalls.length) {
-          lastWasTool = false;
           const reasoningItem = responsesReasoningItemFromThinking(turn.thinking);
           if (reasoningItem) input.push(reasoningItem);
           if (assistantTurnHasText(turn) || turn.images.length) {
@@ -572,15 +568,6 @@ export class CodexTransformer implements Transformer {
           if (turn.toolCalls.length || turn.thinking) return;
         }
       }
-
-      if (lastWasTool && message.role === "user") {
-        input.push({
-          type: "message",
-          role: "assistant",
-          content: [{ type: "output_text", text: "" }],
-        });
-      }
-      lastWasTool = false;
 
       if (typeof message.content === "string") {
         input.push({

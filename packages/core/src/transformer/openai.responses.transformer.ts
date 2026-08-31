@@ -434,8 +434,6 @@ export class OpenAIResponsesTransformer implements Transformer {
     request.messages = messages;
 
     const input: any[] = [];
-    let lastWasTool = false;
-
 
     const systemMessages = request.messages.filter(
       (msg) => msg.role === "system"
@@ -505,14 +503,12 @@ export class OpenAIResponsesTransformer implements Transformer {
             sanitizeResponsesCallId(message.tool_call_id) ?? message.tool_call_id,
           output: message.content,
         });
-        lastWasTool = true;
         return;
       }
 
       if (message.role === "assistant") {
         const turn = canonicalAssistantTurn(message);
         if (turn.thinking || turn.toolCalls.length || assistantTurnHasText(turn) || turn.images.length) {
-          lastWasTool = false;
           if (turn.thinking) pushReasoningFromMessage(message);
           if (assistantTurnHasText(turn) || turn.images.length) {
             // Native Responses items (`type: "message"` + output_text), not Chat
@@ -545,15 +541,6 @@ export class OpenAIResponsesTransformer implements Transformer {
         }
       }
 
-      // If a user message follows a tool output, insert a dummy assistant message
-      if (lastWasTool && message.role === "user") {
-        input.push({
-          type: "message",
-          role: "assistant",
-          content: [{ type: "output_text", text: "" }],
-        });
-      }
-      lastWasTool = false;
       if (typeof message.content === "string") {
         input.push({
           type: "message",

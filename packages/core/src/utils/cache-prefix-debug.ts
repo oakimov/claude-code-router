@@ -46,7 +46,12 @@ export type CachePrefixSnapshot = {
 
 export type CachePrefixChange = "none" | "appended" | "modified" | "removed";
 
-export type CachePrefixIdSource = "session" | "cache_key" | "fingerprint";
+export type CachePrefixIdSource =
+  | "session"
+  | "cache_key"
+  | "fingerprint"
+  /** Parent session id mixed with first substantive user text (Claude Code Task). */
+  | "subagent";
 
 export type CachePrefixDiff = {
   conversationId: string;
@@ -101,6 +106,8 @@ export type CachePrefixDiffOptions = {
    * become the baseline the following turn is judged against.
    */
   commit?: boolean;
+  /** Override when `conversationId` is a derived subagent key rather than the raw session. */
+  conversationIdSource?: CachePrefixIdSource;
 };
 
 const snapshots = new Map<string, CachePrefixSnapshot>();
@@ -572,15 +579,54 @@ function fingerprintConversation(snapshot: CachePrefixSnapshot): string {
 
 function resolveConversationId(
   conversationId: string | undefined,
-  snapshot: CachePrefixSnapshot
+  snapshot: CachePrefixSnapshot,
+  sourceOverride?: CachePrefixIdSource
 ): { id: string; source: CachePrefixIdSource } {
   if (typeof conversationId === "string" && conversationId) {
-    return { id: conversationId, source: "session" };
+    return {
+      id: conversationId,
+      source: sourceOverride ?? "session",
+    };
   }
   if (snapshot.prompt_cache_key) {
     return { id: snapshot.prompt_cache_key, source: "cache_key" };
   }
   return { id: fingerprintConversation(snapshot), source: "fingerprint" };
+}
+
+/**
+ * Snapshot key for consecutive cache-prefix diffs.
+ *
+ * Claude Code Tasks share the parent `session_id`. Mixing first substantive
+ * user text keeps parent vs fork (and two forks) from overwriting one baseline
+ * and reporting 25k-token "modified" misses.
+ */
+export function resolveCachePrefixConversationId(opts: {
+  sessionId?: string;
+  isSubagent?: boolean;
+  nestedAgent?: boolean;
+  firstUserText?: string;
+}): { id?: string; source?: CachePrefixIdSource } {
+  const sessionId =
+    typeof opts.sessionId === "string" && opts.sessionId
+      ? opts.sessionId
+      : undefined;
+  if (!sessionId) return {};
+  const distinct =
+    typeof opts.firstUserText === "string" ? opts.firstUserText : "";
+  // Any harness may share a parent session id across workers. Mix the opening
+  // user text so parent vs nested transcripts do not overwrite one baseline.
+  if (distinct) {
+    const nested = opts.nestedAgent === true || opts.isSubagent === true;
+    return {
+      id: createHash("sha256")
+        .update(`${sessionId}\n${distinct}`)
+        .digest("hex")
+        .slice(0, 32),
+      source: nested ? "subagent" : "session",
+    };
+  }
+  return { id: sessionId, source: "session" };
 }
 
 /**
@@ -601,7 +647,11 @@ export function rememberAndDiffOutboundCachePrefix(
   if (!current) return null;
 
   const stage = options?.stage ?? "wire";
-  const { id, source } = resolveConversationId(conversationId, current);
+  const { id, source } = resolveConversationId(
+    conversationId,
+    current,
+    options?.conversationIdSource
+  );
   const key = [
     stage,
     options?.provider || "-",

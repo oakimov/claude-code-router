@@ -88,9 +88,14 @@ function readHeaderSessionId(headers: unknown): string | undefined {
   const expected = [
     "x-claude-code-session-id",
     "x-opencode-session",
+    "x-kilo-session",
+    "x-kilocode-taskid",
+    "x-grok-session-id",
     "x-session-id",
+    "x-session-affinity",
     "session-id",
     "x-conversation-id",
+    "x-grok-conv-id",
   ];
   for (const [rawName, rawValue] of Object.entries(
     headers as Record<string, unknown>

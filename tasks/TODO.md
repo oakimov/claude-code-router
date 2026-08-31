@@ -55,18 +55,11 @@ Gemini Nano can enter deterministic loops when emitting highly structured conten
 
 ## 🔀 Core: same-protocol wire keep (request side)
 
-**Goal**: when client protocol matches a protocol owner in the compiled provider plan, keep client wire bytes and still run middleware (`opencode-headers`, `claude-auth`, `codex`, `xai-auth`, …). Response side already does this via `isExactProtocolResponsePlan`. Request side still converts through Unified for multi-transformer chains because `protocolAwareBypass` requires `use.length === 1`.
+- [x] Same-protocol keep: client owner in the compiled plan (`openai-responses` / `Anthropic` / `OpenAI`) → send `clientWireBody`, skip that owner's body rebuild, still run allowlisted middleware (`opencode-headers`, `xai-auth`, `qwen-auth`). Unified projection remains for routing only.
+- [x] One keep decision (`resolveClientWireKeep`) shared by primary and fallback; `processRequestTransformers` does not recompute it.
+- [x] Tests: Responses + `opencode-headers`; Responses + `xai-auth`; Anthropic → same Zen chain still converts. `claude-auth` and `codex` are converting owners, not keep middleware.
 
-**Not a multi-second Zen TTFT win** (response path already fixed). Value is prefix fidelity + one rule instead of bypass / `passthrough` / exact-response / native-wire.
-
-### Recommended steps
-- [ ] Add `isExactProtocolRequestPlan` (mirror `isExactProtocolResponsePlan` in `transformer-plan.ts`): true when compiled plan contains the client protocol owner (`Anthropic` / `OpenAI` / `openai-responses`).
-- [ ] In `handleTransformerEndpoint`, select `clientWireBody` whenever exact-protocol request applies (not only `protocolAwareBypass` / `passthrough` / `anthropicNativeWire`). Keep Unified normalize for routing only.
-- [ ] In `processRequestTransformers` request loop, skip the protocol owner's `transformRequestIn` the same way response skips owner `transformResponseOut`; still run every non-owner transformer.
-- [ ] Audit middleware that assumes Chat `messages` vs Responses `input` / Anthropic `messages` (`opencode-headers` `body.messages` branches, cache injectors, reasoning) so wire-keep does not break header/session/cache paths.
-- [ ] Prefer retiring reliance on manual `passthrough: true` for same-protocol chains once the automatic rule covers them; document the single rule in `tasks/lessons.md`.
-- [ ] Tests: Responses + `opencode-headers`; Anthropic + `claude-auth`; Responses + `xai-auth`; Chat + middleware if configured; extend `cross-protocol.cache-prefix` / transformer-plan coverage so skip-convert cannot silently break prefix intactness.
-- **Touch**: `packages/core/src/utils/transformer-plan.ts`, `api/routes.ts`, `routing/protocol-adapter.ts` / `inbound-pipeline.ts`, middleware transformers above, hermetic tests under `packages/core/src/tests/`.
+**Not in keep:** `use: ["codex"]` (Codex dialect), `claude-auth` (v1), or stacking `openai-responses` with `codex`.
 
 ## 🔒 Temporary security overrides (`pnpm-workspace.yaml`)
 

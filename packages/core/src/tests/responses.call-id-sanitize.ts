@@ -269,29 +269,7 @@ async function openAIResponsesToolHistoryUsesNativeMessageItems() {
   const result = await transformer.transformRequestIn(
     {
       model: "muse-spark-1.2-contributor-free",
-      messages: [
-        { role: "user", content: "fix the registry" },
-        {
-          role: "assistant",
-          content: "Planning the parallel-subagent fix.",
-          tool_calls: [
-            {
-              id: "call_01a05565ef6878229046cf7eaee1fa97",
-              type: "function",
-              function: {
-                name: "Bash",
-                arguments: '{"command":"rg TaskCreate"}',
-              },
-            },
-          ],
-        },
-        {
-          role: "tool",
-          tool_call_id: "call_01a05565ef6878229046cf7eaee1fa97",
-          content: "packages/core/src/cursor-sdk/session.ts",
-        },
-        { role: "user", content: "continue" },
-      ],
+      messages: toolThenUserMessages(),
     } as any,
     {},
     {}
@@ -324,14 +302,77 @@ async function openAIResponsesToolHistoryUsesNativeMessageItems() {
   assert.equal(call?.status, "completed");
   assert.equal(call?.call_id, output?.call_id);
   assert.equal(output?.output, "packages/core/src/cursor-sdk/session.ts");
-  const followUp = input.find(
-    (item) =>
-      item.type === "message" &&
-      item.role === "user" &&
-      item.content?.[0]?.type === "input_text" &&
-      item.content?.[0]?.text === "continue"
+  assertNoDummyAssistantAfterTool(input);
+}
+
+function toolThenUserMessages() {
+  return [
+    { role: "user", content: "fix the registry" },
+    {
+      role: "assistant",
+      content: "Planning the parallel-subagent fix.",
+      tool_calls: [
+        {
+          id: "call_01a05565ef6878229046cf7eaee1fa97",
+          type: "function",
+          function: {
+            name: "Bash",
+            arguments: '{"command":"rg TaskCreate"}',
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "call_01a05565ef6878229046cf7eaee1fa97",
+      content: "packages/core/src/cursor-sdk/session.ts",
+    },
+    { role: "user", content: "continue" },
+  ];
+}
+
+async function codexToolThenUserHasNoDummyAssistant() {
+  const transformer = new CodexTransformer();
+  (transformer as any).resolveAuth = async () => ({
+    mode: "oauth",
+    token: "test-token",
+    accountId: "test-account",
+    isFedramp: false,
+  });
+  const result = await transformer.transformRequestIn(
+    {
+      model: "gpt-5.4",
+      messages: toolThenUserMessages(),
+    } as any,
+    { baseUrl: "https://example.test" },
+    {}
   );
-  assert.ok(followUp);
+  assertNoDummyAssistantAfterTool((result as any).body.input);
+}
+
+function assertNoDummyAssistantAfterTool(input: any[]) {
+  const outputIndex = input.findIndex(
+    (item) =>
+      item.type === "function_call_output" ||
+      item.type === "custom_tool_call_output"
+  );
+  assert.ok(outputIndex >= 0);
+  assert.equal(input[outputIndex + 1]?.type, "message");
+  assert.equal(input[outputIndex + 1]?.role, "user");
+  assert.equal(input[outputIndex + 1]?.content?.[0]?.text, "continue");
+  assert.equal(
+    input.some(
+      (item) =>
+        item.type === "message" &&
+        item.role === "assistant" &&
+        Array.isArray(item.content) &&
+        item.content.length === 1 &&
+        item.content[0]?.type === "output_text" &&
+        item.content[0]?.text === ""
+    ),
+    false,
+    "Responses input must not insert an empty assistant after a tool result"
+  );
 }
 
 function functionCallEvent() {
@@ -963,6 +1004,7 @@ async function main() {
   await openAIResponsesRequestIsSanitized();
   await openAIResponsesProviderRequestPreservesAssistantText();
   await openAIResponsesToolHistoryUsesNativeMessageItems();
+  await codexToolThenUserHasNoDummyAssistant();
   await streamingResponsesAreSanitized();
   await streamingFlatJsonIsReEmittedAsSse();
   await nonStreamingResponsesAreSanitized();
