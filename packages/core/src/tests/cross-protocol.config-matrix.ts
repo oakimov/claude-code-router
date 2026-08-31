@@ -7,7 +7,7 @@
  *   xai-supergrok   xai-auth → openai-responses
  *   claude          claude-auth → Anthropic
  *   antigravity     gemini (cachedContent:false) → Antigravity envelope
- *   codex           codex
+ *   codex           openai-responses → codex
  *   codestral       mistral
  *   openrouter/nvidia/opencode  OpenAI Chat (+ reasoning on OpenCode)
  *   chrome-nano     chrome-on-device → tooluse
@@ -380,6 +380,8 @@ async function testRequestChains() {
       `${source}→Gemini must not leak cache_control`
     );
 
+    const responsesTf = new OpenAIResponsesTransformer();
+    (responsesTf as any).logger = logger;
     const codexTf = new CodexTransformer();
     (codexTf as any).logger = logger;
     (codexTf as any).resolveAuth = async () => ({
@@ -390,7 +392,7 @@ async function testRequestChains() {
     });
     const codex = await applyChain(
       { ...unified, model: "gpt-5.6-sol" },
-      [codexTf],
+      [responsesTf, codexTf],
       { name: "codex", baseUrl: "https://chatgpt.com/backend-api/codex" },
       sessionCtx()
     );

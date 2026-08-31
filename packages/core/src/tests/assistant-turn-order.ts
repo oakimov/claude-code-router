@@ -83,14 +83,7 @@ async function testResponsesOrder() {
 }
 
 async function testCodexKeepsTextWithTools() {
-  const tf = new CodexTransformer();
-  (tf as any).resolveAuth = async () => ({
-    mode: "oauth",
-    token: "t",
-    accountId: "a",
-    isFedramp: false,
-  });
-  const result = await tf.transformRequestIn(
+  const unified = await new OpenAIResponsesTransformer().transformRequestIn(
     {
       model: "gpt-5.4",
       messages: [
@@ -101,6 +94,18 @@ async function testCodexKeepsTextWithTools() {
         { role: "tool", tool_call_id: "call_1", content: "ok" },
       ],
     } as any,
+    {},
+    {}
+  );
+  const tf = new CodexTransformer();
+  (tf as any).resolveAuth = async () => ({
+    mode: "oauth",
+    token: "t",
+    accountId: "a",
+    isFedramp: false,
+  });
+  const result = await tf.transformRequestIn(
+    unified,
     { baseUrl: "https://example.test" },
     {}
   );

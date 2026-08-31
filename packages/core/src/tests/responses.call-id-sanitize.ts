@@ -9,6 +9,30 @@ const CURSOR_RESPONSES_REPLAY_ID =
   "call-66dbf0b1-aad7-482f-baa2-647748651824-0_fc_49ff1230-042d-97ce-b451-5e3f019a21d8_0";
 const RESPONSES_CALL_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
+function mockCodexAuth(transformer: CodexTransformer) {
+  (transformer as any).resolveAuth = async () => ({
+    mode: "oauth",
+    token: "test-token",
+    accountId: "test-account",
+    isFedramp: false,
+  });
+}
+
+async function toCodex(unified: any, context: any = {}) {
+  const responses = await new OpenAIResponsesTransformer().transformRequestIn(
+    unified,
+    {},
+    context
+  );
+  const transformer = new CodexTransformer();
+  mockCodexAuth(transformer);
+  return transformer.transformRequestIn(
+    responses,
+    { baseUrl: "https://example.test" },
+    context
+  );
+}
+
 function sanitizerContract() {
   const valid = "call_901b1ddc_d889_4a6e_8c58_564ad17bc095";
   assert.equal(sanitizeResponsesCallId(valid), valid);
@@ -175,19 +199,7 @@ function assertPairedInput(input: any[]) {
 }
 
 async function codexRequestIsSanitized() {
-  const transformer = new CodexTransformer();
-  (transformer as any).resolveAuth = async () => ({
-    mode: "oauth",
-    token: "test-token",
-    accountId: "test-account",
-    isFedramp: false,
-  });
-
-  const result = await transformer.transformRequestIn(
-    pairedRequest() as any,
-    { baseUrl: "https://example.test" },
-    {}
-  );
+  const result = await toCodex(pairedRequest());
   assertPairedInput((result.body as any).input);
 }
 
@@ -332,21 +344,10 @@ function toolThenUserMessages() {
 }
 
 async function codexToolThenUserHasNoDummyAssistant() {
-  const transformer = new CodexTransformer();
-  (transformer as any).resolveAuth = async () => ({
-    mode: "oauth",
-    token: "test-token",
-    accountId: "test-account",
-    isFedramp: false,
+  const result = await toCodex({
+    model: "gpt-5.4",
+    messages: toolThenUserMessages(),
   });
-  const result = await transformer.transformRequestIn(
-    {
-      model: "gpt-5.4",
-      messages: toolThenUserMessages(),
-    } as any,
-    { baseUrl: "https://example.test" },
-    {}
-  );
   assertNoDummyAssistantAfterTool((result as any).body.input);
 }
 
@@ -405,20 +406,16 @@ function streamingResponse() {
 }
 
 async function streamingResponsesAreSanitized() {
-  for (const transformer of [
-    new OpenAIResponsesTransformer(),
-    new CodexTransformer(),
-  ]) {
-    const response = await transformer.transformResponseOut(streamingResponse());
-    const text = await response.text();
-    const id = JSON.parse(
-      text
-        .split("\n")
-        .find((line) => line.startsWith("data: {"))!
-        .slice(6)
-    ).choices[0].delta.tool_calls[0].id;
-    assert.match(id, RESPONSES_CALL_ID_PATTERN);
-  }
+  const transformer = new OpenAIResponsesTransformer();
+  const response = await transformer.transformResponseOut(streamingResponse());
+  const text = await response.text();
+  const id = JSON.parse(
+    text
+      .split("\n")
+      .find((line) => line.startsWith("data: {"))!
+      .slice(6)
+  ).choices[0].delta.tool_calls[0].id;
+  assert.match(id, RESPONSES_CALL_ID_PATTERN);
 }
 
 async function streamingFlatJsonIsReEmittedAsSse() {
@@ -436,16 +433,23 @@ async function streamingFlatJsonIsReEmittedAsSse() {
       },
     ],
   };
-  const response = await transformer.transformResponseOut(
+  const codexOut = await transformer.transformResponseOut(
     new Response(JSON.stringify(payload), {
       headers: { "Content-Type": "application/json" },
     }),
     { req: { id: "req-flat" } } as any
   );
-  assert.match(response.headers.get("Content-Type") || "", /text\/event-stream/);
-  const text = await response.text();
-  assert.ok(text.includes('"content":"flat answer"'));
-  assert.ok(text.includes("data: [DONE]"));
+  assert.match(codexOut.headers.get("Content-Type") || "", /text\/event-stream/);
+  const native = await codexOut.text();
+  assert.ok(native.includes("response.completed"));
+  assert.ok(native.includes("flat answer"));
+
+  const chat = await new OpenAIResponsesTransformer().transformResponseOut(
+    new Response(native, { headers: { "Content-Type": "text/event-stream" } })
+  );
+  const chatText = await chat.text();
+  assert.ok(chatText.includes('"content":"flat answer"'));
+  assert.ok(chatText.includes("data: [DONE]"));
 }
 
 async function nonStreamingResponsesAreSanitized() {
@@ -467,19 +471,15 @@ async function nonStreamingResponsesAreSanitized() {
     ],
   };
 
-  for (const transformer of [
-    new OpenAIResponsesTransformer(),
-    new CodexTransformer(),
-  ]) {
-    (transformer as any).logger = { debug() {} };
-    const response = await transformer.transformResponseOut(
-      new Response(JSON.stringify(payload), {
-        headers: { "Content-Type": "application/json" },
-      })
-    );
-    const id = (await response.json() as any).choices[0].message.tool_calls[0].id;
-    assert.match(id, RESPONSES_CALL_ID_PATTERN);
-  }
+  const transformer = new OpenAIResponsesTransformer();
+  (transformer as any).logger = { debug() {} };
+  const response = await transformer.transformResponseOut(
+    new Response(JSON.stringify(payload), {
+      headers: { "Content-Type": "application/json" },
+    })
+  );
+  const id = (await response.json() as any).choices[0].message.tool_calls[0].id;
+  assert.match(id, RESPONSES_CALL_ID_PATTERN);
 }
 
 async function clientBoundCallIdsAreMapped() {
@@ -601,19 +601,9 @@ function customToolRequest() {
 }
 
 async function codexOutboundCustomToolIsRestored() {
-  const transformer = new CodexTransformer();
-  (transformer as any).resolveAuth = async () => ({
-    mode: "oauth",
-    token: "test-token",
-    accountId: "test-account",
-    isFedramp: false,
+  const result = await toCodex(customToolRequest(), {
+    responsesCustomToolNames: new Set(["apply_patch"]),
   });
-
-  const result = await transformer.transformRequestIn(
-    customToolRequest() as any,
-    { baseUrl: "https://example.test" },
-    { responsesCustomToolNames: new Set(["apply_patch"]) }
-  );
   const body: any = result.body;
 
   const tool = body.tools.find((t: any) => t.name === "apply_patch");
@@ -644,19 +634,7 @@ async function codexOutboundRegressionWithoutCustomToolNames() {
   // stay on the plain function/function_call path unchanged (this is the
   // overwhelming majority case: any caller that isn't relaying a client's
   // Responses `type: "custom"` tool).
-  const transformer = new CodexTransformer();
-  (transformer as any).resolveAuth = async () => ({
-    mode: "oauth",
-    token: "test-token",
-    accountId: "test-account",
-    isFedramp: false,
-  });
-
-  const result = await transformer.transformRequestIn(
-    customToolRequest() as any,
-    { baseUrl: "https://example.test" },
-    {}
-  );
+  const result = await toCodex(customToolRequest());
   const body: any = result.body;
 
   const tool = body.tools.find((t: any) => t.name === "apply_patch");
@@ -715,7 +693,7 @@ function customToolStreamingResponse() {
 }
 
 async function codexInboundCustomToolStreamingIsConverted() {
-  const transformer = new CodexTransformer();
+  const transformer = new OpenAIResponsesTransformer();
   const response = await transformer.transformResponseOut(
     customToolStreamingResponse()
   );
@@ -760,7 +738,7 @@ async function codexInboundCustomToolNonStreamingIsConverted() {
     ],
   };
 
-  const transformer = new CodexTransformer();
+  const transformer = new OpenAIResponsesTransformer();
   (transformer as any).logger = { debug() {} };
   const response = await transformer.transformResponseOut(
     new Response(JSON.stringify(payload), {
@@ -792,19 +770,7 @@ function responseFormatRequest() {
 }
 
 async function codexOutboundResponseFormatIsRestored() {
-  const transformer = new CodexTransformer();
-  (transformer as any).resolveAuth = async () => ({
-    mode: "oauth",
-    token: "test-token",
-    accountId: "test-account",
-    isFedramp: false,
-  });
-
-  const result = await transformer.transformRequestIn(
-    responseFormatRequest() as any,
-    { baseUrl: "https://example.test" },
-    {}
-  );
+  const result = await toCodex(responseFormatRequest());
   const body: any = result.body;
 
   assert.deepEqual(body.text.format, {
@@ -817,7 +783,7 @@ async function codexOutboundResponseFormatIsRestored() {
 }
 
 async function codexInboundParallelCustomToolsKeepDistinctIndexes() {
-  const transformer = new CodexTransformer();
+  const transformer = new OpenAIResponsesTransformer();
   const encoder = new TextEncoder();
   const events = [
     {
@@ -920,18 +886,7 @@ async function outboundJsonObjectFormatIsRestoredOnBothPaths() {
   assert.deepEqual((responsesResult as any).text.format, { type: "json_object" });
   assert.equal((responsesResult as any).response_format, undefined);
 
-  const codex = new CodexTransformer();
-  (codex as any).resolveAuth = async () => ({
-    mode: "oauth",
-    token: "test-token",
-    accountId: "test-account",
-    isFedramp: false,
-  });
-  const codexResult = await codex.transformRequestIn(
-    jsonObjectFormatRequest() as any,
-    { baseUrl: "https://example.test" },
-    {}
-  );
+  const codexResult = await toCodex(jsonObjectFormatRequest());
   assert.deepEqual((codexResult as any).body.text.format, { type: "json_object" });
   assert.equal((codexResult as any).body.response_format, undefined);
 }
@@ -939,13 +894,6 @@ async function outboundJsonObjectFormatIsRestoredOnBothPaths() {
 async function codexOutboundHistoryStripsHeredoc() {
   // History replay is intentionally normalized: a whole-value heredoc wrapper
   // is stripped so the backend is not re-fed a wrapper the client never kept.
-  const transformer = new CodexTransformer();
-  (transformer as any).resolveAuth = async () => ({
-    mode: "oauth",
-    token: "test-token",
-    accountId: "test-account",
-    isFedramp: false,
-  });
   const patch =
     "*** Begin Patch\n*** Add File: hello.txt\n+hi\n*** End Patch";
   const request = customToolRequest();
@@ -955,11 +903,9 @@ async function codexOutboundHistoryStripsHeredoc() {
   assistant.tool_calls[0].function.arguments = JSON.stringify({
     input: `<<EOF\n${patch}\nEOF`,
   });
-  const result = await transformer.transformRequestIn(
-    request as any,
-    { baseUrl: "https://example.test" },
-    { responsesCustomToolNames: new Set(["apply_patch"]) }
-  );
+  const result = await toCodex(request, {
+    responsesCustomToolNames: new Set(["apply_patch"]),
+  });
   const call = (result as any).body.input.find(
     (item: any) => item.type === "custom_tool_call"
   );

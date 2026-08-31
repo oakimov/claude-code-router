@@ -694,6 +694,7 @@ export class OpenAIResponsesTransformer implements Transformer {
       const toolIndexByKey = new Map<string, number>();
       const textByItemId = new Map<string, string>();
       const thinkingByItemId = new Map<string, string>();
+      const customToolInputByItemId = new Map<string, string>();
       const encryptedRecorder = shouldCacheEncrypted
         ? createEncryptedReasoningStreamRecorder()
         : undefined;
@@ -782,7 +783,8 @@ export class OpenAIResponsesTransformer implements Transformer {
                 data,
                 toolIndexFor,
                 textByItemId,
-                thinkingByItemId
+                thinkingByItemId,
+                customToolInputByItemId
               );
               for (const chunk of chunks) {
                 ctx.controller.enqueue(
@@ -838,7 +840,8 @@ export class OpenAIResponsesTransformer implements Transformer {
     data: ResponsesStreamEvent,
     toolIndexFor: (data: ResponsesStreamEvent) => number,
     textByItemId: Map<string, string>,
-    thinkingByItemId: Map<string, string>
+    thinkingByItemId: Map<string, string>,
+    customToolInputByItemId?: Map<string, string>
   ): any[] {
     const textFromItem = (item: any): string =>
       (item?.content || [])
@@ -986,17 +989,24 @@ export class OpenAIResponsesTransformer implements Transformer {
       }
       // Reuse the core finish chunk so token usage stays attached. This
       // interceptor only exists to emit unseen terminal text first.
-      const finish = this.convertStreamEventCore(data, toolIndexFor);
+      const finish = this.convertStreamEventCore(
+        data,
+        toolIndexFor,
+        customToolInputByItemId
+      );
       if (finish) chunks.push(finish);
       return chunks;
     }
 
-    return asArray(this.convertStreamEventCore(data, toolIndexFor));
+    return asArray(
+      this.convertStreamEventCore(data, toolIndexFor, customToolInputByItemId)
+    );
   }
 
   private convertStreamEventCore(
     data: ResponsesStreamEvent,
-    toolIndexFor: (data: ResponsesStreamEvent) => number
+    toolIndexFor: (data: ResponsesStreamEvent) => number,
+    customToolInputByItemId?: Map<string, string>
   ): any | null {
     if (data.type === "response.created") {
       return {
@@ -1055,6 +1065,82 @@ export class OpenAIResponsesTransformer implements Transformer {
                     arguments: "",
                   },
                   type: "function",
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    const customToolKey =
+      data.item_id || data.item?.id || data.item?.call_id || "";
+    if (data.type === "response.output_item.added" && data.item?.type === "custom_tool_call") {
+      if (customToolKey) customToolInputByItemId?.set(customToolKey, "");
+      return {
+        id: data.item.call_id || data.item.id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: toolIndexFor(data),
+                  id:
+                    sanitizeResponsesCallId(
+                      data.item.call_id || data.item.id
+                    ) || data.item.call_id || data.item.id,
+                  function: {
+                    name: data.item.name || "",
+                    arguments: "",
+                  },
+                  type: "function",
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    }
+
+    if (data.type === "response.custom_tool_call_input.delta") {
+      if (customToolInputByItemId && customToolKey) {
+        const prev = customToolInputByItemId.get(customToolKey) ?? "";
+        const delta = typeof data.delta === "string" ? data.delta : "";
+        customToolInputByItemId.set(customToolKey, prev + delta);
+      }
+      return null;
+    }
+
+    if (data.type === "response.custom_tool_call_input.done") {
+      const fullInput =
+        (typeof data.input === "string" ? data.input : undefined) ??
+        (customToolKey ? customToolInputByItemId?.get(customToolKey) : undefined) ??
+        "";
+      if (customToolKey) customToolInputByItemId?.delete(customToolKey);
+      return {
+        id: data.item_id || data.item?.id || "chatcmpl-" + Date.now(),
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: data.response?.model,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: toolIndexFor(data),
+                  function: {
+                    arguments: JSON.stringify({
+                      [CUSTOM_TOOL_INPUT_KEY]: fullInput,
+                    }),
+                  },
                 },
               ],
             },

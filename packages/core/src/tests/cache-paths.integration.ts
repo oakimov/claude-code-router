@@ -202,8 +202,21 @@ async function testCodexRoundTrip() {
           cache_control: { type: "ephemeral" },
         },
       ];
-      const current = await transformer.transformRequestIn(
+      const responses = await new OpenAIResponsesTransformer().transformRequestIn(
         { ...cacheRequest, stream: false },
+        {},
+        {
+          req: {
+            id:
+              model === "gpt-5.6-luna"
+                ? "codex-cache-path"
+                : `codex-cache-path-${model}`,
+            sessionId: "codex-session",
+          },
+        }
+      );
+      const current = await transformer.transformRequestIn(
+        responses,
         {
           name: "codex",
           baseUrl: "https://chatgpt.com/backend-api/codex",
@@ -277,22 +290,28 @@ async function testCodexRoundTrip() {
       },
     },
   };
-  const unified = await transformer.transformResponseOut(
+  const responsesWire = await transformer.transformResponseOut(
     new Response(
       JSON.stringify(responsePayload),
       { headers: { "Content-Type": "text/event-stream" } }
     ),
     { req: { id: "codex-cache-path" } }
   );
+  const unified = await new OpenAIResponsesTransformer().transformResponseOut(
+    responsesWire
+  );
   const inbound = await toAnthropic(unified);
   assert.equal(inbound.usage.input_tokens, 20);
   assert.equal(inbound.usage.cache_read_input_tokens, 60);
   assert.equal(inbound.usage.cache_creation_input_tokens, 20);
 
-  const streamingUnified = await transformer.transformResponseOut(
+  const streamingNative = await transformer.transformResponseOut(
     new Response(JSON.stringify(responsePayload), {
       headers: { "Content-Type": "text/event-stream" },
     })
+  );
+  const streamingUnified = await new OpenAIResponsesTransformer().transformResponseOut(
+    streamingNative
   );
   const events = await toAnthropicEvents(streamingUnified);
   const usageEvent = events.find((event) => event.type === "message_delta");

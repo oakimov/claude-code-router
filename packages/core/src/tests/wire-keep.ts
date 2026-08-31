@@ -41,7 +41,7 @@ async function wireSafeAllowlist() {
   assert.equal(isWireSafeMiddlewareForKeep("reasoning", "OpenAI"), true, "reasoning allowed for OpenAI owner");
   assert.equal(isWireSafeMiddlewareForKeep("reasoning", "Anthropic"), false, "reasoning not for Anthropic wire");
   assert.equal(isWireSafeMiddlewareForKeep("claude-auth", "Anthropic"), false);
-  assert.equal(isWireSafeMiddlewareForKeep("codex", "openai-responses"), false);
+  assert.equal(isWireSafeMiddlewareForKeep("codex", "openai-responses"), true);
   assert.equal(isWireSafeMiddlewareForKeep(undefined, "OpenAI"), false);
 }
 
@@ -153,6 +153,22 @@ async function anthropicWireKeepsImageDocument() {
   assert.equal(tr[2].type, "document");
 }
 
+async function codexRequiresResponsesOwnerAndRunsAfterIt() {
+  const endpoint: any = { name: "openai-responses" };
+  const codex: any = { name: "codex", requestPhase: "headers" };
+  assert.throws(
+    () => compileTransformerPlan([codex], []),
+    /codex requires openai-responses/
+  );
+  const plan = compileTransformerPlan([codex, endpoint], []);
+  assert.deepEqual(
+    plan.request.map((t: any) => t.name),
+    ["openai-responses", "codex"]
+  );
+  assert.equal(isExactProtocolRequestPlan(plan, endpoint, "openai-responses"), true);
+  assert.equal(isWireSafeMiddlewareForKeep("codex", "openai-responses"), true);
+}
+
 async function chatWireKeepRunsOpenAIIn() {
   // Chat keep must run OpenAI In so media extract happens. Verify predicate + allowlist.
   const endpoint: any = { name: "OpenAI" };
@@ -160,8 +176,9 @@ async function chatWireKeepRunsOpenAIIn() {
   assert.equal(isExactProtocolRequestPlan(plan, endpoint, "OpenAI"), true);
   assert.equal(isWireSafeMiddlewareForKeep("opencode-headers", "OpenAI"), true);
   assert.equal(isWireSafeMiddlewareForKeep("reasoning", "OpenAI"), true);
-  // Non-wire-safe like `codex` must not run on Anthropic/Responses keep
-  assert.equal(isWireSafeMiddlewareForKeep("codex", "OpenAI"), false);
+  // Codex is Responses-wire middleware (auth/headers), not a Chat owner.
+  assert.equal(isWireSafeMiddlewareForKeep("codex", "OpenAI"), true);
+  assert.equal(isWireSafeMiddlewareForKeep("codex", "openai-responses"), true);
   // Header copy + applyRawAnthropicPromptCaching stay Anthropic-wire only
   // (routes.ts anthropicWireKeep). Chat/Responses keep must not inherit them.
 }
@@ -176,6 +193,7 @@ async function main() {
   await opencodeFingerprintHandlesResponsesInput();
   await anthropicWireKeepsImageDocument();
   await chatWireKeepRunsOpenAIIn();
+  await codexRequiresResponsesOwnerAndRunsAfterIt();
   console.log("wire-keep: PASS");
 }
 

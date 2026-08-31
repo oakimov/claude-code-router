@@ -78,7 +78,7 @@ As an alternative to OAuth, the Codex provider can authenticate with a Personal 
   "api_key": "at-your-personal-access-token",
   "models": ["gpt-5"],
   "transformer": {
-    "use": ["codex"]
+    "use": ["openai-responses", "codex"]
   }
 }
 ```

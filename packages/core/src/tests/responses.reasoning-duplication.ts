@@ -172,7 +172,17 @@ async function testOpenAIResponsesSummaryPlusTerminalIsOnce() {
 }
 
 async function testCodexSummaryPlusTerminalIsOnce() {
-  await assertProviderOnce(new CodexTransformer(), true);
+  const native = await new CodexTransformer().transformResponseOut(
+    sseResponse(duplicatedReasoningEvents(true))
+  );
+  const text = await native.text();
+  assert.ok(text.includes(CIPHER), "Codex must keep encrypted_content on the Responses wire");
+  assert.equal(
+    text.includes('"object":"chat.completion.chunk"'),
+    false,
+    "Codex must not convert Responses SSE to Chat chunks"
+  );
+  await assertProviderOnce(new OpenAIResponsesTransformer(), true);
 }
 
 async function testOpenAIResponsesTerminalOnlyIsOnce() {
@@ -180,7 +190,12 @@ async function testOpenAIResponsesTerminalOnlyIsOnce() {
 }
 
 async function testCodexTerminalOnlyIsOnce() {
-  await assertProviderOnce(new CodexTransformer(), false);
+  const native = await new CodexTransformer().transformResponseOut(
+    sseResponse(duplicatedReasoningEvents(false))
+  );
+  const text = await native.text();
+  assert.ok(text.includes(CIPHER));
+  await assertProviderOnce(new OpenAIResponsesTransformer(), false);
 }
 
 async function testAnthropicClientSeesThinkingThenText() {
@@ -196,7 +211,7 @@ async function testAnthropicClientSeesThinkingThenText() {
 }
 
 async function testAnthropicClientSeesTerminalOnlyThinkingThenText() {
-  const tf = new CodexTransformer();
+  const tf = new OpenAIResponsesTransformer();
   (tf as any).logger = logger;
   const unified = await tf.transformResponseOut(
     sseResponse(duplicatedReasoningEvents(false))

@@ -153,6 +153,13 @@ async function buildApp() {
           transformer: { use: ["xai-auth", "openai-responses"] },
         },
         {
+          name: "codex",
+          api_base_url: "https://codex.invalid",
+          api_key: "at-hermetic-test",
+          models: ["gpt"],
+          transformer: { use: ["openai-responses", "codex"] },
+        },
+        {
           name: "generic",
           api_base_url: "https://generic.invalid/v1/chat/completions",
           api_key: "generic-provider-key",
@@ -392,9 +399,21 @@ async function main() {
         { headers: { "content-type": "application/json" } }
       );
     }
+    if (request.url.includes("user-auth-credential/whoami")) {
+      return new Response(
+        JSON.stringify({
+          chatgpt_account_id: "codex-account",
+          chatgpt_account_is_fedramp: false,
+          chatgpt_user_id: "codex-user",
+          chatgpt_plan_type: "pro",
+        }),
+        { headers: { "content-type": "application/json" } }
+      );
+    }
     if (
       request.url.includes("zen.invalid") ||
-      request.url.includes("xai.invalid")
+      request.url.includes("xai.invalid") ||
+      request.url.includes("codex.invalid")
     ) {
       return responsesKeepOk();
     }
@@ -1324,6 +1343,24 @@ async function main() {
         .find((request) => request.url.includes("xai.invalid"));
       assert.ok(upstream, JSON.stringify(captured.slice(before)));
       assertKeptResponsesWire(upstream!.body);
+    }
+
+    {
+      const before = captured.length;
+      const result = await app.inject({
+        method: "POST",
+        url: "/v1/responses",
+        payload: keepResponsesPayload("codex,gpt"),
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      const upstream = captured
+        .slice(before)
+        .find((request) => request.url.includes("codex.invalid"));
+      assert.ok(upstream, JSON.stringify(captured.slice(before)));
+      assertKeptResponsesWire(upstream!.body);
+      assert.equal(upstream!.body.stream, true);
+      assert.ok(upstream!.headers.get("authorization")?.startsWith("Bearer at-"));
+      assert.equal(upstream!.headers.get("originator"), "codex_cli_rs");
     }
 
     {

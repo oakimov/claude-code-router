@@ -20,6 +20,7 @@ import {
   type CursorCacheLifecycle,
 } from "./cache-outcome";
 import type { MessageDebugDirection } from "./message-debug";
+import { peekResponseBody } from "./stream-peek";
 
 export type UpstreamSSEDebugOptions = {
   logger?: any;
@@ -472,26 +473,63 @@ export async function tapUpstreamSSEDebug(
     }
   }
 
+  let sseResponse = response;
   if (!contentType.includes("text/event-stream")) {
-    // Unknown body shape: no usage to read, but still surface the prediction.
-    if (!withDirection.eventsOnly) {
-      logCacheOutcome(withDirection, { cachedExcludedFromPrompt: false });
+    if (contentType) {
+      // Declared non-SSE (text/plain, octet-stream, …): no usage to read.
+      if (!withDirection.eventsOnly) {
+        logCacheOutcome(withDirection, { cachedExcludedFromPrompt: false });
+      }
+      return response;
     }
-    return response;
+    // Missing Content-Type: Cloudflare (Codex) strips it from SSE. Sniff the
+    // first byte so cache outcome and provider→ccr logs still run.
+    try {
+      const peek = await peekResponseBody(response);
+      if (peek.kind === "json") {
+        const headers = new Headers(response.headers);
+        headers.set("Content-Type", "application/json");
+        return await tapJsonBody(
+          new Response(peek.text, {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          }),
+          withDirection
+        );
+      }
+      if (peek.kind === "empty") {
+        if (!withDirection.eventsOnly) {
+          logCacheOutcome(withDirection, { cachedExcludedFromPrompt: false });
+        }
+        return new Response(null, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      }
+      sseResponse = peek.response;
+    } catch {
+      return response;
+    }
+  }
+
+  if (!sseResponse.body) {
+    return sseResponse;
   }
 
   try {
     const clientBranch = pipeSSEWithNonblockingDebugTap(
-      response.body,
+      sseResponse.body,
       withDirection
     );
     return new Response(clientBranch, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: cloneResponseHeaders(response.headers, "text/event-stream"),
+      status: sseResponse.status,
+      statusText: sseResponse.statusText,
+      headers: cloneResponseHeaders(sseResponse.headers, "text/event-stream"),
     });
   } catch {
-    return response;
+    return sseResponse;
   }
 }
 

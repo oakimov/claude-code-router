@@ -18,10 +18,15 @@ function mockCodexAuth(transformer: CodexTransformer) {
 }
 
 async function transform(messages: any[]) {
+  const unified = await new OpenAIResponsesTransformer().transformRequestIn(
+    { model: "gpt-5.6-luna", messages } as any,
+    {},
+    {}
+  );
   const transformer = new CodexTransformer();
   mockCodexAuth(transformer);
   return transformer.transformRequestIn(
-    { model: "gpt-5.6-luna", messages } as any,
+    unified,
     { baseUrl: "https://chatgpt.com/backend-api/codex" },
     { req: { id: "codex-system-test" } }
   );
@@ -77,7 +82,7 @@ async function foldsListOnlySystemWithoutDroppingText() {
 
   const body = result.body as any;
   assertNoSystemInInput(body.input || []);
-  assert.equal(body.instructions, "Block one.\nBlock two.");
+  assert.equal(body.instructions, "Block one.\n\nBlock two.");
 }
 
 async function singleStringSystemStillWorks() {
@@ -107,10 +112,15 @@ async function responsesInstructionsAreFoldedOnce() {
       { role: "user", content: "ping" },
     ],
   } as any);
+  const converted = await new OpenAIResponsesTransformer().transformRequestIn(
+    unified,
+    {},
+    {}
+  );
   const transformer = new CodexTransformer();
   mockCodexAuth(transformer);
   const result = await transformer.transformRequestIn(
-    unified,
+    converted,
     { baseUrl: "https://chatgpt.com/backend-api/codex" },
     { req: { id: "codex-responses-system-test" } }
   );
@@ -127,12 +137,51 @@ async function responsesInstructionsAreFoldedOnce() {
   assertNoSystemInInput(body.input || []);
 }
 
+async function responsesKeepFoldsSystemWithoutRebuildingInput() {
+  const transformer = new CodexTransformer();
+  mockCodexAuth(transformer);
+  const ciphertext = "gAAAAABlcodex-keep-encrypted-reasoning";
+  const result = await transformer.transformRequestIn(
+    {
+      model: "gpt-5.6-luna",
+      store: false,
+      include: ["reasoning.encrypted_content"],
+      instructions: "Keep me.",
+      input: [
+        { role: "system", content: "Do not leak." },
+        {
+          type: "reasoning",
+          id: "rs_keep",
+          summary: [],
+          encrypted_content: ciphertext,
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "continue" }],
+        },
+      ],
+    },
+    { baseUrl: "https://chatgpt.com/backend-api/codex" },
+    { req: { id: "codex-keep-system" } }
+  );
+  const body = result.body as any;
+  assert.equal(body.instructions, "Keep me.\n\nDo not leak.");
+  assertNoSystemInInput(body.input || []);
+  assert.equal(body.store, false);
+  assert.equal(body.stream, true);
+  assert.deepEqual(body.include, ["reasoning.encrypted_content"]);
+  assert.equal(body.input[0].encrypted_content, ciphertext);
+  assert.equal(body.input[0].id, "rs_keep");
+}
+
 async function main() {
   await foldsMultipleSystemMessagesIntoInstructions();
   await foldsListOnlySystemWithoutDroppingText();
   await singleStringSystemStillWorks();
   await noSystemYieldsEmptyInstructions();
   await responsesInstructionsAreFoldedOnce();
+  await responsesKeepFoldsSystemWithoutRebuildingInput();
   console.log("codex-system-instructions: all tests passed");
 }
 

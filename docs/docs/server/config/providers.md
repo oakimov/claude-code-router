@@ -120,7 +120,7 @@ Codex supports **two auth modes**:
   "api_key": "oauth_dummy_key",
   "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
   "transformer": {
-    "use": ["codex"]
+    "use": ["openai-responses", "codex"]
   }
 }
 ```
@@ -134,7 +134,7 @@ Codex supports **two auth modes**:
   "api_key": "at-your-personal-access-token",
   "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
   "transformer": {
-    "use": ["codex"]
+    "use": ["openai-responses", "codex"]
   }
 }
 ```

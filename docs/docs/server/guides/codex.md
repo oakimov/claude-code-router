@@ -29,7 +29,7 @@ A ChatGPT Plus or Pro subscription is still required.
 3. OpenAI redirects to `http://localhost:1455/auth/callback`, where the CCR server exchanges the authorization code for tokens (PKCE flow)
 4. Tokens are saved to `~/.claude-code-router/codex_auth.json`
 5. You return to the terminal and press Enter — the CLI confirms the tokens were saved
-6. The `codex` transformer reads the access token and uses it to authenticate API requests
+6. The `codex` transformer (paired with `openai-responses`) reads the access token and uses it to authenticate API requests. `openai-responses` owns the Responses wire; `codex` supplies ChatGPT auth, headers, `store: false`, and `stream: true`.
 7. The CLI and server independently refresh the token five minutes before expiry
 
 The ID token supplies the selected `chatgpt_account_id` and FedRAMP state.
@@ -75,7 +75,7 @@ The CLI prints an authorization URL. Open it in your browser, sign in with your 
 
 #### 2. Configure Provider
 
-Add the Codex provider to your `~/.claude-code-router/config.json`:
+Add the Codex provider to your `~/.claude-code-router/config.json`. Always pair `codex` with `openai-responses`: the latter owns the Responses API body (including encrypted reasoning items); `codex` only authenticates and applies ChatGPT backend constraints (`store: false`, `stream: true`, no `role: system` in `input`).
 
 ```json
 {
@@ -86,7 +86,7 @@ Add the Codex provider to your `~/.claude-code-router/config.json`:
       "api_key": "oauth_dummy_key",
       "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
       "transformer": {
-        "use": ["codex"]
+        "use": ["openai-responses", "codex"]
       }
     }
   ],
@@ -109,7 +109,7 @@ If you already have a Codex-compatible PAT, you can skip `ccr codex-auth` and pl
       "api_key": "at-your-personal-access-token",
       "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
       "transformer": {
-        "use": ["codex"]
+        "use": ["openai-responses", "codex"]
       }
     }
   ],

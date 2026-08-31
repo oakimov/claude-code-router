@@ -104,7 +104,7 @@ sidebar_position: 2
   "apiKey": "oauth_dummy_key",
   "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
   "transformer": {
-    "use": ["codex"]
+    "use": ["openai-responses", "codex"]
   }
 }
 ```

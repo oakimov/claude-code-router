@@ -145,6 +145,11 @@ async function toChat(unified: any, provider: { name: string; baseUrl: string })
 }
 
 async function toCodex(unified: any) {
+  const responses = await new OpenAIResponsesTransformer().transformRequestIn(
+    { ...structuredClone(unified), model: "gpt-5.6-sol", stream: false },
+    { name: "codex", baseUrl: "https://chatgpt.com/backend-api/codex", apiKey: "at-test", models: [] },
+    sessionCtx()
+  );
   const tf = new CodexTransformer();
   (tf as any).logger = logger;
   (tf as any).resolveAuth = async () => ({
@@ -154,7 +159,7 @@ async function toCodex(unified: any) {
     isFedramp: false,
   });
   const result = await tf.transformRequestIn(
-    { ...structuredClone(unified), model: "gpt-5.6-sol", stream: false },
+    responses,
     { name: "codex", baseUrl: "https://chatgpt.com/backend-api/codex", apiKey: "at-test", models: [] },
     sessionCtx()
   );

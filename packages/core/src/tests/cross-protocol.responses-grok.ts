@@ -172,6 +172,11 @@ async function toResponses(unified: any) {
 }
 
 async function toCodex(unified: any) {
+  const responses = await new OpenAIResponsesTransformer().transformRequestIn(
+    structuredClone(unified),
+    {},
+    {}
+  );
   const tf = new CodexTransformer();
   (tf as any).resolveAuth = async () => ({
     mode: "oauth",
@@ -180,7 +185,7 @@ async function toCodex(unified: any) {
     isFedramp: false,
   });
   const result = await tf.transformRequestIn(
-    structuredClone(unified),
+    responses,
     { baseUrl: "https://example.test" },
     {}
   );

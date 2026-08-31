@@ -92,7 +92,13 @@ async function main() {
     const transformed = await transformer.transformRequestIn(
       {
         model: "gpt-test",
-        messages: [{ role: "user", content: "hello" }],
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }],
+          },
+        ],
       },
       {
         name: "codex",
@@ -130,7 +136,13 @@ async function main() {
       patTransformer.transformRequestIn(
         {
           model: "gpt-test",
-          messages: [{ role: "user", content: "one" }],
+          input: [
+            {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: "one" }],
+            },
+          ],
         },
         { apiKey: "at-reliability-test" },
         { req: { id: "pat-a" } }
@@ -138,7 +150,13 @@ async function main() {
       patTransformer.transformRequestIn(
         {
           model: "gpt-test",
-          messages: [{ role: "user", content: "two" }],
+          input: [
+            {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: "two" }],
+            },
+          ],
         },
         { apiKey: "at-reliability-test" },
         { req: { id: "pat-b" } }
@@ -153,7 +171,13 @@ async function main() {
     const envPat = await patTransformer.transformRequestIn(
       {
         model: "gpt-test",
-        messages: [{ role: "user", content: "env" }],
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "env" }],
+          },
+        ],
       },
       { apiKey: "$CODEX_PAT_TEST" },
       { req: { id: "pat-env" } }
@@ -163,7 +187,13 @@ async function main() {
     const bareEnvPat = await patTransformer.transformRequestIn(
       {
         model: "gpt-test",
-        messages: [{ role: "user", content: "bare-env" }],
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "bare-env" }],
+          },
+        ],
       },
       { apiKey: "CODEX_PAT_TEST" },
       { req: { id: "pat-bare-env" } }

@@ -8,6 +8,19 @@ export type CompiledTransformerPlan = {
   transportOwner?: Transformer;
 };
 
+function requestPhaseRank(transformer: Transformer): number {
+  if (
+    transformer.ownsTransport === true ||
+    transformer.requestPhase === "transport"
+  ) {
+    return 2;
+  }
+  if (transformer.requestPhase === "headers") {
+    return 1;
+  }
+  return 0;
+}
+
 function transformerKey(transformer: Transformer): string | undefined {
   if (typeof transformer.name === "string" && transformer.name.length > 0) {
     return transformer.name;
@@ -54,6 +67,16 @@ export function compileTransformerPlan(
 
   for (const transformer of providerUse || []) consider(transformer);
   for (const transformer of modelUse || []) consider(transformer);
+
+  body.sort(
+    (left, right) => requestPhaseRank(left) - requestPhaseRank(right)
+  );
+
+  if (seen.has("codex") && !seen.has("openai-responses")) {
+    throw new Error(
+      'codex requires openai-responses in transformer.use (e.g. ["openai-responses", "codex"]). Codex is ChatGPT auth/headers middleware on the Responses wire and does not convert bodies.'
+    );
+  }
 
   if (transportOwners.length > 1) {
     const names = transportOwners
@@ -107,6 +130,7 @@ const WIRE_SAFE_MIDDLEWARE = new Set([
   "xai-auth",
   "opencode-headers",
   "qwen-auth",
+  "codex",
 ]);
 
 /**

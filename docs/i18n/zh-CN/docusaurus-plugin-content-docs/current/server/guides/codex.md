@@ -79,7 +79,7 @@ CLI 会打印授权 URL。在浏览器中打开它，使用 OpenAI / ChatGPT 账
       "api_key": "oauth_dummy_key",
       "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
       "transformer": {
-        "use": ["codex"]
+        "use": ["openai-responses", "codex"]
       }
     }
   ],
@@ -102,7 +102,7 @@ CLI 会打印授权 URL。在浏览器中打开它，使用 OpenAI / ChatGPT 账
       "api_key": "at-your-personal-access-token",
       "models": ["gpt-5", "gpt-5-high", "gpt-5-mini"],
       "transformer": {
-        "use": ["codex"]
+        "use": ["openai-responses", "codex"]
       }
     }
   ],

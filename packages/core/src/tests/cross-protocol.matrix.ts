@@ -160,10 +160,17 @@ async function testResponsesToAllOutbounds() {
   assert.ok(gemBody.tools.some((t: any) => t.googleSearch || t.functionDeclarations));
 
   // Responses → Codex (instructions fold, custom_tool preserved)
+  const responsesTf = new OpenAIResponsesTransformer();
+  (responsesTf as any).logger = logger;
+  const responsesBody = await responsesTf.transformRequestIn(
+    { ...structuredClone(unified), model: "gpt-5.6-sol", stream: false } as any,
+    { name: "codex", baseUrl: "https://chatgpt.com/backend-api/codex", apiKey: "at-test", models: [] } as any,
+    sessionCtx()
+  );
   const codexTf = new CodexTransformer();
   (codexTf as any).logger = logger;
   (codexTf as any).resolveAuth = async () => ({ mode: "oauth", token: "t", accountId: "a", isFedramp: false });
-  const codexBody = await codexTf.transformRequestIn({ ...structuredClone(unified), model: "gpt-5.6-sol", stream: false } as any, { name: "codex", baseUrl: "https://chatgpt.com/backend-api/codex", apiKey: "at-test", models: [] } as any, sessionCtx());
+  const codexBody = await codexTf.transformRequestIn(responsesBody as any, { name: "codex", baseUrl: "https://chatgpt.com/backend-api/codex", apiKey: "at-test", models: [] } as any, sessionCtx());
   assert.ok(Array.isArray((codexBody.body as any).input));
   assert.equal((codexBody.body as any).input.some((i: any) => i.role === "system"), false, "Codex must fold system into instructions");
 }
@@ -183,10 +190,15 @@ async function testCallIdBoundsAcrossOutbounds() {
   for (const builder of [
     async () => (await new OpenAIResponsesTransformer().transformRequestIn(structuredClone(unified), {} as any, sessionCtx()) as any).input,
     async () => {
+      const responses = await new OpenAIResponsesTransformer().transformRequestIn(
+        { ...structuredClone(unified), model: "gpt-5.6-sol", stream: false } as any,
+        {} as any,
+        sessionCtx()
+      );
       const tf = new CodexTransformer();
       (tf as any).logger = logger;
       (tf as any).resolveAuth = async () => ({ mode: "oauth", token: "t", accountId: "a", isFedramp: false });
-      let b: any = await tf.transformRequestIn({ ...structuredClone(unified), model: "gpt-5.6-sol", stream: false } as any, { name: "codex", baseUrl: "https://chatgpt.com/backend-api/codex", apiKey: "at-test", models: [] } as any, sessionCtx());
+      let b: any = await tf.transformRequestIn(responses as any, { name: "codex", baseUrl: "https://chatgpt.com/backend-api/codex", apiKey: "at-test", models: [] } as any, sessionCtx());
       if ((b as any).body && (b as any).body.input) b = (b as any).body;
       return (b as any).input || (b as any).body?.input;
     },

@@ -16,13 +16,14 @@
 
 This fork is based on [claude-code-router](https://github.com/musistudio/claude-code-router) and includes several enhancements:
 
+- **Codex breaking change — required chaining:** Codex is no longer a converting owner. Providers **must** set `"transformer": { "use": ["openai-responses", "codex"] }`. A `codex`-only chain is rejected. `openai-responses` owns the Responses wire (including encrypted reasoning items); `codex` is ChatGPT auth/headers middleware (`store: false`, `stream: true`). Responses clients passthrough `input[]`.
 - **Improved LLM Support**: Fixed streaming for Gemini/Gemma and enhanced OpenAI API handling.
 - **Reasoning & Streaming Refactor**: Modularized streaming and reasoning logic into reusable utilities for better maintainability.
 - **Mistral Integration**: Added specific handling for Mistral's reasoning parameters and decoupled transformation logic.
 - **Build & Deployment**: Integrated the UI package into the Docker build process and added a Docker Compose configuration.
 - **Code Quality**: Localized codebase (English comments), improved error handling, and addressed Copilot review feedback.
 - **Gemini Stability & Tool Use Fixes**: Corrected `thoughtSignature` placement in Gemini request bodies (must be a standalone `thought: true` part, not attached to text/function-call parts); filtered synthetic `ccr_` placeholder signatures from outgoing Gemini requests to prevent Gemini 500 errors; fixed `tool_result` content-array serialization in the Anthropic transformer so models receive plain text instead of JSON-wrapped arrays (resolves "Error editing file" in Claude Code); fixed Fastify `onSend` hook to prevent `invalid type 'object'` unhandled rejections on error responses.
-- **Codex (ChatGPT) Integration**: Added Codex transformer for the ChatGPT backend API (Responses API), supporting both OAuth-based authentication (`ccr codex-auth`) and PAT auth via `api_key: "at-..."`, plus SSE streaming, reasoning/thinking content, tool calls with web search, and image handling.
+- **Codex (ChatGPT) Integration**: ChatGPT backend over the Responses API. **Requires** `"use": ["openai-responses", "codex"]`. Supports OAuth (`ccr codex-auth`) and PAT (`api_key: "at-..."`), SSE streaming, encrypted reasoning replay, tool calls with web search, and image handling.
 - **Cursor SDK Integration**: Added `cursor-sdk` transformer that runs Cursor models in-process via `@cursor/sdk`. Default **bridge** mode keeps Claude Code as the tool host (Cursor built-ins denied); supports `plan` / `agent` modes, `crsr_` / `CURSOR_API_KEY` auth, `ccr model get cursor` model discovery, and Docker runtime install of the SDK native packages.
 - **Claude Subscription Integration**: Added `claude-auth` support for routing through a Claude Pro or Max subscription via OAuth (`ccr claude-auth`), using the `claude-auth` + `Anthropic` transformer chain.
 - **Qwen Chat Integration**: Added `qwen-auth` transformer for the Qwen Chat backend (`qwen.aikit.club/v1/chat/completions`), supporting JWT-based authentication (`ccr qwen-auth`) where the user pastes a token copied from `chat.qwen.ai` localStorage, automatic token rotation, and stripping of the trailing `<details>...</details>` metadata block Qwen injects into responses.
@@ -420,7 +421,7 @@ If your provider `api_key` starts with `at-`, CCR treats it as a Codex Personal 
   "api_key": "at-your-personal-access-token",
   "models": ["gpt-5.4"],
   "transformer": {
-    "use": ["codex"]
+    "use": ["openai-responses", "codex"]
   }
 }
 ```
@@ -818,7 +819,7 @@ The Codex transformer connects to the ChatGPT backend API, providing access to G
   "api_key": "oauth_dummy_key",
   "models": ["gpt-5.4"],
   "transformer": {
-    "use": ["codex"]
+    "use": ["openai-responses", "codex"]
   }
 }
 ```
@@ -832,7 +833,7 @@ The Codex transformer connects to the ChatGPT backend API, providing access to G
   "api_key": "at-your-personal-access-token",
   "models": ["gpt-5.4"],
   "transformer": {
-    "use": ["codex"]
+    "use": ["openai-responses", "codex"]
   }
 }
 ```

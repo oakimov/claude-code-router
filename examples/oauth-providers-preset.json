@@ -47,6 +47,7 @@
       ],
       "transformer": {
         "use": [
+          "openai-responses",
           "codex"
         ]
       }

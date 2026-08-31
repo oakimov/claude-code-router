@@ -631,6 +631,91 @@ async function bytesSurviveMultibyteChunkBoundaries() {
   );
 }
 
+/**
+ * Codex/Cloudflare strips Content-Type from SSE. The tap must sniff `data:`
+ * vs `{` and still parse usage for cache outcome + provider→ccr events.
+ */
+async function missingContentTypeSseLogsCacheOutcome() {
+  const completed = {
+    type: "response.completed",
+    response: {
+      id: "resp_codex",
+      object: "response",
+      usage: {
+        input_tokens: 180570,
+        output_tokens: 74,
+        total_tokens: 180644,
+        input_tokens_details: { cached_tokens: 179840, cache_write_tokens: 0 },
+        output_tokens_details: { reasoning_tokens: 22 },
+      },
+    },
+  };
+  const fixture = `data: ${JSON.stringify(completed)}\n\n`;
+  const upstream = new Response(new TextEncoder().encode(fixture), {
+    status: 200,
+  });
+  assert.equal(upstream.headers.get("Content-Type"), null);
+
+  const { logger, records } = createDebugLogger();
+  const tapped = await tapUpstreamSSEDebug(upstream, {
+    logger,
+    rawEvents: true,
+    reqId: "req-codex-ct",
+    provider: "codex",
+    model: "gpt-5.6-luna",
+    responseStatus: 200,
+    cacheDiff: intactDiff(),
+  });
+
+  assert.equal(await tapped.text(), fixture);
+  await waitFor(() => records.some((r) => r.type === "cache outcome"));
+
+  const outcome = records.find((r) => r.type === "cache outcome")!;
+  assert.equal(outcome.verdict, "hit");
+  assert.equal(outcome.cachedTokens, 179840);
+  assert.equal(outcome.promptTokens, 180570);
+  assert.ok(
+    records.some(
+      (r) => r.type === "received data" && r.direction === "provider→ccr"
+    )
+  );
+  assert.ok(
+    records.some(
+      (r) =>
+        r.tppe === "Original Response" &&
+        r.direction === "provider→ccr" &&
+        (r.response as any)?.type === "response.completed"
+    )
+  );
+}
+
+async function missingContentTypeJsonLogsCacheOutcome() {
+  const payload = {
+    object: "response",
+    usage: {
+      input_tokens: 100,
+      input_tokens_details: { cached_tokens: 12 },
+    },
+  };
+  const body = JSON.stringify(payload);
+  const upstream = new Response(new TextEncoder().encode(body), {
+    status: 200,
+  });
+  const { logger, records } = createDebugLogger();
+  const tapped = await tapUpstreamSSEDebug(upstream, {
+    logger,
+    rawEvents: true,
+    reqId: "req-codex-json",
+    provider: "codex",
+    cacheDiff: intactDiff(),
+  });
+  assert.deepEqual(JSON.parse(await tapped.text()), payload);
+  const outcome = records.find((r) => r.type === "cache outcome");
+  assert.equal(outcome?.verdict, "hit");
+  assert.equal(outcome?.cachedTokens, 12);
+  assert.ok(records.some((r) => r.direction === "provider→ccr"));
+}
+
 /** Debug off must cost nothing — not even a wrapping Response. */
 async function debugOffReturnsTheSameResponse() {
   const original = sseResponse(anthropicSSEFixture());
@@ -715,6 +800,8 @@ async function main() {
   await clientCancelFinalizesDebugBranch();
   await bytesSurviveMultibyteChunkBoundaries();
   await debugOffReturnsTheSameResponse();
+  await missingContentTypeSseLogsCacheOutcome();
+  await missingContentTypeJsonLogsCacheOutcome();
   summarizesAnthropicCacheStructure();
   summarizesPromptCacheKey();
 
