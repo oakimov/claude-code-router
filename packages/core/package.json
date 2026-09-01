@@ -1,6 +1,6 @@
 {
   "name": "@caeliq/llms",
-  "version": "1.0.66",
+  "version": "1.0.67",
   "description": "A universal LLM API transformation server",
   "main": "dist/cjs/server.cjs",
   "module": "dist/esm/server.mjs",
