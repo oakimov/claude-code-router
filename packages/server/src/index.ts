@@ -257,7 +257,7 @@ async function getServer(options: RunOptions = {}) {
       APIKEY: config.APIKEY,
       HOST: HOST,
       PORT: servicePort,
-      LOG_REQUEST_BODY: config.LOG_REQUEST_BODY,
+      LOG_REQUEST_BODY_PARTS: config.LOG_REQUEST_BODY_PARTS,
       LOG_REQUEST_BODY_MAX_BYTES: config.LOG_REQUEST_BODY_MAX_BYTES,
       LOG_SSE_EVENTS: config.LOG_SSE_EVENTS,
       LOG_FILE: join(

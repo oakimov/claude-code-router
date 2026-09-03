@@ -119,6 +119,7 @@ const sidebars: SidebarsConfig = {
             'server/guides/chrome-on-device',
             'server/guides/deepseek-reasoning',
             'server/guides/model-discovery',
+            'server/guides/prompt-caching',
           ],
         },
         {

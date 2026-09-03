@@ -114,7 +114,7 @@ Two independent opt-in flags cover every wire direction. Both require
 
 | Flag | What it logs |
 |---|---|
-| `LOG_REQUEST_BODY` | Full request bodies on **client→CCR** (all protocols) and **CCR→provider**, plus non-stream JSON on **CCR→client** |
+| `LOG_REQUEST_BODY_PARTS` | Request body capture on **client→CCR** (all protocols) and **CCR→provider**, plus non-stream JSON on **CCR→client** — `full` or a field list (see below) |
 | `LOG_SSE_EVENTS` | Every SSE event on **provider→CCR** and **CCR→client** |
 
 Each record carries a `direction` field (`client→ccr`, `ccr→provider`,
@@ -123,11 +123,41 @@ Each record carries a `direction` field (`client→ccr`, `ccr→provider`,
 ```json5
 {
   "LOG_LEVEL": "debug",
-  "LOG_REQUEST_BODY": true,           // Off by default
-  "LOG_REQUEST_BODY_MAX_BYTES": 32768, // Per-body / per-event cap
+  "LOG_REQUEST_BODY_PARTS": "full",     // Off when unset; "full" or e.g. "system,tools"
+  "LOG_REQUEST_BODY_MAX_BYTES": 32768, // Per-part file cap
   "LOG_SSE_EVENTS": true              // Off by default
 }
 ```
+
+#### Capturing only parts of a body
+
+Full dumps are noisy for cache debugging (a 100k-token transcript per turn).
+`LOG_REQUEST_BODY_PARTS` accepts `full` or a comma-separated list of
+top-level body fields — `system`, `instructions`, `tools`, `messages`,
+`input`, `contents`, or any other top-level key the protocol uses. Each
+selection is written to its own file in the logs folder
+(`~/.claude-code-router/logs/<reqId>.<direction>.<part>.<sha16>.json`), and
+the log carries one manifest line per part with its sha256, so components can
+be compared across turns without opening files:
+
+```json5
+{
+  "LOG_LEVEL": "debug",
+  "LOG_REQUEST_BODY_PARTS": "system,tools"
+}
+```
+
+```bash
+# Did the tool set change between turns of one conversation?
+rg '"part":"tools"' ~/.claude-code-router/logs/ccr.log
+# The sha256 column answers it; open the file only on mismatch.
+```
+
+The hash covers the stored (redacted, possibly truncated) bytes — compare
+hashes only when `truncated` is false. Unknown part names log a
+`found:false` line instead of failing. Files honour the same redaction as the
+old inline dumps and never break the request path on I/O errors. Body files
+are not covered by log rotation — clean them up with the debugging window.
 
 :::warning
 This writes full conversation content — system prompts, user messages, tool
@@ -139,9 +169,9 @@ themselves are not. Log files rotate at 50 MB with 3 kept. Enable it for a
 debugging window, then turn it back off.
 :::
 
-Without `LOG_REQUEST_BODY`, Anthropic Messages clients still get the legacy
+Without `LOG_REQUEST_BODY_PARTS`, Anthropic Messages clients still get the legacy
 `type: "request body"` info log on inbound only. Responses and Chat Completions
-inbound bodies are silent unless the flag is on.
+inbound bodies are silent unless capture is on.
 
 Useful greps:
 

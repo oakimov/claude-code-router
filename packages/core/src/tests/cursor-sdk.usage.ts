@@ -41,14 +41,13 @@ assert.deepEqual(clamped, {
 
 // --- buildAccurateUsageFromSdk (finishUsage path) ---
 
-// Cold: no SDK counters → chars/4 estimate, cached_tokens 0.
+// Cold: runtime reported no usage → estimate, no cache field ("unknown" verdict).
 {
   const cold = buildAccurateUsageFromSdk(undefined, 400, 40);
   assert.deepEqual(cold, {
     prompt_tokens: 400,
     completion_tokens: 10,
     total_tokens: 410,
-    prompt_tokens_details: { cached_tokens: 0 },
   });
 }
 
@@ -150,6 +149,33 @@ assert.deepEqual(clamped, {
   assert.equal((mapped as any)._cacheWriteTokens, 200);
   const usage = buildAccurateUsageFromSdk(mapped, 500, 0);
   assert.equal(usage.prompt_tokens_details?.cached_tokens, 375); // 500 * 3000/4000
+}
+
+// Turn-end witness: a reported usage message carries billed cache proportions;
+// an unreported turn omits prompt_tokens_details so the outcome tap says
+// "unknown" instead of a bogus miss.
+{
+  const reported = buildAccurateUsageFromSdk(
+    {
+      prompt_tokens: 69231,
+      completion_tokens: 1709,
+      total_tokens: 135740,
+      prompt_tokens_details: { cached_tokens: 64800 },
+    },
+    44286,
+    6836
+  );
+  assert.ok(reported.prompt_tokens_details);
+  assert.equal(
+    reported.prompt_tokens_details?.cached_tokens,
+    Math.min(44286, Math.round((44286 * 64800) / 69231))
+  );
+}
+{
+  const unreported = buildAccurateUsageFromSdk(undefined, 36983, 2740);
+  assert.equal(unreported.prompt_tokens, 36983);
+  assert.equal(unreported.completion_tokens, Math.ceil(2740 / 4));
+  assert.ok(!("prompt_tokens_details" in unreported));
 }
 
 console.log("cursor-sdk.usage: ok");

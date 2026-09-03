@@ -4,6 +4,7 @@ import {
   type ModelSelection,
   type SDKMessage,
 } from "@cursor/sdk";
+import { createHash } from "crypto";
 import type { UnifiedChatRequest, UnifiedMessage } from "@/types/llm";
 import type { UnifiedTurnIntent } from "@/types/turn-intent";
 import { resolveCursorApiKey } from "@/utils/cursor-auth";
@@ -28,6 +29,7 @@ import {
   globalSessionManager,
   markSessionPoisoned,
   refreshWorkspaceGuidance,
+  resolveHostToolId,
   shouldEnableCursorSandbox,
   touchSession,
   withSessionSendLock,
@@ -44,6 +46,7 @@ import {
   coerceThinkingText,
   extractEffort,
   hashSessionFingerprint,
+  isCursorTransientProviderError,
   type CursorSdkMode,
 } from "./shared";
 import { createTurnToolMetrics, toCustomTools } from "./tools";
@@ -246,7 +249,8 @@ function isSupportedIdleTranscriptSuffix(
 function isSupportedParkedTranscriptSuffix(
   suffix: readonly UnifiedMessage[],
   trailingTurn: TrailingCursorToolTurn,
-  turnIntent?: UnifiedTurnIntent
+  turnIntent?: UnifiedTurnIntent,
+  resolveId: (id: string) => string = (id) => id
 ): boolean {
   if (trailingTurn.hasTrailingUserInput) return false;
   const hasSyntheticTrailingUser =
@@ -261,7 +265,7 @@ function isSupportedParkedTranscriptSuffix(
     const expected = trailingTurn.toolResults[index];
     if (
       message?.role !== "tool" ||
-      message.tool_call_id !== expected.toolCallId ||
+      resolveId(String(message.tool_call_id || "")) !== expected.toolCallId ||
       contentToText(message.content) !== expected.content
     ) {
       return false;
@@ -666,7 +670,17 @@ async function runCursorOnce(
     request,
     options.turnIntent
   );
-  const toolResults = trailingTurn.toolResults;
+  // Host echoes carry emission aliases; translate back to the parked SDK
+  // originals so lifecycle matching and parked resolution compare one id
+  // space. Unknown ids pass through and mismatch exactly as before.
+  const resolvedTrailingTurn: TrailingCursorToolTurn = {
+    ...trailingTurn,
+    toolResults: trailingTurn.toolResults.map((result) => ({
+      ...result,
+      toolCallId: resolveHostToolId(session, result.toolCallId),
+    })),
+  };
+  const toolResults = resolvedTrailingTurn.toolResults;
 
   const runSnapshot =
     session.parked.length > 0
@@ -697,8 +711,9 @@ async function runCursorOnce(
       : runSnapshot.kind === "parked"
         ? isSupportedParkedTranscriptSuffix(
             strictSuffix,
-            trailingTurn,
-            options.turnIntent
+            resolvedTrailingTurn,
+            options.turnIntent,
+            (id) => resolveHostToolId(session, id)
           )
         : runSnapshot.kind === "idle"
           ? isSupportedIdleTranscriptSuffix(strictSuffix)
@@ -714,6 +729,8 @@ async function runCursorOnce(
       alignment,
       hasSentPrompt: session.hasSentPrompt,
       poisoned: session.poisoned === true,
+      compatibilityMatch:
+        session.compatibilityStamp === compatibilityStamp,
       run: runSnapshot,
     },
     turn: {
@@ -780,6 +797,11 @@ async function runCursorOnce(
           softReason as any
         ),
         toolResultCount: toolResults.length,
+        runKind: runSnapshot.kind,
+        parkedCount: session.parked.length,
+        hasSteering: trailingTurn.hasTrailingUserInput,
+        compatMatch: session.compatibilityStamp === compatibilityStamp,
+        toolsCount: Array.isArray(request.tools) ? request.tools.length : 0,
       },
       "cursor-sdk cancelling prior run then sending on sticky agent"
     );
@@ -797,6 +819,16 @@ async function runCursorOnce(
 
   if (lifecyclePlan.action === "resume-parked") {
     throwIfCursorProducerAborted(options.abortSignal);
+    logger?.info?.(
+      {
+        sessionKey: session.key,
+        agentId: session.agentId,
+        alignment,
+        matchedCount: lifecyclePlan.matches.length,
+        parkedCount: session.parked.length,
+      },
+      "cursor-sdk resuming parked run with host tool results"
+    );
     const resolvedCount = globalSessionManager.resolveParkedTools(
       session,
       toolResults
@@ -933,6 +965,31 @@ async function runCursorOnce(
         turnIntent: options.turnIntent,
         includeBridgeGuidance,
       });
+
+      // Disambiguates backend misses CCR can't otherwise see: a re-included
+      // bridge preamble or a changed tool catalog rewrites the prompt prefix
+      // the Cursor backend caches on, even when our host transcript diff is
+      // appended-only. Compare promptHash across same-session turns.
+      logger?.debug?.(
+        {
+          sessionKey: targetSession.key,
+          agentId: targetSession.agentId,
+          followUpOnly: followUpOnlyForPrompt,
+          includeBridgeGuidance,
+          guidanceChanged:
+            bridgeGuidanceFingerprint !== undefined &&
+            targetSession.lastBridgePromptGuidanceFingerprint !==
+              bridgeGuidanceFingerprint,
+          toolsCount: Array.isArray(request.tools) ? request.tools.length : 0,
+          promptChars: prompt.text.length,
+          promptHash: createHash("sha256")
+            .update(prompt.text, "utf8")
+            .digest("hex")
+            .slice(0, 16),
+          promptImages: prompt.images?.length ?? 0,
+        },
+        "cursor-sdk sending prompt to agent"
+      );
 
       nextRunToken = Symbol("cursor-sdk-run");
       targetSession.activeRunToken = nextRunToken;
@@ -1082,16 +1139,22 @@ async function runCursorOnce(
           session.lastSdkUsageRaw
         );
         if (sdkUsageRaw) session.lastSdkUsageRaw = sdkUsageRaw;
-        // Trace parity with cursor-opencode-provider formatTurnUsageValidation
+        // Trace parity with cursor-opencode-provider formatTurnUsageValidation.
+        // The SDK turn-end usage message is the billed witness (same source as
+        // the provider's TurnEnded counters). When the runtime reports nothing
+        // for the turn, usage carries no cache field and the cache-outcome tap
+        // reports "unknown" instead of a bogus miss.
         logger?.debug?.(
           {
+            sessionKey: session.key,
             promptTokens,
             outputChars,
             sdkUsageRaw,
             priorRaw: session.lastSdkUsageRaw,
             usage,
+            usageReported: sdkUsageRaw !== undefined,
           },
-          "cursor-sdk accurate usage"
+          "cursor-sdk usage validation"
         );
         return usage;
       };
@@ -1119,7 +1182,7 @@ async function runCursorOnce(
             sdkUsageRaw,
             runUsage: session.run?.usage,
           },
-          "cursor-sdk finish usage (request estimate; raw SDK is diagnostic only)"
+          "cursor-sdk finish usage (request estimate + turn-end usage witness)"
         );
         enqueue(helpers.finish(reason, usage));
         commitHostTranscript();
@@ -1343,12 +1406,30 @@ async function runCursorOnce(
           },
           "cursor-sdk stream failed"
         );
-        // Retire before surfacing the error so a reconnect cannot overtake SDK
-        // cleanup and send on the same still-active agent.
-        await retireCursorSession(session, {
-          reason: "cursor-sdk stream failed before terminal state",
-          onlyRunToken: runToken,
-        });
+        if (
+          !isCursorAuthenticationError(err) &&
+          isCursorTransientProviderError(err)
+        ) {
+          // Throttling / overload is not session corruption: keep the warm
+          // sticky agent so the retry reuses it instead of paying a cold
+          // start. The next request's lifecycle planner soft-cancels the dead
+          // run before sending.
+          logger?.warn?.(
+            {
+              sessionKey: session.key,
+              agentId: session.agentId,
+              err,
+            },
+            "cursor-sdk keeping sticky session after transient provider error"
+          );
+        } else {
+          // Retire before surfacing the error so a reconnect cannot overtake SDK
+          // cleanup and send on the same still-active agent.
+          await retireCursorSession(session, {
+            reason: "cursor-sdk stream failed before terminal state",
+            onlyRunToken: runToken,
+          });
+        }
         try {
           controller.error(err);
         } catch {

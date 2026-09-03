@@ -81,6 +81,11 @@ export type CursorLifecycleInput<
     hasSentPrompt: boolean;
     poisoned: boolean;
     alignment: CursorContextAlignment;
+    /**
+     * False when agent/model/workspace/tool configuration changed since the
+     * transcript commit. Undefined preserves the legacy behavior (match).
+     */
+    compatibilityMatch?: boolean;
     run: CursorRunSnapshot<TParked>;
   };
   turn: {
@@ -186,6 +191,32 @@ export function planCursorLifecycle<
     return session.run.kind === "idle"
       ? { action: "send-full", reason: "unused-session" }
       : { action: "send-full", reason: "inconsistent-unused-session" };
+  }
+
+  // Full-history replay clients (Claude Code) re-send the whole transcript,
+  // so transcript-hash alignment is almost always "divergent" even when the
+  // new tool results exactly match the parked tools. Prioritize the parked
+  // ID match — the IDs are the correlation contract — so these turns resume
+  // instead of cancelling into a cache-busting incremental send. Config
+  // changes since the commit still force the safe incremental path.
+  if (
+    session.run.kind === "parked" &&
+    session.run.live &&
+    session.compatibilityMatch !== false
+  ) {
+    if (!turn.hasMeaningfulSteering) {
+      const matches = matchParkedToolResultsExactly(
+        session.run.tools,
+        turn.toolResults
+      );
+      if (matches) {
+        return {
+          action: "resume-parked",
+          reason: "exact-parked-tool-results",
+          matches,
+        };
+      }
+    }
   }
 
   if (session.alignment === "unknown") {

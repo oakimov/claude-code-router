@@ -261,6 +261,58 @@ const lifecycleCases: Array<{
     reason: "divergent-context-alignment",
   },
   {
+    name: "divergent alignment with exact parked results still resumes (full-history replay)",
+    input: {
+      ...baseInput,
+      session: {
+        ...baseInput.session,
+        alignment: "divergent",
+        run: { kind: "parked", live: true, tools: frozenParked },
+      },
+      turn: {
+        hasMeaningfulSteering: false,
+        toolResults: frozenResults,
+      },
+    },
+    action: "resume-parked",
+    reason: "exact-parked-tool-results",
+  },
+  {
+    name: "unknown alignment with exact parked results still resumes",
+    input: {
+      ...baseInput,
+      session: {
+        ...baseInput.session,
+        alignment: "unknown",
+        run: { kind: "parked", live: true, tools: frozenParked },
+      },
+      turn: {
+        hasMeaningfulSteering: false,
+        toolResults: frozenResults,
+      },
+    },
+    action: "resume-parked",
+    reason: "exact-parked-tool-results",
+  },
+  {
+    name: "config change since commit blocks parked resume",
+    input: {
+      ...baseInput,
+      session: {
+        ...baseInput.session,
+        alignment: "divergent",
+        compatibilityMatch: false,
+        run: { kind: "parked", live: true, tools: frozenParked },
+      },
+      turn: {
+        hasMeaningfulSteering: false,
+        toolResults: frozenResults,
+      },
+    },
+    action: "send-incremental",
+    reason: "divergent-context-alignment",
+  },
+  {
     name: "tool result without a parked run stays sticky incremental",
     input: {
       ...baseInput,

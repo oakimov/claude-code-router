@@ -35,7 +35,7 @@ import { matchClientProtocol } from "./routing/protocol-endpoints";
 import {
   logMessageBody,
   resolveLogBodyMaxBytes,
-  shouldLogRequestBodies,
+  resolveLogBodySelection,
 } from "./utils/message-debug";
 
 // Extend FastifyRequest to include custom properties
@@ -198,7 +198,8 @@ class Server {
         const match = matchClientProtocol(req.method, url.pathname);
         if (match && req.body) {
           const body = req.body as any;
-          if (shouldLogRequestBodies(this.configService)) {
+          const selection = resolveLogBodySelection(this.configService);
+          if (selection !== undefined) {
             logMessageBody(body, {
               logger: req.log,
               direction: "client→ccr",
@@ -207,6 +208,7 @@ class Server {
               protocol: match.protocol,
               model: typeof body?.model === "string" ? body.model : undefined,
               maxBytes: resolveLogBodyMaxBytes(this.configService),
+              selection,
             });
           } else if (match.protocol === "anthropic_messages") {
             // Legacy Messages-only info log when body capture is not opted in.
@@ -269,9 +271,9 @@ export {
 export {
   logMessageBody,
   bodyToLogString,
-  shouldLogRequestBodies,
   shouldLogSSEEvents,
   resolveLogBodyMaxBytes,
+  resolveLogBodySelection,
   isTruthyConfigFlag,
   type MessageDebugDirection,
 } from "./utils/message-debug";

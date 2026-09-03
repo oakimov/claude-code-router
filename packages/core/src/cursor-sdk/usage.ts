@@ -170,10 +170,16 @@ function accurateCacheReadForPrompt(
 }
 
 /**
- * Build per-request OpenAI usage from SDK TurnEnded counters, normalized to
- * the per-request prompt estimate but preserving Cursor's cache proportions
- * (same math as cursor-opencode-provider buildLanguageModelV3UsageFromCounters).
- * Falls back to chars/4-based completion tokens when SDK output is absent.
+ * Build per-request OpenAI usage from the SDK turn-end usage message,
+ * normalized to the per-request prompt estimate but preserving Cursor's cache
+ * proportions (same math as cursor-opencode-provider
+ * buildLanguageModelV3UsageFromCounters). Falls back to chars/4-based
+ * completion tokens when SDK output is absent.
+ *
+ * When the runtime reports no usage for the turn (the SDK emits the usage
+ * message only "when the runtime reported usage"), prompt_tokens_details is
+ * omitted entirely so the cache-outcome tap reports "unknown" instead of a
+ * bogus "unexpected-miss" from a zero that was never measured.
  */
 export function buildAccurateUsageFromSdk(
   sdkRaw: OpenAiUsage | undefined,
@@ -185,7 +191,11 @@ export function buildAccurateUsageFromSdk(
   const fallbackCompletion = estimateTokens(outputChars);
   const counters = cursorUsageCountersFromSdk(sdkRaw);
   if (!counters) {
-    return requestUsageFromEstimate(prompt_tokens, outputChars, 0);
+    return {
+      prompt_tokens,
+      completion_tokens: fallbackCompletion,
+      total_tokens: prompt_tokens + fallbackCompletion,
+    };
   }
   const cacheRead = accurateCacheReadForPrompt(counters, prompt_tokens, cursorUsageCountersFromSdk(priorRaw)?.inputTokens);
   const rawCacheWrite = Math.min(

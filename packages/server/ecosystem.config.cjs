@@ -10,6 +10,9 @@ module.exports = {
       max_memory_restart: '1G',
       env: {
         NODE_ENV: 'production',
+        // @cursor/sdk uses node:sqlite for its local agent store; silence the
+        // ExperimentalWarning it prints on first use (verified flag on Node 22+).
+        NODE_OPTIONS: '--disable-warning=ExperimentalWarning',
       },
       // 日志配置
       error_file: '/root/.claude-code-router/logs/error.log',

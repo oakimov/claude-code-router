@@ -10,6 +10,12 @@ import {
 } from "@cursor/sdk";
 import type { OpenAiUsage } from "./usage";
 import type { CursorTranscriptCommit } from "./turn-identity";
+import { sanitizeToolCallId } from "@/utils/toolCallId";
+import {
+  deletePersistedSession,
+  getPersistedSession,
+  putPersistedSession,
+} from "@/session-registry";
 import { ensureDenyHooksWorkspace } from "./hooks-template";
 import { EMPTY_HOST_ENVIRONMENT, type HostEnvironment } from "./host-env";
 import { installCursorAuthExchangeCache } from "./auth-exchange-cache";
@@ -25,6 +31,7 @@ import {
 } from "./shared";
 
 export type ParkedTool = {
+  /** Original Cursor SDK tool-call id (never emitted to the client). */
   id: string;
   name: string;
   args: Record<string, unknown>;
@@ -54,6 +61,17 @@ export type CursorSdkSession = {
   activeRunToken?: symbol;
   lastSdkUsageRaw?: OpenAiUsage;
   parked: ParkedTool[];
+  /**
+   * Per-session bidirectional map between raw Cursor SDK tool-call ids
+   * (possibly newline-joined / overlong) and the host-safe aliases emitted
+   * to the client. Parked records keep originals; the wire carries aliases;
+   * incoming echoes are translated back before matching. Dies with the
+   * session; bounded below so long-lived agents cannot grow it forever.
+   */
+  toolIdAliases: {
+    byOriginal: Map<string, string>;
+    byAlias: Map<string, string>;
+  };
   /** Tool calls waiting to be emitted on the current SSE response. */
   pendingEmit: Array<{
     id: string;
@@ -138,8 +156,83 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
-export function markSessionPoisoned(
+/**
+ * Host-emitted tool-call ids must survive both Anthropic (`tool_use.id`,
+ * charset + 256 chars) and Responses (`call_id`, 64 chars) validation, and
+ * must be unique within the session so results cannot mispair. Conforming
+ * SDK ids pass through unchanged; anything else gets a stable `ct_<hash>`
+ * alias, disambiguated on collision. Deterministic per original so re-emits
+ * are stable for the life of the session.
+ */
+const TOOL_ID_ALIAS_MAX_LENGTH = 64;
+const TOOL_ID_ALIAS_PREFIX = "ct";
+const TOOL_ID_ALIAS_MAP_MAX = 1000;
+
+function hashToolIdAlias(value: string): string {
+  return createHash("sha256")
+    .update(value, "utf8")
+    .digest("base64url")
+    .slice(0, 20);
+}
+
+function evictOldestToolIdAlias(session: CursorSdkSession): void {
+  const oldest = session.toolIdAliases.byOriginal.keys().next().value;
+  if (oldest === undefined) return;
+  const alias = session.toolIdAliases.byOriginal.get(oldest);
+  session.toolIdAliases.byOriginal.delete(oldest);
+  if (alias !== undefined && session.toolIdAliases.byAlias.get(alias) === oldest) {
+    session.toolIdAliases.byAlias.delete(alias);
+  }
+}
+
+export function aliasHostToolId(
   session: CursorSdkSession,
+  original: unknown
+): string | undefined {
+  if (typeof original !== "string" || original.length === 0) return undefined;
+  const maps = session.toolIdAliases;
+  if (!maps) return sanitizeToolCallId(original);
+  const existing = maps.byOriginal.get(original);
+  if (existing) return existing;
+  const base = sanitizeToolCallId(original);
+  let n = 0;
+  let alias = "";
+  for (;;) {
+    const candidate =
+      n === 0 && base && base.length <= TOOL_ID_ALIAS_MAX_LENGTH
+        ? base
+        : n < 1
+          ? `${TOOL_ID_ALIAS_PREFIX}_${hashToolIdAlias(original)}`
+          : `${TOOL_ID_ALIAS_PREFIX}_${hashToolIdAlias(`${original}#${n}`)}`;
+    const owner = maps.byAlias.get(candidate);
+    if (owner === undefined || owner === original) {
+      alias = candidate;
+      break;
+    }
+    n += 1;
+  }
+  while (maps.byOriginal.size >= TOOL_ID_ALIAS_MAP_MAX) {
+    evictOldestToolIdAlias(session);
+  }
+  maps.byOriginal.set(original, alias);
+  maps.byAlias.set(alias, original);
+  return alias;
+}
+
+/**
+ * Translate a client-echoed tool-call id back to the parked SDK original.
+ * Unknown ids pass through unchanged so legacy / unmapped turns mismatch
+ * exactly as before instead of collapsing onto something unrelated.
+ */
+export function resolveHostToolId(
+  session: CursorSdkSession,
+  echoed: unknown
+): string {
+  if (typeof echoed !== "string" || !echoed) return "";
+  return session.toolIdAliases?.byAlias.get(echoed) ?? echoed;
+}
+
+export function markSessionPoisoned(  session: CursorSdkSession,
   reason: string
 ): void {
   session.poisoned = true;
@@ -636,17 +729,28 @@ export class SessionManager {
       const agentMode = options.mode === "plan" ? "plan" : "agent";
       const sandboxEnabled = shouldEnableCursorSandbox(options.sandboxEnabled);
 
-      const agent = await Agent.create({
-        apiKey: options.apiKey,
-        model: options.model,
-        name: `ccr-${options.key.slice(0, 8)}`,
-        mode: agentMode,
-        local: {
-          cwd: workspaceDir,
-          settingSources: [],
-          sandboxOptions: { enabled: sandboxEnabled },
-          enableAgentRetries: true,
-        },
+      const agent =
+        (await this.rehydratePersistedAgent(
+          options,
+          workspaceDir,
+          sandboxEnabled
+        )) ||
+        (await Agent.create({
+          apiKey: options.apiKey,
+          model: options.model,
+          name: `ccr-${options.key.slice(0, 8)}`,
+          mode: agentMode,
+          local: {
+            cwd: workspaceDir,
+            settingSources: [],
+            sandboxOptions: { enabled: sandboxEnabled },
+            enableAgentRetries: true,
+          },
+        }));
+      putPersistedSession("cursor", options.key, {
+        sessionId: agent.agentId,
+        workspaceDir,
+        model: options.model.id,
       });
 
       const session = this.createSessionRecord({
@@ -814,6 +918,10 @@ export class SessionManager {
     if (this.sessions.get(session.key) === session) {
       this.sessions.delete(session.key);
     }
+    // In-process lifecycle is unchanged (fresh agent next): only the durable
+    // binding is forgotten. A process death skips invalidate entirely, so the
+    // binding survives restarts — that is the whole point of persistence.
+    deletePersistedSession("cursor", session.key);
     this.logger?.warn?.(
       {
         sessionKey: session.key,
@@ -859,6 +967,56 @@ export class SessionManager {
     }
   }
 
+  private async rehydratePersistedAgent(
+    options: {
+      key: string;
+      apiKey: string;
+      model: ModelSelection;
+    },
+    workspaceDir: string,
+    sandboxEnabled: boolean
+  ): Promise<SDKAgent | undefined> {
+    // Restart survival: the binding outlives the process (registry file on the
+    // mounted volume) while the live agent does not. Agent.resume reattaches
+    // to the SDK's own on-disk agent store, preserving the server-side
+    // conversation prefix. Anything unusable falls through to a fresh create.
+    const binding = getPersistedSession("cursor", options.key);
+    if (!binding) return undefined;
+    if (binding.model && binding.model !== options.model.id) return undefined;
+    if (
+      binding.workspaceDir &&
+      binding.workspaceDir !== workspaceDir &&
+      !existsSync(binding.workspaceDir)
+    ) {
+      return undefined;
+    }
+    try {
+      const agent = await Agent.resume(binding.sessionId, {
+        apiKey: options.apiKey,
+        model: options.model,
+        local: {
+          cwd: workspaceDir,
+          settingSources: [],
+          sandboxOptions: { enabled: sandboxEnabled },
+          enableAgentRetries: true,
+        },
+      });
+      if (!agent || agent.agentId !== binding.sessionId) return undefined;
+      this.logger?.info?.(
+        { sessionKey: options.key, agentId: binding.sessionId },
+        "cursor-sdk session resumed from persisted binding"
+      );
+      return agent;
+    } catch (err) {
+      this.logger?.debug?.(
+        { err, sessionKey: options.key },
+        "cursor-sdk persisted agent resume failed; creating fresh"
+      );
+      deletePersistedSession("cursor", options.key);
+      return undefined;
+    }
+  }
+
   private createSessionRecord(input: {
     key: string;
     agent: SDKAgent;
@@ -875,6 +1033,7 @@ export class SessionManager {
       workspaceDir: input.workspaceDir,
       hostEnv: input.hostEnv,
       parked: [],
+      toolIdAliases: { byOriginal: new Map(), byAlias: new Map() },
       pendingEmit: [],
       emitWaiters: [],
       pendingSdkMessages: [],
@@ -897,8 +1056,11 @@ export class SessionManager {
           reject = rej;
         });
         const runToken = session.activeRunToken;
+        // Park the original SDK id; emit the host-safe alias. Incoming
+        // echoes are translated back before matching (see resolveHostToolId).
+        const alias = aliasHostToolId(session, id) ?? id;
         session.parked.push({ id, name, args, runToken, resolve, reject, promise });
-        session.pendingEmit.push({ id, name, args, runToken });
+        session.pendingEmit.push({ id: alias, name, args, runToken });
         session.notifyEmit();
         return promise;
       },

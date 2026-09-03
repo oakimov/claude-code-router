@@ -102,6 +102,7 @@ export function createSseHelpers(model: string, encoder: TextEncoder) {
       const completion_tokens = Number(usage?.completion_tokens) || 0;
       const total_tokens =
         Number(usage?.total_tokens) || prompt_tokens + completion_tokens;
+      const cached = Number(usage?.prompt_tokens_details?.cached_tokens);
       return {
         ...base(),
         choices: [
@@ -113,14 +114,16 @@ export function createSseHelpers(model: string, encoder: TextEncoder) {
         ],
         // Always attach usage so AnthropicTransformer message_delta never
         // reports input_tokens:0 solely because the finish chunk omitted it.
+        // prompt_tokens_details is attached only when the runtime reported a
+        // cache count: omitting it lets the cache-outcome tap report "unknown"
+        // instead of a bogus miss from an unmeasured zero.
         usage: {
           prompt_tokens,
           completion_tokens,
           total_tokens,
-          prompt_tokens_details: {
-            cached_tokens:
-              Number(usage?.prompt_tokens_details?.cached_tokens) || 0,
-          },
+          ...(Number.isFinite(cached)
+            ? { prompt_tokens_details: { cached_tokens: cached } }
+            : {}),
         },
       };
     },

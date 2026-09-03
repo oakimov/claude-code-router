@@ -119,3 +119,54 @@ export function extractEffort(request: any): string | undefined {
     undefined
   );
 }
+
+const TRANSIENT_CURSOR_STATUS = new Set([429, 502, 503, 504]);
+
+const TRANSIENT_CURSOR_CODE_FRAGMENTS = [
+  "resourceexhausted",
+  "ratelimit",
+  "rateexceed",
+  "quotaexceed",
+  "overloaded",
+  "unavailable",
+  "tryagain",
+  "retryable",
+  "temporarilyunavailable",
+  "capacity",
+];
+
+/**
+ * Transient Cursor provider failures (throttling / overload) must not destroy
+ * the warm sticky agent: the retry reuses it instead of paying a cold start.
+ * Auth errors and client aborts are NOT transient — they keep the old
+ * retire-the-session behavior at the call site.
+ */
+export function isCursorTransientProviderError(err: unknown): boolean {
+  const e = (err || {}) as {
+    name?: unknown;
+    code?: unknown;
+    message?: unknown;
+    statusCode?: unknown;
+    status?: unknown;
+  };
+  const name = typeof e.name === "string" ? e.name : "";
+  if (name === "AbortError") return false;
+  const status =
+    typeof e.statusCode === "number"
+      ? e.statusCode
+      : typeof e.status === "number"
+        ? e.status
+        : undefined;
+  if (status !== undefined && TRANSIENT_CURSOR_STATUS.has(status)) return true;
+  const code =
+    typeof e.code === "string"
+      ? e.code.toLowerCase().replace(/[^a-z0-9]/g, "")
+      : "";
+  const message = (
+    typeof e.message === "string" ? e.message : String(err ?? "")
+  ).toLowerCase();
+  const haystack = `${code} ${message}`;
+  return TRANSIENT_CURSOR_CODE_FRAGMENTS.some((fragment) =>
+    haystack.includes(fragment)
+  );
+}

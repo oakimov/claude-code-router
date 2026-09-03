@@ -228,9 +228,19 @@ export const restartService = async () => {
   // Start the service again in the background
   console.log("Starting claude code router service...");
   const cliPath = path.join(__dirname, "cli.js");
+  // @cursor/sdk uses node:sqlite for its local agent store; keep its
+  // ExperimentalWarning out of the logs on every launcher (docker sets the
+  // same flag via ecosystem.config.cjs).
+  const inheritedOptions = process.env.NODE_OPTIONS || "";
   const startProcess = spawn(process.execPath, [cliPath, "start"], {
     detached: true,
     stdio: "ignore",
+    env: {
+      ...process.env,
+      NODE_OPTIONS: inheritedOptions.includes("disable-warning=ExperimentalWarning")
+        ? inheritedOptions
+        : `${inheritedOptions} --disable-warning=ExperimentalWarning`.trim(),
+    },
   });
 
   startProcess.on("error", (error) => {

@@ -61,7 +61,7 @@ import {
   logKeepWire,
   logMessageBody,
   resolveLogBodyMaxBytes,
-  shouldLogRequestBodies,
+  resolveLogBodySelection,
   shouldLogSSEEvents,
 } from "../utils/message-debug";
 import { withSSEClientKeepalive } from "@/utils/sse/client-keepalive";
@@ -1150,7 +1150,7 @@ async function sendRequestToProvider(
       typeof requestBody?.model === "string" ? requestBody.model : undefined;
     if (context?.req?._wireKeep) {
       // Keep has no Anthropic-style inbound `request body` info log, and the
-      // global fetch wrapper omits bodies unless LOG_REQUEST_BODY. Digest the
+      // global fetch wrapper omits bodies. Digest the
       // kept wire at debug so encrypted replay is greppable without a dump.
       logKeepWire(requestBody, {
         logger,
@@ -1159,7 +1159,8 @@ async function sendRequestToProvider(
         model,
       });
     }
-    if (!shouldLogRequestBodies(fastify.configService)) return;
+    const selection = resolveLogBodySelection(fastify.configService);
+    if (selection === undefined) return;
     logMessageBody(requestBody, {
       logger,
       direction: "ccr→provider",
@@ -1167,6 +1168,7 @@ async function sendRequestToProvider(
       provider: provider?.name,
       model,
       maxBytes: resolveLogBodyMaxBytes(fastify.configService),
+      selection,
     });
   };
 
@@ -1174,7 +1176,7 @@ async function sendRequestToProvider(
   // agent SDKs, etc.) by returning a ready Response via __providerResponse.
   if (config?.__providerResponse) {
     // Body was already posted inside the owning transformer; still record it
-    // so LOG_REQUEST_BODY covers OpenCode Zen / SDK-owned legs.
+    // so part capture covers OpenCode Zen / SDK-owned legs.
     logOutboundRequestBody();
     return tapProviderResponse(config.__providerResponse as Response);
   }
@@ -1511,7 +1513,7 @@ async function formatResponse(
   const log = reply.log ?? (reply.request as any)?.log;
   const reqId = (reply.request as any)?.id;
   const rawSSE = shouldLogSSEEvents(debug?.configService);
-  const logBodies = shouldLogRequestBodies(debug?.configService);
+  const bodySelection = resolveLogBodySelection(debug?.configService);
   const maxBytes = resolveLogBodyMaxBytes(debug?.configService);
 
   // Handle streaming response
@@ -1672,7 +1674,7 @@ async function formatResponse(
   } else {
     // Handle regular JSON response (including error responses)
     const json = await response.json();
-    if (logBodies || rawSSE) {
+    if (bodySelection !== undefined || rawSSE) {
       logMessageBody(json, {
         logger: log ?? { debug() {} },
         direction: "ccr→client",
@@ -1681,6 +1683,7 @@ async function formatResponse(
         provider: debug?.provider,
         model: debug?.model,
         maxBytes,
+        selection: bodySelection,
       });
     }
     const latency = (reply.request as any)?._latency;

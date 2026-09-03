@@ -3,8 +3,6 @@ import Server, {
   TokenizerService,
   isClientAbortError,
   sanitizeHeadersForLog,
-  sanitizeBodyForLog,
-  DEFAULT_LOG_BODY_MAX_BYTES,
 } from "@caeliq/llms";
 import { readConfigFile, writeConfigFile, backupConfigFile } from "./utils";
 import { join, resolve, relative, sep, basename } from "path";
@@ -90,37 +88,10 @@ export const createServer = async (config: any): Promise<any> => {
     return "GET";
   };
 
-  // Opt-in: writes full conversation content to the log file. Off unless
-  // LOG_REQUEST_BODY is explicitly true. The user config reaches us through
-  // `initialConfig` (createServer's argument is the wrapper object, not the
-  // config file itself), so read it from there.
-  const runtimeConfig = config?.initialConfig ?? {};
-  const logRequestBody = runtimeConfig.LOG_REQUEST_BODY === true;
-  const logRequestBodyMaxBytes =
-    typeof runtimeConfig.LOG_REQUEST_BODY_MAX_BYTES === "number"
-      ? runtimeConfig.LOG_REQUEST_BODY_MAX_BYTES
-      : DEFAULT_LOG_BODY_MAX_BYTES;
-
-  const bodyFromFetchArgs = (
-    input: RequestInfo | URL,
-    init?: RequestInit
-  ): string | undefined => {
-    // A Request carries its body as a stream; reading it here would consume
-    // the body the upstream call still needs.
-    if (!init?.body) {
-      return input instanceof Request ? "<stream body not captured>" : undefined;
-    }
-    const body = init.body;
-    if (typeof body === "string") return body;
-    if (body instanceof URLSearchParams) return body.toString();
-    if (ArrayBuffer.isView(body)) {
-      return Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString(
-        "utf8"
-      );
-    }
-    if (body instanceof ArrayBuffer) return Buffer.from(body).toString("utf8");
-    return "<stream body not captured>";
-  };
+  // Note: no body capture here. Request bodies are recorded once, with
+  // reqId/protocol/provider context, by the structured `message body part`
+  // logs (LOG_REQUEST_BODY_PARTS); duplicating raw fetch bodies would double
+  // sensitive output and bypass part selection.
 
   global.fetch = async (...args) => {
     const input = args[0] as RequestInfo | URL;
@@ -147,23 +118,12 @@ export const createServer = async (config: any): Promise<any> => {
       const requestHeaders = sanitizeHeadersForLog(
         headersFromFetchArgs(input, init) as any
       );
-      const rawRequestBody = logRequestBody
-        ? bodyFromFetchArgs(input, init)
-        : undefined;
       logger.debug(
         {
           url,
           method: methodFromFetchArgs(input, init),
           headers: requestHeaders,
           direction: "ccr→provider",
-          ...(rawRequestBody !== undefined
-            ? {
-                body: sanitizeBodyForLog(
-                  rawRequestBody,
-                  logRequestBodyMaxBytes
-                ),
-              }
-            : {}),
         },
         "Upstream Provider Request"
       );
@@ -471,7 +431,7 @@ export const createServer = async (config: any): Promise<any> => {
           const manifest = JSON.parse(content);
 
           // Extract metadata fields
-          const { Providers, Router, PORT, HOST, API_TIMEOUT_MS, PROXY_URL, LOG, LOG_LEVEL, LOG_REQUEST_BODY, LOG_REQUEST_BODY_MAX_BYTES, StatusLine, NON_INTERACTIVE_MODE, ...metadata } = manifest;
+          const { Providers, Router, PORT, HOST, API_TIMEOUT_MS, PROXY_URL, LOG, LOG_LEVEL, LOG_REQUEST_BODY, LOG_REQUEST_BODY_PARTS, LOG_REQUEST_BODY_MAX_BYTES, StatusLine, NON_INTERACTIVE_MODE, ...metadata } = manifest;
 
           presets.push({
             id: dirName,  // Use directory name as unique identifier

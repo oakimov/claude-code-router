@@ -1052,7 +1052,7 @@ function appendInputItem(
       "";
     // Only when explicitly enabled via config/env — avoids noise on every
     // Codex turn with web_search. Keep wire already logs the full input[]
-    // when LOG_REQUEST_BODY is on.
+    // when body part capture is on.
     if (shouldLogResponsesPassthrough()) {
       try {
         const id = (item as any).id || (item as any).call_id || "";

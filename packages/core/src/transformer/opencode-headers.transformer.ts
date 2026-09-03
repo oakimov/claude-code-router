@@ -10,6 +10,11 @@ import {
   isProviderNetworkError,
 } from "@/utils/retry";
 import { deriveCacheSessionKey } from "@/utils/cacheControl";
+import {
+  deletePersistedSession,
+  getPersistedSession,
+  putPersistedSession,
+} from "@/session-registry";
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const OPENCODE_VERSION = "1.18.25";
@@ -42,8 +47,6 @@ export class OpencodeHeadersTransformer implements Transformer {
   ownsTransport = true;
   requestPhase = "transport" as const;
 
-  private sessionCache = new Map<string, string>();
-  private readonly MAX_SESSIONS = 100;
   private lastTimestamp = 0;
   private counter = 0;
 
@@ -63,10 +66,17 @@ export class OpencodeHeadersTransformer implements Transformer {
     // provider.transformer.use is non-empty (the opencode case), so we inject
     // here as a defensive fallback – no-op if routes.ts already did.
     body = this.ensurePromptCacheKey(body, context);
+    // Ask for extended prompt-cache retention on both outgoing shapes Zen
+    // accepts (chat completions: messages[]; responses: input[]). Probed
+    // 2026-09-03: Zen returns 200 with the field present (muse-spark,
+    // responses wire); the Codex backend instead 400s it, so this stays
+    // scoped to the opencode transformer. Same price as in_memory per
+    // OpenAI docs; never overwrite an explicit client value.
+    body = this.ensurePromptCacheRetention(body);
     // OpenCode identifies one logical user turn with the user-message id. Keep
     // this stable across transport retries; only the session changes when Zen's
     // deterministic provider bucket must be re-rolled.
-    const requestId = this.generateId("msg");
+    const requestId = this.generateId("msg", "ascending");
 
     const response = await this.sendWithSessionRetry(
       body,
@@ -493,6 +503,17 @@ export class OpencodeHeadersTransformer implements Transformer {
     return { ...body, prompt_cache_key: key };
   }
 
+  private ensurePromptCacheRetention(body: any): any {
+    if (!body || typeof body !== "object") return body;
+    if ((body as any).prompt_cache_retention) return body;
+    // Chat completions use `messages`; Responses uses `input`. Only stamp
+    // the retention ask on a recognizable outgoing shape.
+    if (!Array.isArray(body.messages) && !Array.isArray(body.input)) {
+      return body;
+    }
+    return { ...body, prompt_cache_retention: "24h" };
+  }
+
   private fingerprintConversation(request: any, context: any): string {
     const body = request.body || request;
     const model = body.model || "";
@@ -509,24 +530,21 @@ export class OpencodeHeadersTransformer implements Transformer {
   }
 
   private getOrCreateSessionId(key: string): string {
-    const existing = this.sessionCache.get(key);
-    if (existing) return existing;
+    // Fixed id per conversation, durable across CCR restarts via the shared
+    // session registry (same mechanism as cursor agent bindings).
+    const persisted = getPersistedSession("zen", key);
+    if (persisted) return persisted.sessionId;
 
-    if (this.sessionCache.size >= this.MAX_SESSIONS) {
-      const oldest = this.sessionCache.keys().next().value;
-      if (oldest !== undefined) this.sessionCache.delete(oldest);
-    }
-
-    const id = this.generateId("ses");
-    this.sessionCache.set(key, id);
+    const id = this.generateId("ses", "descending");
+    putPersistedSession("zen", key, { sessionId: id });
     return id;
   }
 
   private invalidateSession(key: string): void {
-    this.sessionCache.delete(key);
+    deletePersistedSession("zen", key);
   }
 
-  private generateId(prefix: string): string {
+  private generateId(prefix: string, direction: "ascending" | "descending" = "ascending"): string {
     const now = Date.now();
     if (now !== this.lastTimestamp) {
       this.lastTimestamp = now;
@@ -534,7 +552,10 @@ export class OpencodeHeadersTransformer implements Transformer {
     }
     this.counter++;
 
-    const ts = BigInt(now) * BigInt(0x1000) + BigInt(this.counter);
+    // Match opencode's Identifier.create: session ids are descending
+    // (bitwise-NOT of timestamp*0x1000 + counter), message ids ascending.
+    let ts = BigInt(now) * BigInt(0x1000) + BigInt(this.counter);
+    if (direction === "descending") ts = ~ts;
     const timeBytes = Buffer.alloc(6);
     for (let i = 0; i < 6; i++) {
       timeBytes[i] = Number((ts >> BigInt(40 - 8 * i)) & BigInt(0xff));
