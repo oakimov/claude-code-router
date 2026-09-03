@@ -923,7 +923,6 @@ function appendInputItem(
     ) {
       if (shouldLogResponsesPassthrough()) {
         try {
-          // eslint-disable-next-line no-console
           console.debug(
             `[responses passthrough] message ${role} with non-string/array content ${String(typeof rawContent)} ${JSON.stringify(rawContent)?.slice(0, 400) ?? ""}`
           );
@@ -1056,7 +1055,6 @@ function appendInputItem(
     if (shouldLogResponsesPassthrough()) {
       try {
         const id = (item as any).id || (item as any).call_id || "";
-        // eslint-disable-next-line no-console
         console.debug(
           `[responses passthrough] ${item.type}${id ? ` ${id}` : ""}${hint ? ` — ${String(hint).slice(0, 200)}` : ""}`
         );

@@ -99,3 +99,26 @@ overrides:
   # serve-handler 6.1.7 is current and pins minimatch 3, whose brace-expansion
   # range cannot reach the patched major. Scope the compatibility bridge.
   'minimatch@3.1.5>brace-expansion': ^5.0.8
+  # express 4.22.2 / body-parser 1.20.6 pin qs ~6.15.1, which cannot reach the
+  # patched 6.16.0 (GHSA-4mjr-xmp4-gh2g array-limit bypass, GHSA-x5fp-wj9c-mxmx
+  # isBuffer DoS). express 5 / body-parser 2 already admit ^6. Scope the floor
+  # to the two tilde-pinned edges; qs 6.16 preserves the parse/stringify API.
+  'express@4.22.2>qs': ^6.16.0
+  'body-parser@1.20.6>qs': ^6.16.0
+  # fast-uri carries GHSA host-confusion/SSRF advisories on both lines
+  # (<3.1.6, <4.1.3). Parents already declare ^ ranges but pnpm retains the
+  # locked pins across plain installs, so pin the patched floors explicitly.
+  'ajv@8.20.0>fast-uri': ^3.1.7
+  '@fastify/ajv-compiler@4.0.6>fast-uri': ^4.1.4
+  'fast-json-stringify@7.0.1>fast-uri': ^4.1.4
+  # Same-minor-line consolidations (newer release is a strict superset).
+  # tailwind node exact-pins lightningcss 1.32.0 while the rest of the tree is
+  # on 1.33.0 (all 11 platform binaries published for both). Minor release.
+  '@tailwindcss/node@4.3.3>lightningcss': ^1.33.0
+  # typography exact-pins postcss-selector-parser 6.0.10; postcss-calc already
+  # resolves 6.1.4. Minor release, same API.
+  '@tailwindcss/typography@0.5.20>postcss-selector-parser': ^6.1.4
+  # @docsearch/react 4.7.0 (latest 4.x; even 5.x) exact-pins autocomplete-core
+  # 1.19.2 while docusaurus theme-search-algolia resolves 1.19.9. Same-minor
+  # patch line; core's ^1.19.2 children (shared, plugin-insights) follow.
+  '@docsearch/react@4.7.0>@algolia/autocomplete-core': ^1.19.9

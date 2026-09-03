@@ -1,6 +1,6 @@
 {
   "name": "@caeliq/ccr-shared",
-  "version": "2.1.9",
+  "version": "2.1.10",
   "description": "Shared utilities and constants for Claude Code Router",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,9 +28,9 @@
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.4.1",
     "esbuild": "^0.28.2",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^6.0.3"
   },
   "engines": {

@@ -1,6 +1,6 @@
 {
   "name": "@caeliq/claude-code-router",
-  "version": "2.1.9",
+  "version": "2.1.10",
   "description": "CLI for Claude Code Router",
   "bin": {
     "ccr": "dist/cli.js"
@@ -30,15 +30,15 @@
   "devDependencies": {
     "@caeliq/ccr-server": "workspace:*",
     "@caeliq/ccr-shared": "workspace:*",
-    "@inquirer/prompts": "^8.5.2",
-    "@types/node": "^26.4.0",
+    "@inquirer/prompts": "^8.7.0",
+    "@types/node": "^26.4.1",
     "adm-zip": "^0.6.0",
     "esbuild": "^0.28.2",
     "find-process": "^2.1.1",
     "minimist": "^1.2.8",
     "openurl": "^1.1.1",
     "puppeteer-core": "^25.7.0",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^6.0.3"
   },
   "engines": {

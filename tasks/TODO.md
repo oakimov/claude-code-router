@@ -70,3 +70,15 @@ signal to delete it, not to widen the selector.
 - **Note**: `react-router` was migrated to `8.x` directly in `packages/ui`, so it no longer needs an override.
 - **Maintenance note (2026-08-25)**: the `postcss>nanoid` floor override tracks the parent version resolved in the lockfile (`postcss@8.5.26>nanoid` now; was `8.5.25`). PostCSS already declares `nanoid: ^3.3.17`, so this edge is a lockfile guard, not a forced upgrade — refresh the selector whenever postcss moves.
 - **Exit**: re-run `pnpm audit` after each upstream bump and delete entries pnpm reports as unused.
+
+### 4. qs / fast-uri security floors (added 2026-09-03, `pnpm audit` clean)
+- [ ] Drop each when its parent ships a range that reaches the patched child.
+- `express@4.22.2>qs` and `body-parser@1.20.6>qs` → `^6.16.0`: both pin `qs ~6.15.1`, unreachable to the patched 6.16.0 (GHSA-4mjr-xmp4-gh2g array-limit bypass, GHSA-x5fp-wj9c-mxmx isBuffer DoS). express 5 / body-parser 2 already admit `^6`, so only the two tilde-pinned edges need floors. **Compatibility**: qs 6.16 preserves the parse/stringify API and keeps the same two deps; smoke-tested `qs.parse` from the real `.pnpm` path.
+- `ajv@8.20.0>fast-uri` → `^3.1.7`, `@fastify/ajv-compiler@4.0.6>fast-uri` and `fast-json-stringify@7.0.1>fast-uri` → `^4.1.4`: clears the fast-uri host-confusion/SSRF advisories on both majors (`<3.1.6`, `<4.1.3`). Parents declare `^3`/`^4` but pnpm retains locked pins across plain installs (even `pnpm update --depth Infinity` reported "up to date"), so the floors force re-resolution. Smoke-tested `parse` on both lines from their real `.pnpm` paths.
+- **Rejected**: `csso@5.0.5>css-tree ^2.3.1` was added and then reverted the same day — csso forks css-tree with a syntax definition written against the 2.2 node schema, and 2.3 throws `Missed 'structure' field in 'String' node type definition` at load. css-tree stays dual (2.2.1 for csso, 2.3.1 for svgo) until csso supports 2.3; mdn-data stays dual with it.
+
+### 5. Same-minor consolidations (added 2026-09-03)
+- [ ] Drop each when its parent reaches the selected child naturally.
+- `@tailwindcss/node@4.3.3>lightningcss` → `^1.33.0`: exact pin `1.32.0` while the rest of the tree is on 1.33.0; unifies all 11 platform binaries. Smoke-tested native `transform` at 1.33.0 and `@tailwindcss/node` `compile` load.
+- `@tailwindcss/typography@0.5.20>postcss-selector-parser` → `^6.1.4`: exact pin `6.0.10`; postcss-calc already resolves 6.1.4. The 7.1.5 line (csstools) stays — intentional major split.
+- `@docsearch/react@4.7.0>@algolia/autocomplete-core` → `^1.19.9`: exact pin `1.19.2` while docusaurus theme-search-algolia resolves 1.19.9 (even docsearch 5.x still pins 1.19.2, so no upgrade path exists). One edge collapses all three pairs (core, shared, plugin-insights) since core's `^1.19` children follow. Smoke-tested `createAutocomplete` and the docsearch ESM bundle from their real `.pnpm` paths.

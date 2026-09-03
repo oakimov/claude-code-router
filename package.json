@@ -1,7 +1,7 @@
 {
   "name": "claude-code-router",
   "private": true,
-  "version": "2.1.9",
+  "version": "2.1.10",
   "description": "Use Claude Code without an Anthropics account and route it to another LLM provider",
   "scripts": {
     "build": "pnpm build:shared && pnpm build:core && pnpm build:server && pnpm build:cli && pnpm build:ui",
@@ -39,13 +39,13 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.4.1",
     "esbuild": "^0.28.2",
     "eslint": "^10.9.1",
-    "globals": "^17.11.0",
+    "globals": "^17.12.0",
     "shx": "^0.4.0",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.68.0"
+    "typescript-eslint": "^8.69.0"
   },
   "engines": {
     "node": ">=22.19.0",

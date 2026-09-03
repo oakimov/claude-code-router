@@ -4,9 +4,9 @@ This repo publishes:
 
 | Package | Path | Published version |
 |---|---|---|
-| `@caeliq/ccr-shared` | `packages/shared` | `2.1.9` |
-| `@caeliq/llms` | `packages/core` | `1.0.67` |
-| `@caeliq/claude-code-router` | `packages/cli` | `2.1.9` |
+| `@caeliq/ccr-shared` | `packages/shared` | `2.1.10` |
+| `@caeliq/llms` | `packages/core` | `1.0.68` |
+| `@caeliq/claude-code-router` | `packages/cli` | `2.1.10` |
 
 GitHub repo used for provenance / trusted publishing: `oakimov/claude-code-router`  
 npm org: `caeliq`  
@@ -112,8 +112,8 @@ It builds with pnpm, then runs `scripts/release.sh npm` with:
 2. Commit and push to `github` (`main`)
 3. Tag and push (prefer matching the CLI version):
    ```bash
-   git tag v2.1.9
-   git push github v2.1.9
+   git tag v2.1.10
+   git push github v2.1.10
    ```
 4. Watch **Actions → Publish npm packages**
 
