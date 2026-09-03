@@ -127,9 +127,10 @@ export function cursorUsageCountersFromSdk(
 }
 
 /**
- * Cursor SDK usage is session-cumulative, while Claude Code needs per-request
- * usage. Use SDK usage only as a cache-read ratio and apply it to CCR's
- * current-request prompt estimate.
+ * Cursor SDK usage is per SDK turn, while Claude Code needs per-CCR-request
+ * usage. In bridge mode one SDK turn can span several parked host-tool request
+ * cycles. Use a terminal SDK witness only as a cache-read ratio for the CCR
+ * request that observes it; never attribute it to an earlier parked response.
  *
  * Kept for tests; prefer buildAccurateUsageFromSdk for turn-end reporting.
  */

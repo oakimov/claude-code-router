@@ -41,10 +41,11 @@ assert.deepEqual(clamped, {
 
 // --- buildAccurateUsageFromSdk (finishUsage path) ---
 
-// Cold: runtime reported no usage → estimate, no cache field ("unknown" verdict).
+// No SDK witness (including a parked host-tool boundary): estimate usage but
+// omit the cache field so the verdict is "unknown", never a fabricated miss.
 {
-  const cold = buildAccurateUsageFromSdk(undefined, 400, 40);
-  assert.deepEqual(cold, {
+  const unreported = buildAccurateUsageFromSdk(undefined, 400, 40);
+  assert.deepEqual(unreported, {
     prompt_tokens: 400,
     completion_tokens: 10,
     total_tokens: 410,

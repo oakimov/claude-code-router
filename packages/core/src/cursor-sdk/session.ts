@@ -59,6 +59,7 @@ export type CursorSdkSession = {
   streamNext?: Promise<IteratorResult<any>>;
   streamNextRunToken?: symbol;
   activeRunToken?: symbol;
+  /** Raw usage from the last completed SDK turn; never a parked CCR boundary. */
   lastSdkUsageRaw?: OpenAiUsage;
   parked: ParkedTool[];
   /**

@@ -1087,10 +1087,10 @@ async function runCursorOnce(
 
   const helpers = createSseHelpers(modelId, new TextEncoder());
   const collected: Array<Record<string, unknown>> = [];
-  // Host-facing usage must be per CCR request. Cursor SDK usage events / run.usage
-  // are cumulative across the held-open agent session and arrive only at true turn
-  // end — after we already park for Claude Code tools — so they cannot drive
-  // Claude Code context accounting (same fix as cursor-opencode-provider).
+  // Host-facing usage must be per CCR request. One SDK turn spans every CCR
+  // request needed to resolve its parked host tools, and usage arrives only
+  // after that whole turn ends. It therefore cannot account for an earlier
+  // parked CCR response (same constraint as cursor-opencode-provider).
   const promptTokens = estimateRequestPromptTokens(request);
   let outputChars = 0;
   let sdkUsageRaw: OpenAiUsage | undefined;
@@ -1132,11 +1132,12 @@ async function runCursorOnce(
       };
 
       const finishUsage = (): OpenAiUsage => {
+        const priorRaw = session.lastSdkUsageRaw;
         const usage = buildAccurateUsageFromSdk(
           sdkUsageRaw,
           promptTokens,
           outputChars,
-          session.lastSdkUsageRaw
+          priorRaw
         );
         if (sdkUsageRaw) session.lastSdkUsageRaw = sdkUsageRaw;
         // Trace parity with cursor-opencode-provider formatTurnUsageValidation.
@@ -1150,7 +1151,7 @@ async function runCursorOnce(
             promptTokens,
             outputChars,
             sdkUsageRaw,
-            priorRaw: session.lastSdkUsageRaw,
+            priorRaw,
             usage,
             usageReported: sdkUsageRaw !== undefined,
           },
@@ -1236,6 +1237,10 @@ async function runCursorOnce(
                 emittedHostTools += 1;
               }
               emitFinish("tool_calls");
+              // No SDK usage witness is available at this boundary: the turn
+              // remains open while customTools.execute waits for these host
+              // results. Waiting here would deadlock; attributing the eventual
+              // run-cumulative usage to this response would be fabricated.
               if (wantsStream) controller.enqueue(helpers.encodeDone());
               controller.close();
               return;
@@ -1355,7 +1360,8 @@ async function runCursorOnce(
                 enqueue(helpers.thinking(text));
               }
             } else if (message.type === "usage") {
-              // Raw SDK usage is cumulative; finishUsage maps only its cache ratio.
+              // A terminal SDK-turn witness may span several parked CCR
+              // request cycles; finishUsage maps only its bounded cache ratio.
               sdkUsageRaw = usageFromSdk(message);
             } else if (message.type === "status") {
               if (message.status === "ERROR" || message.status === "CANCELLED") {
