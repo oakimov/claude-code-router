@@ -304,7 +304,8 @@ function logMessageBodyParts(
       maxBytes
     );
     const hash = sha16Hex(stored);
-    const path = join(dir, `${req}.${slug}.${part}.${hash}.json`);
+    const safePart = filenameSegment(part, "part");
+    const path = join(dir, `${req}.${slug}.${safePart}.${hash}.json`);
     try {
       if (!ensuredBodyDirs.has(dir)) {
         mkdirSync(dir, { recursive: true });

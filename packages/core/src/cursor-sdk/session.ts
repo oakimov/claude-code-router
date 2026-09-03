@@ -201,9 +201,7 @@ export function aliasHostToolId(
     const candidate =
       n === 0 && base && base.length <= TOOL_ID_ALIAS_MAX_LENGTH
         ? base
-        : n < 1
-          ? `${TOOL_ID_ALIAS_PREFIX}_${hashToolIdAlias(original)}`
-          : `${TOOL_ID_ALIAS_PREFIX}_${hashToolIdAlias(`${original}#${n}`)}`;
+        : `${TOOL_ID_ALIAS_PREFIX}_${hashToolIdAlias(n === 0 ? original : `${original}#${n}`)}`;
     const owner = maps.byAlias.get(candidate);
     if (owner === undefined || owner === original) {
       alias = candidate;
