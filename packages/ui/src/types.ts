@@ -23,6 +23,7 @@ export interface RouterConfig {
     longContextThreshold: number;
     webSearch: string;
     image: string;
+    fim: string;
     custom?: any;
 }
 

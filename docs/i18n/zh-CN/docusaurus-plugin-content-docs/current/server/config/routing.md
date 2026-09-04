@@ -5,7 +5,9 @@ sidebar_position: 3
 
 # 路由配置
 
-配置如何将请求路由到不同的模型。
+配置如何将请求路由到不同的模型。同一套 `Router` 规则在 Unified 归一化之后
+适用于所有**聊天**入站协议（Messages、Chat Completions、Responses）。
+FIM 在独立流水线上使用 `Router.fim` — 见 [FIM](#fim-fill-in-the-middle)。
 
 ## 默认路由
 
@@ -70,6 +72,33 @@ sidebar_position: 3
 }
 ```
 
+### FIM (fill-in-the-middle)
+
+将 `POST /v1/fim/completions` 路由到支持 FIM 的提供商（必须使用 `fim.*` 转换器）。
+
+**Codestral：**
+
+```json
+{
+  "Router": {
+    "fim": "codestral-fim,codestral-latest"
+  }
+}
+```
+
+**本地 Qwen（LM Studio）：**
+
+```json
+{
+  "Router": {
+    "fim": "lmstudio-qwen-fim,qwen/qwen2.5-coder-14b"
+  }
+}
+```
+
+FIM 端点上的裸模型名经 `Router.fim` 解析，再回退到 `Router.default`。提供商 JSON
+与客户端设置见英文文档 [FIM Completions API](/docs/server/api/fim-completions-api)。
+
 ### 图像任务
 
 路由图像相关任务：
@@ -114,6 +143,9 @@ sidebar_position: 3
     ],
     "webSearch": [
       "openrouter,anthropic/claude-sonnet-4"
+    ],
+    "fim": [
+      "codestral-fim,codestral-latest"
     ],
     "subagent": [
       "openrouter,anthropic/claude-sonnet-4"

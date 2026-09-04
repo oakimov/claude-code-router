@@ -6,11 +6,11 @@ Claude Code Router is an adaptive LLM gateway for Claude Code. It routes each re
 
 ## ✨ Features
 
-- **Adaptive Model Routing**: Route requests by scenario, including background tasks, thinking, long context, web search, and image workflows.
+- **Adaptive Model Routing**: Route requests by scenario, including background tasks, thinking, long context, web search, FIM completions, and image workflows.
 - **Tool Use & Thinking**: Preserve tool calls, tool results, and reasoning content across providers with different API formats.
 - **Multi-Provider Support**: Supports various model providers like OpenRouter, DeepSeek, Ollama, Gemini, Antigravity, Volcengine, SiliconFlow, Codex, Claude subscription, Qwen, Chrome On-Device, and Cursor (SDK).
 - **Request/Response Transformation**: Customize requests and responses for different providers using transformers.
-- **Native Client Protocols**: Accept Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses requests through the same router and fallback pipeline.
+- **Native Client Protocols**: Accept Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and FIM Completions through the same router (FIM uses a dedicated pipeline and `fim.*` transformers).
 - **Dynamic Model Switching**: Switch models on-the-fly within Claude Code using the `/model` command.
 - **CLI Model Management**: Manage models and providers directly from the terminal with `ccr model`.
 - **GitHub Actions Integration**: Trigger Claude Code tasks in your GitHub workflows.
@@ -209,7 +209,7 @@ export OPENAI_BASE_URL=http://127.0.0.1:3456/v1
 export OPENAI_API_KEY=your-router-api-key
 ```
 
-CCR accepts Chat Completions at `/v1/chat/completions` (alias `/chat/completions`) and Responses at `/v1/responses` (alias `/responses`). Send a model as `provider,model` to select a destination explicitly, or send a bare model and configure `Router.default`. Both JSON and SSE responses are converted back to the protocol used by the client.
+CCR accepts Chat Completions at `/v1/chat/completions` (alias `/chat/completions`), Responses at `/v1/responses` (alias `/responses`), and FIM at `/v1/fim/completions` (alias `/fim/completions`). Send a model as `provider,model` to select a destination explicitly, or send a bare model and configure `Router.default` (FIM also uses `Router.fim`). Chat JSON/SSE responses are converted back to the protocol used by the client; FIM responses follow the inbound FIM wire (v1: Codestral/Mistral).
 
 Discover what the router can reach with `GET /v1/models` (alias `/models`). By default it emits literal `provider,model` IDs. Set `"MODEL_ID_OUTPUT": "masked"` to expose otherwise-filtered IDs as `claude-<hex>` while leaving IDs beginning with `claude` or `anthropic` unchanged. Chat routes accept both representations regardless of this output setting. To surface CCR models in Codex's native picker, use `ccr codex-config`, which writes a Codex model catalog and the managed `config.toml` block that points Codex at the router.
 
@@ -436,8 +436,9 @@ The `Providers` array defines each provider: `name`, `api_base_url`, `api_key`, 
 
 **Available Built-in Transformers:**
 
-- `Anthropic` — passes through to an Anthropic endpoint unchanged. `OpenAI` — registers the `/v1/chat/completions` route (the body is already in OpenAI shape).
-- Provider adapters: `deepseek`, `groq`, `mistral`, `openrouter`, `gemini` / `vertex-gemini`, `codex`, `claude-auth`, `antigravity-auth`, `qwen-auth`, `xai-auth`, `cursor-sdk`, `chrome-on-device`.
+- Protocol owners: `Anthropic` (`/v1/messages`), `OpenAI` (`/v1/chat/completions`), `openai-responses` (`/v1/responses`), `Fim` (`/v1/fim/completions`).
+- FIM provider adapters: `fim.mistral`, `fim.deepseek`, `fim.qwen` (dedicated FIM providers only — do not stack with chat transformers).
+- Provider adapters: `deepseek`, `groq`, `mistral`, `openrouter`, `gemini` / `vertex-gemini`, `codex` (pair with `openai-responses`), `claude-auth` (pair with `Anthropic`), `antigravity-auth`, `qwen-auth`, `xai-auth`, `cursor-sdk`, `chrome-on-device`.
 - `maxtoken` — sets a specific `max_tokens`. `tooluse` — optimizes tool usage via `tool_choice`. `reasoning` — replays provider `reasoning_content` across turns. `sampling` — maps `temperature` / `top_p` / `top_k` / `repetition_penalty`. `enhancetool` — adds error tolerance to tool-call parameters (disables streaming of tool calls). `cleancache` — clears `cache_control`. `customparams` — injects custom request parameters.
 - Experimental gist/CLI integrations: `gemini-cli`, `chutes-glm`, `qwen-cli`, `rovo-cli`.
 
@@ -457,6 +458,7 @@ The `Router` object defines which model to use for different scenarios:
 - `longContext`: A model for handling long contexts (e.g., > 60K tokens).
 - `longContextThreshold` (optional): The token count threshold for triggering the long context model. Defaults to 60000 if not specified.
 - `webSearch`: Used for handling web search tasks and this requires the model itself to support the feature. If you're using openrouter, you need to add the `:online` suffix after the model name.
+- `fim`: Used for `POST /v1/fim/completions` (fill-in-the-middle). Destination provider must use a `fim.*` transformer (`fim.mistral`, `fim.deepseek`, or `fim.qwen`). Setup for Codestral and local Qwen (LM Studio): `docs/docs/server/api/fim-completions-api.md`.
 - `image` (beta): Used for handling image-related tasks (supported by CCR’s built-in agent). If the model does not support tool calling, you need to set the `config.forceUseImageAgent` property to `true`.
 
 - You can also switch models dynamically in Claude Code with the `/model` command:

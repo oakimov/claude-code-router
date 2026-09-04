@@ -218,7 +218,7 @@ CCR 引入了强大的动态配置系统，支持：
   "description": "多Provider配置示例 - 支持OpenAI和DeepSeek切换",
   "author": "CCR Team",
   "keywords": ["openai", "deepseek", "multi-provider"],
-  "ccrVersion": "2.1.0",
+  "ccrVersion": "2.1.10",
   "schema": [
     {
       "id": "primaryProvider",
@@ -352,7 +352,7 @@ CCR 引入了强大的动态配置系统，支持：
   "repository": "https://github.com/yourname/ccr-presets.git",
   "license": "MIT",
   "keywords": ["openai", "production"],
-  "ccrVersion": "2.1.0"
+  "ccrVersion": "2.1.10"
 }
 ```
 

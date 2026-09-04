@@ -4,7 +4,10 @@ sidebar_position: 3
 
 # Routing Configuration
 
-Configure how requests are routed to different models.
+Configure how requests are routed to different models. The same `Router`
+rules apply after Unified normalization for every **chat** inbound protocol
+(Messages, Chat Completions, Responses). FIM uses `Router.fim` on its own
+pipeline — see [FIM](#fim-fill-in-the-middle).
 
 ## Default Routing
 
@@ -69,6 +72,32 @@ Route web search tasks:
 }
 ```
 
+### FIM (fill-in-the-middle)
+
+Route `POST /v1/fim/completions` to a FIM-capable provider (must use a `fim.*` transformer).
+
+**Codestral:**
+
+```json
+{
+  "Router": {
+    "fim": "codestral-fim,codestral-latest"
+  }
+}
+```
+
+**Local Qwen (LM Studio):**
+
+```json
+{
+  "Router": {
+    "fim": "lmstudio-qwen-fim,qwen/qwen2.5-coder-14b"
+  }
+}
+```
+
+Bare models on the FIM endpoint resolve via `Router.fim`, then `Router.default`. Provider JSON and client setup for both cases: [FIM Completions API](../api/fim-completions-api.md).
+
 ### Image Tasks
 
 Route image-related tasks:
@@ -113,6 +142,9 @@ When a request fails, you can configure a list of backup models. The system will
     ],
     "webSearch": [
       "openrouter,anthropic/claude-sonnet-4"
+    ],
+    "fim": [
+      "codestral-fim,codestral-latest"
     ],
     "subagent": [
       "openrouter,anthropic/claude-sonnet-4"

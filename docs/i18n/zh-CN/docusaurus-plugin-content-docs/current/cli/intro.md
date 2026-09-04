@@ -13,7 +13,8 @@ title: 开始使用
 ## 特性
 
 - **多提供商支持**: 路由到 DeepSeek、Gemini、Groq、OpenRouter 等
-- **智能路由**: 内置不同任务类型的场景（后台、思考、网络搜索、图像）
+- **智能路由**: 内置不同任务类型的场景（后台、思考、网络搜索、FIM、图像）
+- **多客户端协议**: Anthropic Messages、OpenAI Chat Completions、OpenAI Responses、FIM Completions
 - **项目级配置**: 每个项目自定义路由
 - **自定义路由函数**: 编写 JavaScript 定义自己的路由逻辑
 - **转换器系统**: 无缝适配不同提供商之间的 API 差异

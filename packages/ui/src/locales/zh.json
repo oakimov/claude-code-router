@@ -135,6 +135,7 @@
     "longContext": "长上下文",
     "longContextThreshold": "上下文阈值",
     "webSearch": "网络搜索",
+    "fim": "FIM（中间填充）",
     "image": "图像",
     "forceUseImageAgent": "强制使用图像代理",
     "selectModel": "选择一个模型...",

@@ -4,6 +4,10 @@ title: Chat Completions API
 
 # Chat Completions API
 
+First-class inbound OpenAI Chat Completions protocol
+(`openai_chat_completions`). Owner transformer: `OpenAI`. Responses, Messages,
+and FIM are separate inbound routes — see [API Overview](/docs/server/api/overview).
+
 CCR accepts OpenAI Chat Completions requests at:
 
 - `POST /v1/chat/completions`

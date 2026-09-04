@@ -104,10 +104,16 @@ export ANTHROPIC_API_KEY="sk-ant-..."
     "default": "openai,gpt-4",
     "background": "openai,gpt-3.5-turbo",
     "think": "openai,gpt-4",
-    "longContext": "anthropic,claude-3-opus"
+    "longContext": "anthropic,claude-3-opus",
+    "fim": "codestral-fim,codestral-latest"
   }
 }
 ```
+
+场景键包括 `default`、`background`、`think`、`longContext`、
+`webSearch`、`fim` 和 `image`。`fim` 仅适用于
+`POST /v1/fim/completions` — 见 [FIM Completions API](/docs/server/api/fim-completions-api)
+与 [路由](/docs/server/config/routing)。
 
 ## 配置验证
 

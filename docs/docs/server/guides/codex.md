@@ -168,7 +168,7 @@ The `codex` transformer:
 - authenticates using either OAuth tokens or a PAT
 - resolves and sends `ChatGPT-Account-ID` automatically
 - adds `X-OpenAI-Fedramp: true` when required by the authenticated account
-- converts streaming Responses-style events back into Claude Code-compatible output
+- converts streaming Responses-style events back into the **inbound** client protocol
 
 ## When to use `ccr codex-auth`
 

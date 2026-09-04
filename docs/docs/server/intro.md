@@ -4,7 +4,9 @@ title: Server Introduction
 
 # Server Introduction
 
-Claude Code Router Server routes Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses requests to different LLM providers. It provides a complete HTTP API with support for:
+Claude Code Router Server routes Anthropic Messages, OpenAI Chat Completions,
+OpenAI Responses, and FIM Completions requests to different LLM providers. It
+provides a complete HTTP API with support for:
 
 - **API Request Routing**: Normalize supported client protocols, select a provider/model, and convert to the provider wire format
 - **Authentication & Authorization**: Support API Key authentication
@@ -16,24 +18,24 @@ Claude Code Router Server routes Anthropic Messages, OpenAI Chat Completions, an
 ## Architecture Overview
 
 ```
-┌─────────────┐     ┌─────────────────────────────┐     ┌──────────────┐
-│ Claude Code │────▶│ CCR Server                  │────▶│ LLM Provider │
-│   Client    │     │  ┌─────────────────────┐    │     │  (OpenAI/    │
-└─────────────┘     │  │ @caeliq/llms    │    │     │   Gemini/etc)│
-                    │  │ (Core Package)       │    │     └──────────────┘
-                    │  │ - Request Transform  │    │
-                    │  │ - Response Transform │    │
-                    │  │ - Auth Handling      │    │
-                    │  └─────────────────────┘    │
-                    │                             │
-                    │  - Routing Logic            │
-                    │  - Agent System             │
-                    │  - Configuration            │
-                    └─────────────────────────────┘
-                           │
-                           ├─ Web UI
-                           ├─ Config API
-                           └─ Logs API
+┌──────────────────┐     ┌─────────────────────────────┐     ┌──────────────┐
+│ Client protocols │────▶│ CCR Server                  │────▶│ LLM Provider │
+│ Messages / Chat  │     │  ┌─────────────────────┐    │     │  (OpenAI/    │
+│ Responses / FIM  │     │  │ @caeliq/llms        │    │     │   Gemini/etc)│
+└──────────────────┘     │  │ (Core Package)       │    │     └──────────────┘
+                         │  │ - Request Transform  │    │
+                         │  │ - Response Transform │    │
+                         │  │ - Auth Handling      │    │
+                         │  └─────────────────────┘    │
+                         │                             │
+                         │  - Routing Logic            │
+                         │  - Agent System             │
+                         │  - Configuration            │
+                         └─────────────────────────────┘
+                                │
+                                ├─ Web UI
+                                ├─ Config API
+                                └─ Logs API
 ```
 
 ## Core Package: @caeliq/llms
@@ -92,9 +94,10 @@ interface Transformer {
 #### 3. Built-in Transformers
 
 The core package includes transformers for:
-- **anthropic**: Anthropic API format (`/v1/messages`)
-- **openai**: OpenAI Chat Completions format (`/v1/chat/completions`)
-- **openai-responses**: OpenAI Responses API format (`/v1/responses`, used by Codex)
+- **Anthropic** (protocol owner): Anthropic Messages (`/v1/messages`)
+- **OpenAI** (protocol owner): Chat Completions (`/v1/chat/completions`)
+- **openai-responses** (protocol owner): Responses API (`/v1/responses`)
+- **Fim** (protocol owner) + **fim.mistral** / **fim.deepseek** / **fim.qwen**: FIM Completions (`/v1/fim/completions`)
 - **gemini**: Google Gemini API format
 - **vertex-gemini / vertex-claude**: Google Vertex AI formats
 - **deepseek**: DeepSeek API format
@@ -123,7 +126,7 @@ The CCR server integrates `@caeliq/llms` through:
 
 ### Version and Updates
 
-The current version of `@caeliq/llms` is `1.0.58`. It's published as an independent npm package and can be used standalone or as part of CCR Server.
+The current version of `@caeliq/llms` is `1.0.68`. It's published as an independent npm package and can be used standalone or as part of CCR Server.
 
 ## Core Features
 
@@ -131,7 +134,7 @@ The current version of `@caeliq/llms` is `1.0.58`. It's published as an independ
 - Token-count-based intelligent routing
 - Project-level routing configuration
 - Custom routing functions
-- Scenario-based routing (background, think, longContext, etc.)
+- Scenario-based routing (background, think, longContext, webSearch, fim, image, etc.)
 
 ### 2. Request Transformation
 - Supports API format conversion for multiple LLM providers
@@ -209,6 +212,9 @@ Build custom applications based on exposed APIs:
 ```bash
 GET /api/config
 POST /v1/messages
+POST /v1/chat/completions
+POST /v1/responses
+POST /v1/fim/completions
 GET /api/logs
 ```
 

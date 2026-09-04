@@ -56,7 +56,8 @@ function normalizeConfig(data: Config): Config {
       longContext: typeof data.Router.longContext === 'string' ? data.Router.longContext : '',
       longContextThreshold: typeof data.Router.longContextThreshold === 'number' ? data.Router.longContextThreshold : 60000,
       webSearch: typeof data.Router.webSearch === 'string' ? data.Router.webSearch : '',
-      image: typeof data.Router.image === 'string' ? data.Router.image : ''
+      image: typeof data.Router.image === 'string' ? data.Router.image : '',
+      fim: typeof data.Router.fim === 'string' ? data.Router.fim : ''
     } : {
       default: '',
       background: '',
@@ -64,7 +65,8 @@ function normalizeConfig(data: Config): Config {
       longContext: '',
       longContextThreshold: 60000,
       webSearch: '',
-      image: ''
+      image: '',
+      fim: ''
     },
     CUSTOM_ROUTER_PATH: typeof data.CUSTOM_ROUTER_PATH === 'string' ? data.CUSTOM_ROUTER_PATH : ''
   };

@@ -11,7 +11,8 @@ import type { ResponsesCallIdMap } from "@/utils/openai.responses.util";
 export type ClientProtocol =
   | "anthropic_messages"
   | "openai_chat_completions"
-  | "openai_responses";
+  | "openai_responses"
+  | "openai_fim_completions";
 
 export interface AnthropicSourceRequestFields {
   metadata?: Record<string, unknown>;
@@ -108,6 +109,12 @@ export const PROTOCOL_ROUTE_SPECS: ProtocolRouteSpec[] = [
     canonicalPath: "/v1/responses",
     aliases: ["/responses"],
     ownerTransformerName: "openai-responses",
+  },
+  {
+    protocol: "openai_fim_completions",
+    canonicalPath: "/v1/fim/completions",
+    aliases: ["/fim/completions"],
+    ownerTransformerName: "Fim",
   },
 ];
 

@@ -5,7 +5,7 @@
     "description": "Example preset: supports multi-provider selection and dynamic configuration",
     "author": "CCR Team",
     "keywords": ["example", "multi-provider", "dynamic"],
-    "ccrVersion": "2.1.0"
+    "ccrVersion": "2.1.10"
   },
   "schema": [
     {

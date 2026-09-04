@@ -23,6 +23,8 @@ ccr model
 ```
 
 This will display an interactive menu with available providers and models.
+You can assign the selection to `Router.default` or other scenario keys
+(`background`, `think`, `longContext`, `webSearch`, `fim`, `image`).
 
 ### Set Default Model
 

@@ -33,6 +33,7 @@ interface RouterConfig {
   longContextThreshold?: number;
   webSearch?: string;
   image?: string;
+  fim?: string;
   [key: string]: string | number | undefined;
 }
 
@@ -140,7 +141,12 @@ function displayCurrentConfig(config: Config): void {
     console.log(`${BOLDCYAN}Web Search Model:${RESET}`);
     console.log(`  ${formatModel(config.Router.webSearch)}\n`);
   }
-  
+
+  if (config.Router.fim) {
+    console.log(`${BOLDCYAN}FIM Model:${RESET}`);
+    console.log(`  ${formatModel(config.Router.fim)}\n`);
+  }
+
   if (config.Router.image) {
     console.log(`${BOLDCYAN}Image Model:${RESET}`);
     console.log(`  ${formatModel(config.Router.image)}\n`);
@@ -160,6 +166,7 @@ async function selectModelType() {
       { name: 'Think Model', value: 'think' },
       { name: 'Long Context Model', value: 'longContext' },
       { name: 'Web Search Model', value: 'webSearch' },
+      { name: 'FIM Model', value: 'fim' },
       { name: 'Image Model', value: 'image' },
       { name: `${BOLDGREEN}+ Add New Model${RESET}`, value: 'addModel' }
     ]
@@ -314,6 +321,7 @@ async function addModelToExistingProvider(config: Config, providerName: string):
         { name: 'Think Model', value: 'think' },
         { name: 'Long Context Model', value: 'longContext' },
         { name: 'Web Search Model', value: 'webSearch' },
+        { name: 'FIM Model', value: 'fim' },
         { name: 'Image Model', value: 'image' }
       ]
     }) as string;
@@ -418,6 +426,7 @@ async function addNewProvider(config: Config): Promise<ModelResult | null> {
         { name: 'Think Model', value: 'think' },
         { name: 'Long Context Model', value: 'longContext' },
         { name: 'Web Search Model', value: 'webSearch' },
+        { name: 'FIM Model', value: 'fim' },
         { name: 'Image Model', value: 'image' }
       ]
     }) as string;

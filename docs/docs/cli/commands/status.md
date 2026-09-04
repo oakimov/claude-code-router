@@ -20,7 +20,7 @@ When the server is running:
 
 ```
 Claude Code Router Status: Running
-Version: 2.1.0
+Version: 2.1.10
 PID: 12345
 Port: 8080
 Uptime: 2h 34m
@@ -49,7 +49,7 @@ Claude Code Router Status: Stopped
 $ ccr status
 
 Claude Code Router Status: Running
-Version: 2.1.0
+Version: 2.1.10
 PID: 12345
 Port: 8080
 Uptime: 2h 34m

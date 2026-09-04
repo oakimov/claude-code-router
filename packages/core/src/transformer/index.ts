@@ -30,6 +30,12 @@ import { ClaudeAuthTransformer } from "./claude-auth.transformer";
 import { CursorSdkTransformer } from "./cursor-sdk.transformer";
 import { AntigravityAuthTransformer } from "./antigravity-auth.transformer";
 import { XaiAuthTransformer } from "./xai-auth.transformer";
+import {
+  FimTransformer,
+  FimMistralTransformer,
+  FimDeepseekTransformer,
+  FimQwenTransformer,
+} from "./fim";
 
 export default {
   AnthropicTransformer,
@@ -64,4 +70,8 @@ export default {
   CursorSdkTransformer,
   AntigravityAuthTransformer,
   XaiAuthTransformer,
+  FimTransformer,
+  FimMistralTransformer,
+  FimDeepseekTransformer,
+  FimQwenTransformer,
 };

@@ -19,6 +19,7 @@ export function protocolErrorBody(
   switch (protocol) {
     case "openai_chat_completions":
     case "openai_responses":
+    case "openai_fim_completions":
       return {
         statusCode,
         body: {

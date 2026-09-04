@@ -24,6 +24,8 @@ import {
  *
  * ## Full request pipeline (for context)
  *
+ * Chat protocols share one lifecycle; the Anthropic inbound example:
+ *
  *     Client → POST /v1/messages
  *       → AnthropicTransformer.transformRequestOut()        // Anthropic → Unified (OpenAI)
  *       → provider.transformer.use[].transformRequestIn()   // provider middleware
@@ -38,6 +40,9 @@ import {
  *       → OpenAITransformer.transformRequestOut()           // validate → Unified
  *       → provider.transformer.use[].transformRequestIn()
  *       → … → OpenAITransformer.transformResponseIn()       // reasoning_content; strip Unified thinking
+ *
+ * Responses and FIM use their own owners (`openai-responses`, `Fim`). FIM is a
+ * separate pipeline from chat Unified.
  */
 export class OpenAITransformer implements Transformer {
   name = "OpenAI";

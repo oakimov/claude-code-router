@@ -523,7 +523,8 @@ export type RouterScenarioType =
   | 'think'
   | 'longContext'
   | 'webSearch'
-  | 'subagent';
+  | 'subagent'
+  | 'fim';
 
 export interface RouterFallbackConfig {
   default?: string[];
@@ -532,6 +533,7 @@ export interface RouterFallbackConfig {
   longContext?: string[];
   webSearch?: string[];
   subagent?: string[];
+  fim?: string[];
 }
 
 const parseSessionId = (userId: unknown): string | undefined => {

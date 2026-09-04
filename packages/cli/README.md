@@ -4,7 +4,8 @@
 
 ## ✨ Features
 
-- **Model Routing**: Route requests to different models based on your needs (e.g., background tasks, thinking, long context).
+- **Model Routing**: Route requests by scenario (background, thinking, long context, web search, FIM, image).
+- **Native Client Protocols**: Accept Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and FIM Completions (FIM uses a dedicated pipeline and `fim.*` transformers).
 - **Multi-Provider Support**: Supports various model providers like OpenRouter, DeepSeek, Ollama, Gemini, Volcengine, SiliconFlow, Codex, Claude subscription, Qwen, Chrome On-Device, and Cursor (SDK).
 - **Request/Response Transformation**: Customize requests and responses for different providers using transformers.
 - **Dynamic Model Switching**: Switch models on-the-fly within Claude Code using the `/model` command.
@@ -704,7 +705,9 @@ Transformers allow you to modify the request and response payloads to ensure com
 
 **Available Built-in Transformers:**
 
-- `Anthropic`:If you use only the `Anthropic` transformer, it will preserve the original request and response parameters(you can use it to connect directly to an Anthropic endpoint).
+- Protocol owners: `Anthropic` (`/v1/messages`), `OpenAI` (`/v1/chat/completions`), `openai-responses` (`/v1/responses`), `Fim` (`/v1/fim/completions`).
+- FIM provider adapters: `fim.mistral`, `fim.deepseek`, `fim.qwen` (dedicated FIM providers only — do not stack with chat transformers).
+- `Anthropic`: When used as provider egress / same-protocol keep, can preserve Anthropic wire; also converts Unified ↔ Anthropic for cross-protocol clients.
 - `deepseek`: Adapts requests/responses for DeepSeek API.
 - `gemini`: Adapts requests/responses for Gemini API.
 - `mistral`: Adapts requests/responses for Mistral API.
@@ -862,7 +865,7 @@ Three transformers are required in the chain:
 
 - `qwen-auth` — sets the `Authorization: Bearer <jwt>` header on every outbound request (loading/refreshing the JWT from `~/.claude-code-router/qwen_auth.json`) and strips the trailing `<details>...</details>` block Qwen injects into responses.
 - `reasoning` — maps Claude Code's unified `reasoning` field onto the request so the Qwen endpoint's `enable_thinking` and `thinking_budget` parameters are populated.
-- `OpenAI` — registers the `POST /v1/chat/completions` route. It is a thin endpoint stub with no body conversion, so it must remain last in the chain.
+- `OpenAI` — protocol owner for `POST /v1/chat/completions` (validates inbound Chat bodies; applies provider-side cache policy). Keep it last in Qwen-style chains that already set auth/reasoning.
 
 > **Note**: The `api_key` field is a placeholder — actual authentication is handled via the JWT stored in `~/.claude-code-router/qwen_auth.json`. Run `ccr qwen-auth` to authenticate before using the Qwen provider.
 
@@ -940,6 +943,7 @@ The `Router` object defines which model to use for different scenarios:
 - `longContext`: A model for handling long contexts (e.g., > 60K tokens).
 - `longContextThreshold` (optional): The token count threshold for triggering the long context model. Defaults to 60000 if not specified.
 - `webSearch`: Used for handling web search tasks and this requires the model itself to support the feature. If you're using openrouter, you need to add the `:online` suffix after the model name.
+- `fim`: Used for `POST /v1/fim/completions` (fill-in-the-middle). Destination provider must use a `fim.*` transformer (`fim.mistral`, `fim.deepseek`, or `fim.qwen`). See `docs/docs/server/api/fim-completions-api.md`.
 - `image` (beta): Used for handling image-related tasks (supported by CCR’s built-in agent). If the model does not support tool calling, you need to set the `config.forceUseImageAgent` property to `true`.
 
 - You can also switch models dynamically in Claude Code with the `/model` command:

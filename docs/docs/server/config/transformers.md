@@ -10,87 +10,112 @@ Transformers are the core mechanism for adapting API differences between LLM pro
 
 ### What is a Transformer?
 
-A transformer is a plugin that:
-- **Transforms requests** from the unified format to provider-specific format
-- **Transforms responses** from provider format back to unified format
-- **Handles authentication** for provider APIs
-- **Modifies requests** to add or adjust parameters
+A transformer is a plugin that can:
+- **Own a client protocol** (register a route and convert client wire ↔ Unified)
+- **Adapt provider wire** (Unified ↔ provider-specific request/response)
+- **Handle authentication** for provider APIs
+- **Modify requests** to add or adjust parameters
 
-### Data Flow
+Most entries in `Providers[].transformer.use` are provider middleware. Four
+transformers are **protocol owners** — they register the inbound HTTP routes
+and are not listed in `transformer.use` for that purpose:
+
+| Protocol | Owner | Canonical path | Alias(es) |
+|----------|-------|----------------|-----------|
+| Anthropic Messages | `Anthropic` | `/v1/messages` | — |
+| OpenAI Chat Completions | `OpenAI` | `/v1/chat/completions` | `/chat/completions` |
+| OpenAI Responses | `openai-responses` | `/v1/responses` | `/responses` |
+| FIM Completions | `Fim` | `/v1/fim/completions` | `/fim/completions` |
+
+Chat protocols (Messages, Chat Completions, Responses) share one Unified chat
+pipeline. FIM uses a **separate** Unified FIM pipeline and `fim.*` provider
+transformers — see [FIM transformers](#fim-transformers) and the
+[FIM Completions API](/docs/server/api/fim-completions-api).
+
+### Data Flow (chat protocols)
 
 ```
-┌─────────────────┐
-│ Incoming Request│ (Anthropic format from Claude Code)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  transformRequestOut            │ ← Parse incoming request to unified format
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  UnifiedChatRequest             │
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  transformRequestIn (optional)  │ ← Modify unified request before sending
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  Provider API Call              │
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  transformResponseIn (optional) │ ← Convert provider response to unified format
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  transformResponseOut (optional)│ ← Convert unified response to Anthropic format
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Outgoing Response│ (Anthropic format to Claude Code)
-└─────────────────┘
+┌──────────────────────┐
+│ Incoming client wire │  Messages | Chat Completions | Responses
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  Protocol owner: transformRequestOut     │  Client wire → UnifiedChatRequest
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  UnifiedChatRequest                      │  Routing + provider chain input
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  provider.use[]: transformRequestIn      │  Unified → provider wire
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  Provider API call                       │
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  provider.use[]: transformResponseOut    │  Provider response → Unified-shaped
+│  (reversed order)                        │
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  Protocol owner: transformResponseIn     │  Unified → same client protocol
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────┐
+│ Outgoing client wire │  Matches the inbound protocol
+└──────────────────────┘
 ```
+
+Same-protocol / native-wire paths may keep the original client body for
+egress (for example native Claude Desktop/CLI to Anthropic). Cross-protocol
+routes always normalize through Unified, then rebuild the client response in
+the inbound protocol.
 
 ### Transformer Interface
 
-All transformers implement the following interface:
+All transformers implement the following interface. Method names are relative
+to the **provider port**: `*In` faces the upstream; `*Out` faces away from it.
+On a **protocol owner**, `transformRequestOut` / `transformResponseIn` are the
+client-facing legs (client → Unified → client).
 
 ```typescript
 interface Transformer {
-  // Convert unified request to provider-specific format
+  // Unified → provider-specific request (provider middleware / egress owner)
   transformRequestIn?: (
     request: UnifiedChatRequest,
     provider: LLMProvider,
     context: TransformerContext
   ) => Promise<Record<string, any>>;
 
-  // Convert provider request to unified format
+  // Client wire → Unified (protocol owner), or rare provider→Unified helpers
   transformRequestOut?: (
     request: any,
     context: TransformerContext
   ) => Promise<UnifiedChatRequest>;
 
-  // Convert provider response to unified format
+  // Unified → client wire (protocol owner)
   transformResponseIn?: (
     response: Response,
     context?: TransformerContext
   ) => Promise<Response>;
 
-  // Convert unified response to provider format
+  // Provider response → Unified-shaped (provider middleware, reversed)
   transformResponseOut?: (
     response: Response,
     context: TransformerContext
   ) => Promise<Response>;
 
-  // Custom endpoint path (optional)
+  // Registers a client route when this transformer is a protocol owner
   endPoint?: string;
 
   // Transformer name (for custom transformers)
@@ -129,12 +154,13 @@ interface UnifiedChatRequest {
 }
 ```
 
-CCR normalizes effort across all three inbound APIs. Chat Completions
+CCR normalizes effort across the three **chat** inbound APIs. Chat Completions
 `reasoning_effort`, Responses `reasoning.effort`, and Anthropic
 `output_config.effort` become the unified `reasoning.effort` field. `none`
 sets `reasoning.enabled` to `false`. On output, OpenAI-compatible protocols
 retain their native value; Anthropic maps `minimal` to `low` and `ultra` to
 `max`, while `none` becomes `thinking: { type: "disabled" }` with no effort.
+FIM does not use this chat reasoning field.
 
 #### UnifiedMessage
 
@@ -160,9 +186,45 @@ interface UnifiedMessage {
 
 ## Built-in Transformers
 
-### anthropic
+### Protocol owners (client routes)
 
-Transforms requests to be compatible with Anthropic-style APIs:
+These register inbound routes. Do **not** put them in `transformer.use` only
+to open a client path — the route table already owns that. They *do* appear in
+`transformer.use` when the **destination** speaks that protocol (for example
+`"use": ["openai-responses", "codex"]` or `"use": ["Anthropic", "claude-auth"]`).
+
+#### Anthropic
+
+Protocol owner for `POST /v1/messages`. Also used as provider egress when the
+upstream is Anthropic Messages.
+
+**Client legs:** `transformRequestOut` (Anthropic → Unified),
+`transformResponseIn` (Unified → Anthropic).
+
+**Provider legs:** `transformRequestIn` / `transformResponseOut` rebuild and
+parse Anthropic wire for destinations that need it.
+
+#### OpenAI
+
+Protocol owner for `POST /v1/chat/completions` (alias `/chat/completions`).
+Unified **is** Chat Completions-shaped, so inbound `transformRequestOut`
+validates and lightly normalizes. Provider-side `transformRequestIn` applies
+OpenAI-native cache policy; `transformResponseIn` shapes Chat client output
+(for example `reasoning_content`).
+
+#### openai-responses
+
+Protocol owner for `POST /v1/responses` (alias `/responses`). Converts
+Responses `input` / tools ↔ Unified on the client legs, and rebuilds Responses
+wire (including encrypted reasoning items) when used as provider egress.
+Always pair Codex destinations as `"use": ["openai-responses", "codex"]`.
+
+### anthropic (config examples)
+
+Some docs/examples still show a top-level `transformers` entry named
+`"anthropic"`. The registered protocol-owner / provider name is **`Anthropic`**
+(see `"use": ["claude-auth", "Anthropic"]`). Prefer provider `transformer.use`
+over the legacy top-level array when configuring destinations.
 
 ```json
 {
@@ -175,21 +237,16 @@ Transforms requests to be compatible with Anthropic-style APIs:
 }
 ```
 
-**Features:**
-- Converts Anthropic message format to/from OpenAI format
-- Handles tool calls and tool results
-- Supports thinking/reasoning content blocks
-- Manages streaming responses
-
 ### codex
 
 Adapts requests and responses for the Codex (ChatGPT) backend API.
 
 **Features:**
-- Converts unified requests into the ChatGPT backend request format
+- Must be chained after `openai-responses` (Responses wire owner)
 - Supports both OAuth auth (`ccr codex-auth`) and PAT auth when `api_key` starts with `at-`
 - Resolves required account headers automatically
-- Converts streaming backend events back into Claude Code-compatible output
+- Applies ChatGPT backend constraints (`store: false`, `stream: true`)
+- Streaming events are converted back to the **inbound** client protocol (not Anthropic-only)
 
 ### claude-auth
 
@@ -200,7 +257,7 @@ Authenticates requests to Anthropic's API using your Claude Pro or Max subscript
 - Injects `Authorization: Bearer <token>` using tokens from `~/.claude-code-router/claude_auth.json`
 - Always sends the Anthropic `oauth-2025-04-20` beta; preserves and merges any client `anthropic-beta` header, otherwise derives feature betas (thinking / prompt-caching) from the outbound body
 - Refreshes expired OAuth access tokens automatically
-- Converts Anthropic streaming responses back into Claude Code-compatible output
+- Response conversion follows the inbound client protocol via the `Anthropic` owner
 - Intended to be used together with `Anthropic` in the provider chain
 
 ### antigravity-auth
@@ -377,6 +434,23 @@ Injects custom parameters into requests:
   ]
 }
 ```
+
+## FIM transformers
+
+Used only on FIM providers for `POST /v1/fim/completions` (separate pipeline from chat):
+
+| Name | Role |
+|------|------|
+| `Fim` | Protocol owner (client route) — not listed in `transformer.use` |
+| `fim.mistral` | Codestral/Mistral FIM URL + auth; same-kind body passthrough |
+| `fim.deepseek` | DeepSeek beta completions FIM |
+| `fim.qwen` | Qwen completions FIM (LM Studio / DashScope) |
+
+Outbound request encoding differs per `fim.*`. Responses are encoded to the **inbound** client wire (v1: Codestral/Mistral). Same-kind paths passthrough the response body.
+
+Step-by-step config for **Codestral** and **LM Studio Qwen**: [FIM Completions API](/docs/server/api/fim-completions-api).
+
+Do not stack chat transformers (`mistral`, `deepseek`, …) with `fim.*` on the same provider.
 
 ## Creating Custom Transformers
 

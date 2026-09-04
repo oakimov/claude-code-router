@@ -11,7 +11,7 @@
     "cursor",
     "oauth"
   ],
-  "ccrVersion": "2.1.0",
+  "ccrVersion": "2.1.10",
   "Providers": [
     {
       "name": "claude",

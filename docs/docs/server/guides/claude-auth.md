@@ -88,7 +88,13 @@ For subscription OAuth, two transformers are required, in this order:
 
 The same shared policy also applies to a direct `Anthropic` provider configured with API-key auth. It does not apply to arbitrary Anthropic-compatible gateways.
 
-Requests can reach either in-scope configuration from any inbound protocol CCR accepts — Anthropic Messages (`/v1/messages`), OpenAI Chat Completions (`/v1/chat/completions`), or OpenAI Responses (`/v1/responses`). Every inbound request is normalized to the internal Unified format for routing, while native Anthropic Desktop/CLI requests retain their original wire body for egress.
+Requests can reach either in-scope configuration from any **chat** inbound
+protocol CCR accepts — Anthropic Messages (`/v1/messages`), OpenAI Chat
+Completions (`/v1/chat/completions`), or OpenAI Responses (`/v1/responses`).
+Every chat inbound request is normalized to the internal Unified format for
+routing, while native Anthropic Desktop/CLI requests retain their original wire
+body for egress. FIM (`/v1/fim/completions`) is a separate pipeline and does not
+use `claude-auth`.
 
 ### Client classification
 

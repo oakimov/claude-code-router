@@ -80,6 +80,7 @@ const sidebars: SidebarsConfig = {
             'server/api/messages-api',
             'server/api/chat-completions-api',
             'server/api/responses-api',
+            'server/api/fim-completions-api',
             'server/api/models-api',
             'server/api/config-api',
             'server/api/logs-api',

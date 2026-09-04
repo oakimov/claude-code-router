@@ -21,7 +21,7 @@ ccr status
 
 ```
 Claude Code Router 状态: 运行中
-版本: 2.1.0
+版本: 2.1.10
 PID: 12345
 端口: 3456
 运行时间: 2小时34分钟
@@ -50,7 +50,7 @@ Claude Code Router 状态: 已停止
 $ ccr status
 
 Claude Code Router 状态: 运行中
-版本: 2.1.0
+版本: 2.1.10
 PID: 12345
 端口: 3456
 运行时间: 2小时34分钟

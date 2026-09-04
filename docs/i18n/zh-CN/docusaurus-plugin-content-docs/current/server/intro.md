@@ -1,8 +1,10 @@
 # Server 简介
 
-Claude Code Router Server 是一个核心服务组件，负责将 Claude Code 的 API 请求路由到不同的 LLM 提供商。它提供了完整的 HTTP API，支持：
+Claude Code Router Server 将 Anthropic Messages、OpenAI Chat Completions、
+OpenAI Responses 与 FIM Completions 请求路由到不同的 LLM 提供商。它提供完整的
+HTTP API，支持：
 
-- **API 请求路由**：将 Anthropic 格式的请求转换为各种提供商的 API 格式
+- **API 请求路由**：归一化支持的客户端协议，选择提供商/模型，并转换为提供商线格式
 - **认证与授权**：支持 API Key 认证
 - **配置管理**：动态配置提供商、路由规则和转换器
 - **Web UI**：内置管理界面
@@ -11,24 +13,24 @@ Claude Code Router Server 是一个核心服务组件，负责将 Claude Code �
 ## 架构概述
 
 ```
-┌─────────────┐     ┌─────────────────────────────┐     ┌──────────────┐
-│ Claude Code │────▶│ CCR Server                  │────▶│ LLM Provider │
-│   Client    │     │  ┌─────────────────────┐    │     │  (OpenAI/    │
-└─────────────┘     │  │ @caeliq/llms    │    │     │   Gemini/etc)│
-                    │  │ (核心包)             │    │     └──────────────┘
-                    │  │ - 请求转换           │    │
-                    │  │ - 响应转换           │    │
-                    │  │ - 认证处理           │    │
-                    │  └─────────────────────┘    │
-                    │                             │
-                    │  - 路由逻辑                 │
-                    │  - Agent 系统               │
-                    │  - 配置管理                 │
-                    └─────────────────────────────┘
-                           │
-                           ├─ Web UI
-                           ├─ Config API
-                           └─ Logs API
+┌──────────────────┐     ┌─────────────────────────────┐     ┌──────────────┐
+│ 客户端协议       │────▶│ CCR Server                  │────▶│ LLM Provider │
+│ Messages / Chat  │     │  ┌─────────────────────┐    │     │  (OpenAI/    │
+│ Responses / FIM  │     │  │ @caeliq/llms        │    │     │   Gemini/etc)│
+└──────────────────┘     │  │ (核心包)             │    │     └──────────────┘
+                         │  │ - 请求转换           │    │
+                         │  │ - 响应转换           │    │
+                         │  │ - 认证处理           │    │
+                         │  └─────────────────────┘    │
+                         │                             │
+                         │  - 路由逻辑                 │
+                         │  - Agent 系统               │
+                         │  - 配置管理                 │
+                         └─────────────────────────────┘
+                                │
+                                ├─ Web UI
+                                ├─ Config API
+                                └─ Logs API
 ```
 
 ## 核心包：@caeliq/llms
@@ -87,9 +89,10 @@ interface Transformer {
 #### 3. 内置转换器
 
 核心包包含以下转换器：
-- **anthropic**：Anthropic API 格式（`/v1/messages`）
-- **openai**：OpenAI Chat Completions 格式（`/v1/chat/completions`）
-- **openai-responses**：OpenAI Responses API 格式（`/v1/responses`，用于 Codex）
+- **Anthropic**（协议所有者）：Anthropic Messages（`/v1/messages`）
+- **OpenAI**（协议所有者）：Chat Completions（`/v1/chat/completions`）
+- **openai-responses**（协议所有者）：Responses API（`/v1/responses`）
+- **Fim**（协议所有者）+ **fim.mistral** / **fim.deepseek** / **fim.qwen**：FIM Completions（`/v1/fim/completions`）
 - **gemini**：Google Gemini API 格式
 - **vertex-gemini / vertex-claude**：Google Vertex AI 格式
 - **deepseek**：DeepSeek API 格式
@@ -118,7 +121,7 @@ CCR server 通过以下方式集成 `@caeliq/llms`：
 
 ### 版本和更新
 
-`@caeliq/llms` 的当前版本是 `1.0.58`。它作为独立的 npm 包发布，可以独立使用或作为 CCR Server 的一部分使用。
+`@caeliq/llms` 的当前版本是 `1.0.68`。它作为独立的 npm 包发布，可以独立使用或作为 CCR Server 的一部分使用。
 
 ## 核心功能
 
@@ -126,7 +129,7 @@ CCR server 通过以下方式集成 `@caeliq/llms`：
 - 基于 Token 数量的智能路由
 - 项目级路由配置
 - 自定义路由函数
-- 场景化路由（background、think、longContext 等）
+- 场景化路由（background、think、longContext、webSearch、fim、image 等）
 
 ### 2. 请求转换
 - 支持多种 LLM 提供商的 API 格式转换

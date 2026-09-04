@@ -299,10 +299,16 @@ server reports no `vitals`.
     "default": "openai,gpt-4",
     "background": "openai,gpt-3.5-turbo",
     "think": "openai,gpt-4",
-    "longContext": "anthropic,claude-3-opus"
+    "longContext": "anthropic,claude-3-opus",
+    "fim": "codestral-fim,codestral-latest"
   }
 }
 ```
+
+Scenario keys include `default`, `background`, `think`, `longContext`,
+`webSearch`, `fim`, and `image`. `fim` applies only to
+`POST /v1/fim/completions` — see [FIM Completions API](/docs/server/api/fim-completions-api)
+and [Routing](/docs/server/config/routing).
 
 ## Configuration Validation
 

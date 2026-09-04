@@ -88,6 +88,7 @@ import {
   protocolAwareBypass,
   PreparedInboundRequest,
 } from "@/routing/inbound-pipeline";
+import { handleFimEndpoint } from "@/routing/fim-pipeline";
 import {
   compileTransformerPlan,
   cancelReplacedProviderResponse,
@@ -1758,10 +1759,20 @@ export const registerApiRoutes = async (
     for (const routePath of [reg.path, `${reg.path}/`]) {
       if (claimedPaths.has(routePath)) continue;
       claimedPaths.add(routePath);
+      const isFim = reg.protocol === "openai_fim_completions";
       fastify.post(
         routePath,
         rateLimitOptions,
         async (req: FastifyRequest, reply: FastifyReply) => {
+          if (isFim) {
+            return handleFimEndpoint(
+              req,
+              reply,
+              fastify,
+              transformer,
+              routePath
+            );
+          }
           return handleTransformerEndpoint(
             req,
             reply,

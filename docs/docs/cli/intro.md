@@ -4,7 +4,9 @@ title: Getting Started
 
 # Getting Started
 
-Claude Code Router is a proxy that routes Claude Code requests through your configured LLM providers.
+Claude Code Router is a proxy that routes Anthropic Messages, OpenAI Chat
+Completions, OpenAI Responses, and FIM Completions through your configured LLM
+providers.
 
 ## Installation
 

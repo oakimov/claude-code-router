@@ -217,7 +217,7 @@ For complex configuration needs, use `configMappings` to precisely control value
   "description": "Multi-provider configuration example - Switch between OpenAI and DeepSeek",
   "author": "CCR Team",
   "keywords": ["openai", "deepseek", "multi-provider"],
-  "ccrVersion": "2.1.0",
+  "ccrVersion": "2.1.10",
   "schema": [
     {
       "id": "primaryProvider",
@@ -351,7 +351,7 @@ Example:
   "repository": "https://github.com/yourname/ccr-presets.git",
   "license": "MIT",
   "keywords": ["openai", "production"],
-  "ccrVersion": "2.1.0"
+  "ccrVersion": "2.1.10"
 }
 ```
 

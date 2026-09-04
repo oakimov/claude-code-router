@@ -262,6 +262,18 @@ claude-subscription,claude-sonnet-4-6
 chrome-nano,gemini-nano
 ```
 
+## FIM providers
+
+FIM uses a **separate** endpoint (`POST /v1/fim/completions`) and dedicated `fim.*` transformers. Prefer a second provider entry next to your chat provider (same API key). Full walkthroughs for **Codestral** and **local Qwen via LM Studio**: [FIM Completions API](/docs/server/api/fim-completions-api).
+
+| Transformer | Typical upstream | Notes |
+|-------------|------------------|-------|
+| `fim.mistral` | Codestral `/v1/fim/completions` | Same-kind request/response passthrough when inbound is mistral |
+| `fim.qwen` | LM Studio or DashScope `/v1/completions` + FIM tokens | Cross-family: response encoded to **inbound** wire (v1 → Codestral shape) |
+| `fim.deepseek` | DeepSeek `/beta/completions` | Cross-family: same inbound-wire encode |
+
+Client response follows inbound kind, not a forever-fixed Codestral shape.
+
 ## Auth Notes by Provider
 
 - **Standard API providers** usually use a normal API key in `api_key`

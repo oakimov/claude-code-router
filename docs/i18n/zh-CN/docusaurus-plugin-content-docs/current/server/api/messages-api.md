@@ -1,4 +1,12 @@
+---
+title: 消息 API
+---
+
 # 消息 API
+
+一等入站 Anthropic Messages 协议（`anthropic_messages`）。协议所有者：
+`Anthropic`。Chat Completions、Responses 与 FIM 为独立入站路由 — 见
+[API 概览](/docs/server/api/overview)。
 
 ## POST /v1/messages
 

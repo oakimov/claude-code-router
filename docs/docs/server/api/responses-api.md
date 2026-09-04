@@ -4,6 +4,10 @@ title: Responses API
 
 # Responses API
 
+First-class inbound OpenAI Responses protocol (`openai_responses`). Owner
+transformer: `openai-responses`. Messages, Chat Completions, and FIM are
+separate inbound routes — see [API Overview](/docs/server/api/overview).
+
 CCR accepts OpenAI Responses requests at:
 
 - `POST /v1/responses`

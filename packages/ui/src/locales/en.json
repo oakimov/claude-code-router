@@ -135,6 +135,7 @@
     "longContext": "Long Context",
     "longContextThreshold": "Context Threshold",
     "webSearch": "Web Search",
+    "fim": "FIM (fill-in-the-middle)",
     "image": "Image",
     "forceUseImageAgent": "Force Use Image Agent",
     "selectModel": "Select a model...",

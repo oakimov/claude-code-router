@@ -24,6 +24,8 @@ ccr model
 ```
 
 这将显示一个包含可用提供商和模型的交互式菜单。
+你可以将选择赋给 `Router.default` 或其他场景键
+（`background`、`think`、`longContext`、`webSearch`、`fim`、`image`）。
 
 ### 设置默认模型
 

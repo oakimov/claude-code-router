@@ -79,7 +79,7 @@ CLI 会打印一个可在宿主机浏览器中打开的 URL。登录后，浏览
 - `claude-auth` — 加载/刷新 OAuth access token，对调用方客户端做身份分类，并构建下文所述的身份/账单请求头。请求体与 URL 的构建交给 `Anthropic` 完成。
 - `Anthropic` — 注册客户端路由 `POST /v1/messages`，构建实际的 Anthropic Messages wire 请求体（`transformRequestIn`），并将 SSE/JSON 响应转换回 Unified 格式（`transformResponseOut`）。它会检测同一提供商链中前面是否存在 `claude-auth`，如果存在则跳过设置自己的 `Authorization`/`x-api-key` 请求头，确保不会覆盖 `claude-auth` 注入的 Bearer 令牌。
 
-请求可以来自 CCR 支持的任意入站协议 —— Anthropic Messages（`/v1/messages`）、OpenAI Chat Completions（`/v1/chat/completions`）或 OpenAI Responses（`/v1/responses`）。所有入站请求在路由前都会被归一化为内部 Unified 格式，因此非 Anthropic 形态的客户端（例如某个 OpenAI 形态的工具）同样可以被路由到 `claude-auth` 提供商，处理方式与 Anthropic 形态的客户端完全一致 —— 只是会被视为「非 Claude Code」客户端（见下文）。
+请求可以来自 CCR 支持的任意**聊天**入站协议 —— Anthropic Messages（`/v1/messages`）、OpenAI Chat Completions（`/v1/chat/completions`）或 OpenAI Responses（`/v1/responses`）。聊天入站请求在路由前都会被归一化为内部 Unified 格式，因此非 Anthropic 形态的客户端（例如某个 OpenAI 形态的工具）同样可以被路由到 `claude-auth` 提供商，处理方式与 Anthropic 形态的客户端完全一致 —— 只是会被视为「非 Claude Code」客户端（见下文）。FIM（`/v1/fim/completions`）是独立流水线，不使用 `claude-auth`。
 
 ### 客户端分类
 

@@ -184,6 +184,7 @@ The routing logic is handled by the core framework in the `@caeliq/llms` package
   - `think`: Thinking-intensive tasks (Plan Mode)
   - `longContext`: Long context (exceeds `longContextThreshold` tokens)
   - `webSearch`: Web search tasks
+  - `fim`: Fill-in-the-middle (`POST /v1/fim/completions`; separate pipeline)
   - `image`: Image-related tasks
 
 Token calculation uses `tiktoken` (cl100k_base) to estimate request size.
@@ -192,7 +193,14 @@ Token calculation uses `tiktoken` (cl100k_base) to estimate request size.
 
 > **⚠️ CRITICAL — Read this before working with transformers.**
 >
-> The request pipeline always follows this order (see `api/routes.ts`):
+> **Inbound client protocols** (see `routing/protocol-endpoints.ts`):
+> - `anthropic_messages` → `POST /v1/messages` (owner: `Anthropic`)
+> - `openai_chat_completions` → `POST /v1/chat/completions` (owner: `OpenAI`; alias `/chat/completions`)
+> - `openai_responses` → `POST /v1/responses` (owner: `openai-responses`; alias `/responses`)
+> - `openai_fim_completions` → `POST /v1/fim/completions` (owner: `Fim`; alias `/fim/completions`; **separate** FIM pipeline)
+>
+> Chat protocols share one lifecycle (`prepareInboundRequest` in
+> `routing/inbound-pipeline.ts` → `api/routes.ts`). Example Anthropic inbound:
 >
 >     Client → POST /v1/messages
 >       → AnthropicTransformer.transformRequestOut()        // Anthropic → Unified (OpenAI Chat Completions)
@@ -202,11 +210,30 @@ Token calculation uses `tiktoken` (cl100k_base) to estimate request size.
 >       → AnthropicTransformer.transformResponseIn()        // Unified (OpenAI) → Anthropic
 >       → Client
 >
-> **The Unified format IS the OpenAI Chat Completions format.** `AnthropicTransformer.transformRequestOut()` converts the incoming Anthropic body into Unified. By the time the provider chain runs, the body is already in OpenAI Chat Completions shape — no further conversion is needed for providers that accept that format.
+> Chat Completions and Responses follow the same shape with their own owners
+> (`OpenAI` / `openai-responses`) on the client legs. The response is always
+> encoded for the **inbound** protocol, not Anthropic-only.
 >
-> **`OpenAITransformer`** (in `openai.transformer.ts`) only sets `endPoint = "/v1/chat/completions"` to register a server-side route. It has no `transformRequestIn` because the body is already correct. It is NOT a passthrough — the transformation happened in the previous pipeline stage.
+> **The Unified chat format IS the OpenAI Chat Completions format.**
+> `AnthropicTransformer.transformRequestOut()` converts an Anthropic body into
+> Unified. Chat Completions inbound validates an already-Unified-shaped body.
+> Responses inbound projects `input`/tools onto Unified. By the time the
+> provider chain runs, chat bodies are Unified — no further conversion is needed
+> for providers that accept Chat Completions.
 >
-> **`OpenAIResponsesTransformer`** (in `openai.responses.transformer.ts`) converts the Unified body to the Responses API format (`/v1/responses`): `messages` → `input`, function tools → flat tool definitions, `web_search` → `{ type: "web_search" }`, etc. It uses shared utilities from `openai.util.ts` (`validateOpenAIToolCalls`, `injectPromptCaching`).
+> **`OpenAITransformer`** (`openai.transformer.ts`) owns `/v1/chat/completions`,
+> validates inbound Chat bodies via `transformRequestOut`, applies provider-side
+> cache policy in `transformRequestIn`, and shapes Chat client responses in
+> `transformResponseIn`.
+>
+> **`OpenAIResponsesTransformer`** (`openai.responses.transformer.ts`) owns
+> `/v1/responses` on the client side and, when used as provider egress, converts
+> Unified → Responses wire (`messages` → `input`, function tools → flat tool
+> definitions, `web_search` → `{ type: "web_search" }`, etc.). Shared utilities
+> live in `openai.util.ts` / `openai.responses.util.ts`.
+>
+> **FIM** does not use the chat Unified pipeline. See `routing/fim-pipeline.ts`
+> and `transformer/fim/`.
 
 The project uses transformers to adapt to different provider API differences:
 

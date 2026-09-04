@@ -283,7 +283,25 @@ sidebar_position: 2
 
 ```
 deepseek,deepseek-chat
+codex,gpt-5
+cursor,composer-2
+claude-subscription,claude-sonnet-4-6
+chrome-nano,gemini-nano
 ```
+
+## FIM 提供商
+
+FIM 使用**独立**端点（`POST /v1/fim/completions`）与专用 `fim.*` 转换器。建议在
+聊天提供商旁再写一条 FIM 条目（可共用 API key）。Codestral 与本地 Qwen（LM Studio）
+完整步骤见 [FIM Completions API](/docs/server/api/fim-completions-api)。
+
+| 转换器 | 典型上游 | 说明 |
+|--------|----------|------|
+| `fim.mistral` | Codestral `/v1/fim/completions` | 入站为 mistral 时同族请求/响应透传 |
+| `fim.qwen` | LM Studio 或 DashScope `/v1/completions` + FIM tokens | 跨族：响应编码回**入站**线格式（v1 → Codestral 形态） |
+| `fim.deepseek` | DeepSeek `/beta/completions` | 跨族：同样编码回入站线格式 |
+
+客户端响应跟随入站 kind，而不是永远固定为 Codestral 形态。
 
 ## 使用环境变量
 

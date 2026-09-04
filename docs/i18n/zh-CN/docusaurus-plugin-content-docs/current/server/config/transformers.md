@@ -12,86 +12,107 @@ sidebar_position: 4
 ### 什么是转换器？
 
 转换器是一个插件，它可以：
-- **转换请求**：从统一格式转换为提供商特定格式
-- **转换响应**：从提供商格式转换回统一格式
+- **拥有客户端协议**（注册路由，并在客户端线格式 ↔ Unified 之间转换）
+- **适配提供商线格式**（Unified ↔ 提供商特定的请求/响应）
 - **处理认证**：为提供商 API 处理认证
 - **修改请求**：添加或调整参数
 
-### 数据流
+`Providers[].transformer.use` 中的大多数条目是提供商中间件。以下四个转换器是
+**协议所有者** — 它们注册入站 HTTP 路由，不应仅为打开客户端路径而写入
+`transformer.use`：
+
+| 协议 | 所有者 | 规范路径 | 别名 |
+|------|--------|----------|------|
+| Anthropic Messages | `Anthropic` | `/v1/messages` | — |
+| OpenAI Chat Completions | `OpenAI` | `/v1/chat/completions` | `/chat/completions` |
+| OpenAI Responses | `openai-responses` | `/v1/responses` | `/responses` |
+| FIM Completions | `Fim` | `/v1/fim/completions` | `/fim/completions` |
+
+聊天协议（Messages、Chat Completions、Responses）共享同一套 Unified 聊天流水线。
+FIM 使用**独立的** Unified FIM 流水线与 `fim.*` 提供商转换器 — 见
+[FIM Completions API](/docs/server/api/fim-completions-api)。
+
+### 数据流（聊天协议）
 
 ```
-┌─────────────────┐
-│ 传入请求        │ (来自 Claude Code 的 Anthropic 格式)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  transformRequestOut            │ ← 将传入请求解析为统一格式
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  UnifiedChatRequest             │
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  transformRequestIn (可选)      │ ← 在发送前修改统一请求
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  提供商 API 调用                │
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  transformResponseIn (可选)     │ ← 将提供商响应转换为统一格式
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────┐
-│  transformResponseOut (可选)    │ ← 将统一响应转换为 Anthropic 格式
-└────────┬────────────────────────┘
-         │
-         ▼
-┌─────────────────┐
-│ 传出响应        │ (返回给 Claude Code 的 Anthropic 格式)
-└─────────────────┘
+┌──────────────────────┐
+│ 入站客户端线格式     │  Messages | Chat Completions | Responses
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  协议所有者: transformRequestOut         │  客户端线格式 → UnifiedChatRequest
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  UnifiedChatRequest                      │  路由 + 提供商链输入
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  provider.use[]: transformRequestIn      │  Unified → 提供商线格式
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  提供商 API 调用                         │
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  provider.use[]: transformResponseOut    │  提供商响应 → Unified 形态
+│  （逆序）                                │
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────┐
+│  协议所有者: transformResponseIn         │  Unified → 与入站相同的客户端协议
+└──────────┬───────────────────────────────┘
+           │
+           ▼
+┌──────────────────────┐
+│ 出站客户端线格式     │  与入站协议一致
+└──────────────────────┘
 ```
+
+同协议 / 原生线路径可保留原始客户端请求体出站（例如原生 Claude Desktop/CLI
+到 Anthropic）。跨协议路由始终经 Unified 归一化，再按入站协议重建客户端响应。
 
 ### 转换器接口
 
-所有转换器都实现以下接口：
+所有转换器都实现以下接口。方法名相对于**提供商端口**：`*In` 面向上游，
+`*Out` 背向上游。在**协议所有者**上，`transformRequestOut` /
+`transformResponseIn` 是面向客户端的腿（客户端 → Unified → 客户端）。
 
 ```typescript
 interface Transformer {
-  // 将统一请求转换为提供商特定格式
+  // Unified → 提供商特定请求（提供商中间件 / 出站所有者）
   transformRequestIn?: (
     request: UnifiedChatRequest,
     provider: LLMProvider,
     context: TransformerContext
   ) => Promise<Record<string, any>>;
 
-  // 将提供商请求转换为统一格式
+  // 客户端线格式 → Unified（协议所有者）
   transformRequestOut?: (
     request: any,
     context: TransformerContext
   ) => Promise<UnifiedChatRequest>;
 
-  // 将提供商响应转换为统一格式
+  // Unified → 客户端线格式（协议所有者）
   transformResponseIn?: (
     response: Response,
     context?: TransformerContext
   ) => Promise<Response>;
 
-  // 将统一响应转换为提供商格式
+  // 提供商响应 → Unified 形态（提供商中间件，逆序）
   transformResponseOut?: (
     response: Response,
     context: TransformerContext
   ) => Promise<Response>;
 
-  // 自定义端点路径（可选）
+  // 作为协议所有者时注册客户端路由
   endPoint?: string;
 
   // 转换器名称（用于自定义转换器）
@@ -154,9 +175,42 @@ interface UnifiedMessage {
 
 ## 内置转换器
 
-### anthropic
+### 协议所有者（客户端路由）
 
-将请求转换为兼容 Anthropic 风格的 API：
+这些转换器注册入站路由。**不要**仅为打开客户端路径而把它们放进
+`transformer.use` — 路由表已拥有该职责。当**目标**使用该协议时，它们*会*
+出现在 `transformer.use` 中（例如 `"use": ["openai-responses", "codex"]` 或
+`"use": ["Anthropic", "claude-auth"]`）。
+
+#### Anthropic
+
+`POST /v1/messages` 的协议所有者。上游为 Anthropic Messages 时也用作提供商出站。
+
+**客户端腿：** `transformRequestOut`（Anthropic → Unified）、
+`transformResponseIn`（Unified → Anthropic）。
+
+**提供商腿：** `transformRequestIn` / `transformResponseOut` 在需要时重建与解析
+Anthropic 线格式。
+
+#### OpenAI
+
+`POST /v1/chat/completions`（别名 `/chat/completions`）的协议所有者。
+Unified **即** Chat Completions 形态，因此入站 `transformRequestOut` 做校验与
+轻量归一化。提供商侧 `transformRequestIn` 应用 OpenAI 原生缓存策略；
+`transformResponseIn` 塑造 Chat 客户端输出（例如 `reasoning_content`）。
+
+#### openai-responses
+
+`POST /v1/responses`（别名 `/responses`）的协议所有者。在客户端腿上转换
+Responses `input` / tools ↔ Unified；作为提供商出站时重建 Responses 线格式
+（含加密 reasoning items）。Codex 目标务必写成
+`"use": ["openai-responses", "codex"]`。
+
+### anthropic（配置示例）
+
+部分文档/示例仍使用顶层 `transformers` 条目名 `"anthropic"`。已注册的协议所有者
+/ 提供商名为 **`Anthropic`**（见 `"use": ["claude-auth", "Anthropic"]`）。配置目标时
+优先使用提供商 `transformer.use`，而非遗留顶层数组。
 
 ```json
 {
@@ -168,12 +222,6 @@ interface UnifiedMessage {
   ]
 }
 ```
-
-**功能：**
-- 在 Anthropic 消息格式和 OpenAI 格式之间转换
-- 处理工具调用和工具结果
-- 支持思考/推理内容块
-- 管理流式响应
 
 ### cursor-sdk
 
@@ -348,6 +396,25 @@ Gemini 3（以及 Antigravity）会在每个 `functionCall` part 上附带不透
   ]
 }
 ```
+
+## FIM 转换器
+
+仅用于 FIM 提供商上的 `POST /v1/fim/completions`（与聊天独立的流水线）：
+
+| 名称 | 角色 |
+|------|------|
+| `Fim` | 协议所有者（客户端路由）— 不列入 `transformer.use` |
+| `fim.mistral` | Codestral/Mistral FIM URL + 鉴权；同族 body 透传 |
+| `fim.deepseek` | DeepSeek beta completions FIM |
+| `fim.qwen` | Qwen completions FIM（LM Studio / DashScope） |
+
+出站请求编码因 `fim.*` 而异。响应编码为**入站**客户端线格式（v1：Codestral/Mistral）。
+同族路径透传响应 body。
+
+**Codestral** 与 **LM Studio Qwen** 逐步配置：
+[FIM Completions API](/docs/server/api/fim-completions-api)。
+
+不要在同一提供商上将聊天转换器（`mistral`、`deepseek` 等）与 `fim.*` 叠加。
 
 ## 创建自定义转换器
 

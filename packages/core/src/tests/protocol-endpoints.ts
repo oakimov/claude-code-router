@@ -45,6 +45,19 @@ function main() {
     assert.equal(alias!.isAlias, true);
   }
 
+  // FIM Completions — canonical + alias
+  {
+    const canonical = matchClientProtocol("POST", "/v1/fim/completions");
+    assert.ok(canonical);
+    assert.equal(canonical!.protocol, "openai_fim_completions");
+    assert.equal(canonical!.ownerTransformerName, "Fim");
+
+    const alias = matchClientProtocol("POST", "/fim/completions");
+    assert.ok(alias);
+    assert.equal(alias!.isAlias, true);
+    assert.equal(alias!.canonicalPath, "/v1/fim/completions");
+  }
+
   // Preset prefix
   {
     const m = matchClientProtocol(
@@ -98,7 +111,7 @@ function main() {
   assert.equal(isRoutedLlmPost("POST", "/v1/messages"), true);
   assert.equal(isRoutedLlmPost("POST", "/v1/completions"), false);
 
-  // Registration table contains only Anthropic Messages and OpenAI routes.
+  // Registration table: Anthropic, OpenAI Chat/Responses, and FIM.
   const regs = listClientRouteRegistrations();
   assert.ok(regs.some((r) => r.path === "/v1/messages" && r.isCanonical));
   assert.ok(
@@ -107,12 +120,16 @@ function main() {
     )
   );
   assert.ok(regs.some((r) => r.path === "/responses" && !r.isCanonical));
+  assert.ok(
+    regs.some((r) => r.path === "/v1/fim/completions" && r.isCanonical)
+  );
   assert.deepEqual(
     new Set(regs.map((r) => r.protocol)),
     new Set([
       "anthropic_messages",
       "openai_chat_completions",
       "openai_responses",
+      "openai_fim_completions",
     ])
   );
 

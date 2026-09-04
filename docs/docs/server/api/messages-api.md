@@ -4,6 +4,10 @@ title: Messages API
 
 # Messages API
 
+First-class inbound Anthropic Messages protocol (`anthropic_messages`). Owner
+transformer: `Anthropic`. Chat Completions, Responses, and FIM are separate
+inbound routes — see [API Overview](/docs/server/api/overview).
+
 ## POST /v1/messages
 
 Send messages to LLM, compatible with Anthropic Claude API format.
