@@ -18,7 +18,7 @@ const whoamiCache = new Map<
   { value: PatAuth; expiresAt: number }
 >();
 const whoamiRequests = new Map<string, Promise<PatAuth>>();
-const CODEX_CLI_VERSION = "0.145.0";
+const CODEX_CLI_VERSION = "0.153.1";
 const CODEX_ORIGINATOR = "codex_cli_rs";
 const CODEX_REQUIRES_RESPONSES =
   'codex requires openai-responses in transformer.use (e.g. ["openai-responses", "codex"]). Codex is ChatGPT auth/headers middleware on the Responses wire and does not convert Chat Completions bodies.';

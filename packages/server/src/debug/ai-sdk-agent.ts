@@ -55,7 +55,7 @@ function createCodexFetch(): typeof fetch {
           : input;
     const url = new URL(rawUrl);
     if (!url.searchParams.has("client_version")) {
-      url.searchParams.set("client_version", "0.145.0");
+      url.searchParams.set("client_version", "0.153.1");
     }
     const nextInput =
       input instanceof Request ? new Request(url, input) : url;

@@ -226,7 +226,7 @@ async function resolveDirectAuth(
     const headers: Record<string, string> = {
       Authorization: `Bearer ${tokens.access_token}`,
       originator: "codex_cli_rs",
-      "User-Agent": "codex_cli_rs/0.145.0",
+      "User-Agent": "codex_cli_rs/0.153.1",
     };
     if (metadata.accountId) headers["ChatGPT-Account-ID"] = metadata.accountId;
     if (metadata.isFedramp) headers["X-OpenAI-Fedramp"] = "true";
@@ -244,7 +244,7 @@ function withCodexClientVersion(url: string, authKind: OAuthKind | null): string
   if (authKind !== "codex") return url;
   const parsed = new URL(url);
   if (!parsed.searchParams.has("client_version")) {
-    parsed.searchParams.set("client_version", "0.145.0");
+    parsed.searchParams.set("client_version", "0.153.1");
   }
   return parsed.toString();
 }
