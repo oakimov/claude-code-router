@@ -156,3 +156,60 @@ export function toAnthropicReasoningEffort(
   if (effort === "ultra") return "max";
   return effort as Exclude<ThinkLevel, "none" | "minimal" | "ultra">;
 }
+
+/**
+ * GPT-6 family slugs (`gpt-6`, `gpt-6-astra`, `openai/gpt-6-astra`,
+ * `codex,gpt-6-astra`). Anchored so `gpt-60` / `gpt-5.6` do not match.
+ */
+export function isGpt6FamilyModel(model: unknown): boolean {
+  if (typeof model !== "string" || !model) return false;
+  return /(?:^|[/,:])gpt-6(?:$|[.-])/i.test(model);
+}
+
+/** Astra rejects `none` / `minimal`; OpenAI's migration floor is `low`. */
+export function coerceGpt6ReasoningEffort(
+  model: unknown,
+  effort: ThinkLevel | undefined
+): ThinkLevel | undefined {
+  if (!effort || !isGpt6FamilyModel(model)) return effort;
+  if (effort === "none" || effort === "minimal") return "low";
+  return effort;
+}
+
+/**
+ * Remap unsupported GPT-6 efforts on a Responses/Unified request in place.
+ * Covers convert (`openai-responses`) and same-protocol wire-keep (`codex`).
+ */
+export function applyGpt6ReasoningEffortCoercion(request: {
+  model?: unknown;
+  reasoning?: { effort?: unknown; enabled?: boolean } | null;
+}): void {
+  if (!request.reasoning || !isGpt6FamilyModel(request.model)) return;
+  const effort = normalizeReasoningEffort(request.reasoning.effort);
+  const coerced = coerceGpt6ReasoningEffort(request.model, effort);
+  if (!coerced || coerced === effort) return;
+  request.reasoning.effort = coerced;
+  if (request.reasoning.enabled === false) {
+    request.reasoning.enabled = true;
+  }
+}
+
+/**
+ * GPT-6 Astra rejects temperature / top_p / logprobs on Responses. Strip in
+ * place when the model is in the gpt-6 family.
+ */
+export function stripGpt6UnsupportedSampling(
+  request: Record<string, any>
+): void {
+  if (!isGpt6FamilyModel(request.model)) return;
+  delete request.temperature;
+  delete request.top_p;
+  delete request.top_logprobs;
+  delete request.logprobs;
+  if (!Array.isArray(request.include)) return;
+  const next = request.include.filter(
+    (value: unknown) => value !== "message.output_text.logprobs"
+  );
+  if (next.length === 0) delete request.include;
+  else request.include = next;
+}

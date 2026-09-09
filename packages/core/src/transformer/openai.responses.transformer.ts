@@ -11,6 +11,8 @@ import {
   isReasoningDisabled,
   normalizeReasoningEffort,
   resolveOutboundReasoningSummary,
+  coerceGpt6ReasoningEffort,
+  stripGpt6UnsupportedSampling,
 } from "@/utils/reasoning-effort";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
 import {
@@ -392,12 +394,27 @@ export class OpenAIResponsesTransformer implements Transformer {
     delete (request as any).max_completion_tokens;
 
     if (request.reasoning) {
-      const effort = isReasoningDisabled(request.reasoning, request.thinking)
+      const rawEffort = isReasoningDisabled(request.reasoning, request.thinking)
         ? "none"
         : normalizeReasoningEffort(request.reasoning.effort);
+      // GPT-6 Astra rejects none/minimal — migration floor is low.
+      const effort = coerceGpt6ReasoningEffort(request.model, rawEffort);
+      const coercedUnsupportedEffort = effort !== rawEffort;
       const summary =
         effort !== "none"
-          ? resolveOutboundReasoningSummary(request, provider)
+          ? resolveOutboundReasoningSummary(
+              {
+                reasoning: {
+                  ...request.reasoning,
+                  ...(effort ? { effort } : {}),
+                  enabled: true,
+                },
+                thinking: coercedUnsupportedEffort
+                  ? undefined
+                  : request.thinking,
+              },
+              provider
+            )
           : undefined;
       request.reasoning = {
         ...(effort ? { effort } : {}),
@@ -648,6 +665,8 @@ export class OpenAIResponsesTransformer implements Transformer {
     } else {
       delete (request as any).store;
     }
+
+    stripGpt6UnsupportedSampling(request as any);
 
     return request;
   }

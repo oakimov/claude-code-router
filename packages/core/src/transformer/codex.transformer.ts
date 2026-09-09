@@ -11,6 +11,10 @@ import {
   toCodexOAuthAuth,
 } from "../utils/codex-auth";
 import { unwrapCustomToolInput } from "../utils/openai.responses.util";
+import {
+  applyGpt6ReasoningEffortCoercion,
+  stripGpt6UnsupportedSampling,
+} from "../utils/reasoning-effort";
 
 const PAT_METADATA_TTL_MS = 5 * 60 * 1000;
 const whoamiCache = new Map<
@@ -317,9 +321,18 @@ function applyCodexWireConstraints(
   context: any
 ): void {
   delete request.temperature;
+  delete request.top_p;
+  delete request.top_logprobs;
+  delete request.logprobs;
   delete request.max_tokens;
   delete request.max_completion_tokens;
   delete request.max_output_tokens;
+
+  // Same-protocol Responses→Codex skips the Responses owner rebuild; coerce
+  // GPT-6 unsupported efforts and sampling knobs here so wire-keep still
+  // reaches a legal ChatGPT backend body.
+  applyGpt6ReasoningEffortCoercion(request);
+  stripGpt6UnsupportedSampling(request);
 
   foldSystemItemsIntoInstructions(request);
   restoreCustomTools(request, getCustomToolNames(context));

@@ -4,9 +4,9 @@ This repo publishes:
 
 | Package | Path | Published version |
 |---|---|---|
-| `@caeliq/ccr-shared` | `packages/shared` | `2.1.10` |
-| `@caeliq/llms` | `packages/core` | `1.0.68` |
-| `@caeliq/claude-code-router` | `packages/cli` | `2.1.10` |
+| `@caeliq/ccr-shared` | `packages/shared` | `2.1.11` |
+| `@caeliq/llms` | `packages/core` | `1.0.69` |
+| `@caeliq/claude-code-router` | `packages/cli` | `2.1.11` |
 
 GitHub repo used for provenance / trusted publishing: `oakimov/claude-code-router`  
 npm org: `caeliq`  
@@ -91,7 +91,7 @@ Workflow: `.github/workflows/npm-publish.yml`
 
 Triggers:
 
-- Push of a version tag: `v*.*.*` (example: `v2.1.4`)
+- Push of a version tag: `v*.*.*` (example: `v2.1.11`)
 - Manual **workflow_dispatch** (optional dry-run)
 
 It builds with pnpm, then runs `scripts/release.sh npm` with:
@@ -112,8 +112,8 @@ It builds with pnpm, then runs `scripts/release.sh npm` with:
 2. Commit and push to `github` (`main`)
 3. Tag and push (prefer matching the CLI version):
    ```bash
-   git tag v2.1.10
-   git push github v2.1.10
+   git tag v2.1.11
+   git push github v2.1.11
    ```
 4. Watch **Actions → Publish npm packages**
 
