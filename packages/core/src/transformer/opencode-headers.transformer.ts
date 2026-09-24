@@ -2,7 +2,10 @@ import { randomBytes, createHash } from "crypto";
 import { Transformer } from "@/types/transformer";
 import { sendUnifiedRequest } from "@/utils/request";
 import { createApiError } from "@/api/middleware";
-import { sanitizeUpstreamErrorText } from "@/utils/redact";
+import {
+  sanitizeErrorForLog,
+  sanitizeUpstreamErrorText,
+} from "@/utils/redact";
 import {
   delay,
   isClientAbortError,
@@ -399,7 +402,9 @@ export class OpencodeHeadersTransformer implements Transformer {
       if (finished) void reader.cancel().catch(() => {});
     } catch (error) {
       if (isClientAbortError(error)) throw error;
-      return failure(error instanceof Error ? error.message : String(error));
+      // Keep exception details server-side; do not echo messages/stacks to clients.
+      logger?.warn?.(sanitizeErrorForLog(error), "opencode: forced stream collection failed");
+      return failure("Upstream response stream failed");
     }
     if (malformed) {
       return failure("Malformed upstream event stream");

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { OpencodeHeadersTransformer } from "../transformer/opencode-headers.transformer";
 import { OpenAIResponsesTransformer } from "../transformer/openai.responses.transformer";
@@ -15,7 +16,7 @@ type Sent = {
 function makeContext() {
   return {
     req: {
-      sessionId: `gate-stubs-${Math.random().toString(36).slice(2)}`,
+      sessionId: `gate-stubs-${randomBytes(8).toString("hex")}`,
       log: { warn() {}, info() {}, debug() {} },
       server: { configService: { getHttpsProxy: () => undefined } },
     },
@@ -710,13 +711,13 @@ async function sessionAffinitySurvivesToolHistory() {
   const user = {
     type: "message",
     role: "user",
-    content: [{ type: "input_text", text: `replay ${Math.random()}` }],
+    content: [{ type: "input_text", text: `replay ${randomUUID()}` }],
   };
   const history = [
     { type: "function_call", name: "bash", call_id: "call_1", arguments: '{"command":"pwd"}' },
     { type: "function_call_output", call_id: "call_1", output: "/tmp" },
   ];
-  const clientKey = `client-session-${Math.random()}`;
+  const clientKey = `client-session-${randomUUID()}`;
   for (const cacheKey of [clientKey, undefined]) {
     const first = { model: FREE, input: [user], stream: true, ...(cacheKey ? { prompt_cache_key: cacheKey } : {}) };
     const second = { ...first, input: [user, ...history] };
