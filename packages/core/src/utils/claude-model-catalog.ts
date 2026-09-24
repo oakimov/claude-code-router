@@ -18,6 +18,21 @@ export interface ClaudeModelCatalogEntry {
   maxOutputTokens: { default: number; upper: number };
   defaultEffort?: string;
   capabilities: string[];
+  /**
+   * CCR-owned Messages API request constraints. Not part of Claude Code's
+   * catalog (Claude Code simply never sends these shapes); sourced from
+   * Anthropic's per-model API documentation. Each flag names a request shape
+   * the model rejects with HTTP 400, so third-party emulation must normalize
+   * it away before sending.
+   */
+  apiConstraints?: {
+    /** `thinking: {type: "disabled"}` is rejected; thinking is always on. */
+    thinkingAlwaysOn?: boolean;
+    /** Forced `tool_choice` (`any` / `tool`) is rejected. */
+    noForcedToolChoice?: boolean;
+    /** `temperature` / `top_p` / `top_k` are rejected. */
+    noSamplingParams?: boolean;
+  };
 }
 
 export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
@@ -89,6 +104,7 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
       "mid_conv_system",
       "context_management",
     ],
+    apiConstraints: { noSamplingParams: true },
   },
   "claude-opus-4-0": {
     window: 200000,
@@ -120,10 +136,19 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
     supportsOneMillionBeta: true,
     supportsOneMillionSuffix: true,
     maxOutputTokens: { default: 64000, upper: 128000 },
-    defaultEffort: "xhigh",
     capabilities: ["effort", "max_effort", "adaptive_thinking", "context_management"],
   },
   "claude-opus-4-7": {
+    window: 1e6,
+    nativeOneMillion: true,
+    supportsOneMillionBeta: true,
+    supportsOneMillionSuffix: true,
+    maxOutputTokens: { default: 64000, upper: 128000 },
+    defaultEffort: "xhigh",
+    capabilities: ["effort", "max_effort", "xhigh_effort", "adaptive_thinking", "context_management"],
+    apiConstraints: { noSamplingParams: true },
+  },
+  "claude-opus-4-8": {
     window: 1e6,
     nativeOneMillion: true,
     supportsOneMillionBeta: true,
@@ -141,8 +166,9 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
       "fast_mode",
       "lean_prompt",
     ],
+    apiConstraints: { noSamplingParams: true },
   },
-  "claude-opus-4-8": {
+  "claude-opus-5": {
     window: 1e6,
     nativeOneMillion: true,
     supportsOneMillionBeta: true,
@@ -163,8 +189,9 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
       "refusal_fallback",
       "opus_5_prompt_bundle",
     ],
+    apiConstraints: { noSamplingParams: true },
   },
-  "claude-opus-5": {
+  "claude-opus-5-5": {
     window: 1e6,
     nativeOneMillion: true,
     supportsOneMillionBeta: true,
@@ -187,29 +214,11 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
       "refusal_fallback",
       "opus_5_5_prompt_bundle",
     ],
-  },
-  "claude-opus-5-5": {
-    window: 1e6,
-    nativeOneMillion: true,
-    supportsOneMillionBeta: true,
-    supportsOneMillionSuffix: false,
-    maxOutputTokens: { default: 64000, upper: 128000 },
-    defaultEffort: "high",
-    capabilities: [
-      "effort",
-      "max_effort",
-      "xhigh_effort",
-      "adaptive_thinking",
-      "rejects_disabled_thinking",
-      "always_adaptive_thinking",
-      "mid_conv_system",
-      "mid_conv_tool_change",
-      "context_management",
-      "lean_prompt",
-      "fable_5_mitigations",
-      "refusal_fallback",
-      "no_forced_tool_choice",
-    ],
+    apiConstraints: {
+      thinkingAlwaysOn: true,
+      noForcedToolChoice: true,
+      noSamplingParams: true,
+    },
   },
   "claude-fable-5-1": {
     window: 1e6,
@@ -224,7 +233,6 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
       "xhigh_effort",
       "adaptive_thinking",
       "rejects_disabled_thinking",
-      "always_adaptive_thinking",
       "mid_conv_system",
       "mid_conv_tool_change",
       "per_turn_effort",
@@ -234,8 +242,12 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
       "fable_5_mitigations",
       "refusal_fallback",
       "fable_5_1_prompt_bundle",
-      "no_forced_tool_choice",
     ],
+    apiConstraints: {
+      thinkingAlwaysOn: true,
+      noForcedToolChoice: true,
+      noSamplingParams: true,
+    },
   },
   "claude-fable-5": {
     window: 1e6,
@@ -252,14 +264,12 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
       "rejects_disabled_thinking",
       "mid_conv_system",
       "mid_conv_tool_change",
-      "per_turn_effort",
-      "per_turn_timing",
       "context_management",
       "lean_prompt",
       "fable_5_mitigations",
       "refusal_fallback",
-      "fable_5_1_prompt_bundle",
     ],
+    apiConstraints: { thinkingAlwaysOn: true, noSamplingParams: true },
   },
   "claude-mythos-5": {
     window: 1e6,
@@ -268,6 +278,33 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
     supportsOneMillionSuffix: false,
     maxOutputTokens: { default: 64000, upper: 128000 },
     capabilities: [],
+  },
+  "claude-mythos-5-1": {
+    window: 1e6,
+    nativeOneMillion: true,
+    supportsOneMillionBeta: true,
+    supportsOneMillionSuffix: false,
+    maxOutputTokens: { default: 64000, upper: 128000 },
+    defaultEffort: "high",
+    capabilities: [
+      "effort",
+      "max_effort",
+      "xhigh_effort",
+      "adaptive_thinking",
+      "rejects_disabled_thinking",
+      "mid_conv_system",
+      "mid_conv_tool_change",
+      "per_turn_timing",
+      "context_management",
+      "lean_prompt",
+      "fable_5_mitigations",
+      "fable_5_1_prompt_bundle",
+    ],
+    apiConstraints: {
+      thinkingAlwaysOn: true,
+      noForcedToolChoice: true,
+      noSamplingParams: true,
+    },
   },
 };
 

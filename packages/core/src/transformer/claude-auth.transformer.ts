@@ -175,9 +175,11 @@ export function modelIdForRequestedOneMillionBeta(
  */
 export function applyClaudeModelCapabilityAdjustments(
   anthropicBody: Record<string, any>,
-  entry: ClaudeModelCatalogEntry | undefined
+  entry: ClaudeModelCatalogEntry | undefined,
+  logger?: any
 ): void {
   const cap = (capability: string) => catalogEntryHasCapability(entry, capability);
+  const constraints = entry?.apiConstraints;
 
   const stripEffort = (container: Record<string, any> | undefined) => {
     if (container && typeof container === "object" && !cap("effort")) {
@@ -191,14 +193,27 @@ export function applyClaudeModelCapabilityAdjustments(
     anthropicBody.thinking &&
     typeof anthropicBody.thinking === "object" &&
     anthropicBody.thinking.type === "disabled" &&
-    cap("always_adaptive_thinking")
+    constraints?.thinkingAlwaysOn
   ) {
-    // Opus 5.5 / Fable 5.1 return 400 for disabled thinking (and for manual
+    // These models return 400 for disabled thinking (and for manual
     // enabled-budget thinking, which the branch below already normalizes):
-    // thinking is always on there, effort is the only knob. Gated on the
-    // dedicated capability because opus-5 also carries
-    // rejects_disabled_thinking yet still accepts disabled at low effort.
+    // thinking is always on there, effort is the only knob.
     anthropicBody.thinking = { type: "adaptive", display: "summarized" };
+  }
+
+  if (constraints?.noSamplingParams) {
+    // Sampling knobs are removed on these models and return 400 whether or
+    // not thinking is on; Claude Code never sends them.
+    const dropped = ["temperature", "top_p", "top_k"].filter(
+      (field) => anthropicBody[field] !== undefined
+    );
+    for (const field of dropped) delete anthropicBody[field];
+    if (dropped.length > 0) {
+      logger?.debug?.(
+        { model: anthropicBody.model, dropped },
+        "claude-auth: dropped sampling params the model rejects"
+      );
+    }
   }
 
   if (
@@ -206,11 +221,24 @@ export function applyClaudeModelCapabilityAdjustments(
     typeof anthropicBody.tool_choice === "object" &&
     (anthropicBody.tool_choice.type === "any" ||
       anthropicBody.tool_choice.type === "tool") &&
-    cap("no_forced_tool_choice")
+    constraints?.noForcedToolChoice
   ) {
-    // Opus 5.5 / Fable 5.1 return 400 for forced tool use; auto plus strict
-    // tool use is the supported equivalent.
-    const { disable_parallel_tool_use } = anthropicBody.tool_choice;
+    // Forced tool use returns 400 on these models. `auto` is the only
+    // accepted mode, so the forcing guarantee is lost: the model may answer
+    // in text or pick another tool. Anthropic's suggested substitute (an
+    // instruction naming the tool) is not injected here: a per-request edit
+    // to the user turn would be absent from the client's replayed history,
+    // which preserved thinking rejects as an edited transcript.
+    const forced = anthropicBody.tool_choice;
+    logger?.warn?.(
+      {
+        model: anthropicBody.model,
+        toolChoice: forced.type,
+        tool: forced.type === "tool" ? forced.name : undefined,
+      },
+      "claude-auth: forced tool_choice unsupported by model; downgraded to auto"
+    );
+    const { disable_parallel_tool_use } = forced;
     anthropicBody.tool_choice = {
       ...(typeof disable_parallel_tool_use === "boolean"
         ? { disable_parallel_tool_use }
@@ -497,7 +525,7 @@ export class ClaudeAuthTransformer implements Transformer {
       const catalogEntry = lookupClaudeModelCatalogEntry(request.model);
       if (context) {
         context.claudeAuthPostBuildHook = (anthropicBody: Record<string, any>) => {
-          applyClaudeModelCapabilityAdjustments(anthropicBody, catalogEntry);
+          applyClaudeModelCapabilityAdjustments(anthropicBody, catalogEntry, this.logger);
           anthropicBody.metadata = {
             ...(anthropicBody.metadata || {}),
             ...buildSynthesizedUserMetadata(),

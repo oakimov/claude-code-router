@@ -222,14 +222,21 @@ function responsesTerminalErrorResponse(
   );
 }
 
+function isIncompleteResponsesPayload(responseData: {
+  status?: string;
+  incomplete_details?: { reason?: string } | null;
+}): boolean {
+  return (
+    responseData.status === "incomplete" ||
+    responseData.incomplete_details != null
+  );
+}
+
 function chatFinishReason(
   responseData: ResponsesAPIPayload,
   hasToolCalls: boolean
 ): "tool_calls" | "stop" | "length" | "content_filter" {
-  const incomplete =
-    responseData.status === "incomplete" ||
-    responseData.incomplete_details != null;
-  if (incomplete) {
+  if (isIncompleteResponsesPayload(responseData)) {
     return responseData.incomplete_details?.reason === "content_filter"
       ? "content_filter"
       : "length";
@@ -784,7 +791,9 @@ export class OpenAIResponsesTransformer implements Transformer {
         ) {
           return responsesTerminalErrorResponse(jsonResponse, response);
         }
-        if (shouldCacheEncrypted) {
+        // Only a completed response may become replay state: incomplete
+        // output can end mid-reasoning or mid-function_call arguments.
+        if (shouldCacheEncrypted && !isIncompleteResponsesPayload(jsonResponse)) {
           recordEncryptedReasoningResponseMessage(
             assistantMessageFromResponsesOutput(jsonResponse.output),
             context
@@ -924,11 +933,13 @@ export class OpenAIResponsesTransformer implements Transformer {
               // and never sends completed. Leaving the stream open makes
               // Claude Code sit on message_start until it aborts.
               // Ciphertext often arrives only on the completed reasoning item.
+              // Only a completed response may become replay state: incomplete
+              // output can end mid-reasoning or mid-function_call arguments.
               if (
                 data.type === "response.completed" ||
                 data.type === "response.incomplete"
               ) {
-                if (shouldCacheEncrypted) {
+                if (shouldCacheEncrypted && data.type === "response.completed") {
                   recordEncryptedReasoningResponseMessage(
                     assistantMessageFromResponsesOutput(
                       encryptedRecorder?.completedOutput()

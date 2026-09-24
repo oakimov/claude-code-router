@@ -261,6 +261,34 @@ sidebar_position: 2
 }
 ```
 
+### OpenCode Zen
+
+`opencode-headers` 以 OpenCode CLI 的身份发送请求（会话、请求和项目请求头），并由它自己完成对 Zen 的上游调用。请在提供商级别、协议转换器之后使用它。
+
+```json
+{
+  "name": "opencode",
+  "api_base_url": "https://opencode.ai/zen/v1/responses",
+  "api_key": "$OPENCODE_API_KEY",
+  "models": ["muse-spark-1.3-contributor-free"],
+  "transformer": {
+    "use": ["openai-responses", "opencode-headers"]
+  }
+}
+```
+
+**会话与重试。** 每个对话都有一个持久化的 `x-opencode-session`（重启后不变）：客户端自带会话 ID 时（Claude Code metadata 或 `x-session-id` 等请求头）以它为键，否则以首条消息指纹为键。Zen 按该会话路由。瞬时失败（408/409/425/429/5xx、网络错误）使用同一会话重试；Zen 的确定性坏分桶错误（`401 No provider available`、`400 … Upstream request failed`）会重新生成会话。重试耗尽后，坏分桶错误以 `503` 返回，以便 CCR 的常规回退机制切换到其他模型。
+
+**免费模型**（`opencode.ai/zen/` 端点上以 `-free` 结尾的模型）只有在请求看起来来自 OpenCode 客户端时才能通过 Zen 的免费额度检查。对这些模型，CCR 会：
+
+- 上游始终使用流式请求；非流式客户端仍会收到由流汇总而成的 JSON 响应。
+- 在客户端缺少时添加名为 `read` 和 `shell` 的函数工具。每个桩工具会复制客户端对应工具的 schema（`Read` / `read_file`、`Bash` / `pwsh` / `exec`，或 `run_code` 类工具），响应中对桩工具的调用会改回该客户端工具名。没有对应工具的桩会提示模型不要调用。
+- 将 `prompt_cache_key` 设为 Zen 会话 ID（Responses 协议）；使用其他 key 时 Zen 会以 `response.incomplete` 停止。
+- 当客户端启用了推理但未指定摘要级别时，请求 `reasoning.summary: "detailed"`。
+- 对停滞的流执行故障转移：CCR 会暂存响应，直到 Zen 发送实际输出。若 30 秒内没有完整事件，或 60 秒内没有输出，则返回 `504`（可触发回退）。不输出摘要的推理项最多可静默 5 分钟。输出开始后，60 秒无数据（推理期间为 5 分钟）会以错误结束流。
+
+付费 Zen 模型的请求保持不变。
+
 ## 提供商配置选项
 
 | 字段 | 类型 | 必填 | 说明 |

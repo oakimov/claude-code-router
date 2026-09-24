@@ -3,7 +3,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { backupConfigFile, readConfigFile, readConfigFileRaw, writeConfigFile } from "./index";
-import { CONFIG_FILE, resolveCodexPat, resolveXaiApiKey } from "@caeliq/ccr-shared";
+import {
+  CODEX_CLI_VERSION,
+  CONFIG_FILE,
+  resolveCodexPat,
+  resolveXaiApiKey,
+} from "@caeliq/ccr-shared";
 import type { ProviderConfig } from "@caeliq/ccr-shared";
 import {
   buildCliCodexHeaders,
@@ -28,8 +33,6 @@ const QWEN_AUTH_FILE = join(homedir(), ".claude-code-router", "qwen_auth.json");
 const XAI_AUTH_FILE = join(homedir(), ".claude-code-router", "xai_auth.json");
 const CONFIG_PATH_DISPLAY = "~/.claude-code-router/config.json";
 const READABLE_CONFIG_FILE = process.env.CCR_CONFIG_FILE || CONFIG_FILE;
-const DEFAULT_CODEX_CLIENT_VERSION =
-  process.env.CODEX_CLI_VERSION || "0.156.1";
 const CLAUDE_OAUTH_REQUIRED_BETA = "oauth-2025-04-20";
 
 const RESET = "\x1B[0m";
@@ -568,7 +571,7 @@ function getCodexClientVersion(provider?: ProviderConfig): string {
       ? provider.codex_client_version.trim()
       : "";
   const envVersion = process.env.CCR_CODEX_CLIENT_VERSION?.trim() || "";
-  return configuredVersion || envVersion || DEFAULT_CODEX_CLIENT_VERSION;
+  return configuredVersion || envVersion || CODEX_CLI_VERSION;
 }
 
 function appendCodexQueryParams(url: string, provider?: ProviderConfig): string {

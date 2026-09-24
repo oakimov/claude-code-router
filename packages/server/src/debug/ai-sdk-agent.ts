@@ -6,6 +6,7 @@ import {
   parseDebugChatBody,
   resolveDebugModel,
 } from "./model";
+import { CODEX_CLI_VERSION } from "@caeliq/ccr-shared";
 import { parseOpenAiTools, stubToolExecute } from "./tools";
 import {
   installLlmCaptureFetch,
@@ -55,7 +56,7 @@ function createCodexFetch(): typeof fetch {
           : input;
     const url = new URL(rawUrl);
     if (!url.searchParams.has("client_version")) {
-      url.searchParams.set("client_version", process.env.CODEX_CLI_VERSION || "0.156.1");
+      url.searchParams.set("client_version", CODEX_CLI_VERSION);
     }
     const nextInput =
       input instanceof Request ? new Request(url, input) : url;

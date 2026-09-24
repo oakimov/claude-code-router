@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { execFileSync } from "child_process";
 import { arch as osArch, platform as osPlatform, release as osRelease } from "os";
 import { Transformer } from "@/types/transformer";
-import { resolveCodexPat } from "@caeliq/ccr-shared";
+import { CODEX_CLI_VERSION, resolveCodexPat } from "@caeliq/ccr-shared";
 import { deriveCacheSessionKey, extractClientSessionId } from "@/utils/cacheControl";
 import { createSSEStreamReader, StreamContext, encodeSSELine } from "../utils/stream";
 import { peekResponseBody } from "../utils/stream-peek";
@@ -22,8 +22,6 @@ const whoamiCache = new Map<
   { value: PatAuth; expiresAt: number }
 >();
 const whoamiRequests = new Map<string, Promise<PatAuth>>();
-const CODEX_CLI_VERSION =
-  process.env.CODEX_CLI_VERSION || "0.156.1";
 const CODEX_ORIGINATOR = "codex_cli_rs";
 const CODEX_REQUIRES_RESPONSES =
   'codex requires openai-responses in transformer.use (e.g. ["openai-responses", "codex"]). Codex is ChatGPT auth/headers middleware on the Responses wire and does not convert Chat Completions bodies.';

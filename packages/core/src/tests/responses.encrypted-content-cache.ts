@@ -711,6 +711,119 @@ async function testFailedStreamDoesNotPopulateCache() {
   );
 }
 
+async function testIncompleteResponseDoesNotPopulateCache() {
+  for (const mode of ["stream", "json"] as const) {
+    const transformer = new OpenAIResponsesTransformer();
+    const sessionId = `incomplete-${mode}-session`;
+    const prompt = `incomplete ${mode} must not cache`;
+    const initialContext = anthropicContext({}, sessionId);
+    await transformer.transformRequestIn(
+      {
+        model: "muse-spark-1.2-contributor-free",
+        stream: mode === "stream",
+        messages: [{ role: "user", content: prompt }],
+        reasoning: { effort: "high", enabled: true },
+      },
+      provider as any,
+      initialContext as any
+    );
+
+    const reasoningItem = {
+      id: "rs_incomplete",
+      type: "reasoning",
+      summary: [],
+      encrypted_content: CIPHER + "-incomplete",
+    };
+    // max_output_tokens cut the call off mid-arguments.
+    const truncatedCall = {
+      id: "fc_incomplete",
+      type: "function_call",
+      call_id: "call_incomplete",
+      name: "Bash",
+      arguments: '{"command":"ls',
+    };
+    const upstream =
+      mode === "stream"
+        ? buildStreamResponse([
+            {
+              type: "response.output_item.done",
+              output_index: 0,
+              item_id: reasoningItem.id,
+              item: reasoningItem,
+            },
+            {
+              type: "response.output_item.added",
+              output_index: 1,
+              item_id: truncatedCall.id,
+              item: { ...truncatedCall, arguments: "" },
+            },
+            {
+              type: "response.function_call_arguments.delta",
+              output_index: 1,
+              item_id: truncatedCall.id,
+              delta: truncatedCall.arguments,
+            },
+            {
+              type: "response.incomplete",
+              response: {
+                id: "resp_incomplete",
+                object: "response",
+                status: "incomplete",
+                incomplete_details: { reason: "max_output_tokens" },
+                output: [],
+              },
+            },
+          ])
+        : new Response(
+            JSON.stringify({
+              id: "resp_incomplete",
+              object: "response",
+              model: "muse-spark-1.2-contributor-free",
+              created_at: 1,
+              status: "incomplete",
+              incomplete_details: { reason: "max_output_tokens" },
+              output: [reasoningItem, truncatedCall],
+            }),
+            { headers: { "Content-Type": "application/json" } }
+          );
+    await drainResponse(
+      await transformer.transformResponseOut(upstream, initialContext as any)
+    );
+
+    const followup = await transformer.transformRequestIn(
+      {
+        model: "muse-spark-1.2-contributor-free",
+        stream: false,
+        messages: [
+          { role: "user", content: prompt },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_incomplete",
+                type: "function",
+                function: { name: "Bash", arguments: "{}" },
+              },
+            ],
+          },
+          { role: "tool", tool_call_id: "call_incomplete", content: "ignored" },
+        ],
+        reasoning: { effort: "high", enabled: true },
+      },
+      provider as any,
+      anthropicContext({}, sessionId) as any
+    );
+    assert.equal(
+      ((followup as any).input || []).find(
+        (item: any) => item?.type === "reasoning"
+      ),
+      undefined,
+      `${mode} incomplete response must not populate replay state`
+    );
+  }
+}
+
 async function testResponsesClientDoesNotRestoreFromCache() {
   const transformer = new OpenAIResponsesTransformer();
   // Seed cache via Anthropic path.
@@ -791,6 +904,7 @@ async function main() {
   await testStreamRecorderRestoresWithoutTerminalOutput();
   await testDiscardedRecorderDoesNotFallBackToTerminalOutput();
   await testFailedStreamDoesNotPopulateCache();
+  await testIncompleteResponseDoesNotPopulateCache();
   await testResponsesClientDoesNotRestoreFromCache();
   console.log("responses.encrypted-content-cache: ok");
 }

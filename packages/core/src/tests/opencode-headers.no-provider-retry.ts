@@ -91,8 +91,10 @@ async function recoverRoutingFailures() {
   assert.equal(result.config.__providerResponse.status, 200);
   assert.equal(calls.length, 3);
   assertIdentityHeaders(calls);
-  assert.equal(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
-  assert.equal(calls[1].headers["x-opencode-session"], calls[2].headers["x-opencode-session"]);
+  // A bad bucket fails deterministically per session: each routing failure
+  // re-rolls the session; the logical request id stays stable.
+  assert.notEqual(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
+  assert.notEqual(calls[1].headers["x-opencode-session"], calls[2].headers["x-opencode-session"]);
   assert.equal(calls[0].headers["x-opencode-request"], calls[1].headers["x-opencode-request"]);
 }
 
@@ -110,7 +112,7 @@ async function recoverWrappedRoutingFailure() {
 
   assert.equal(result.config.__providerResponse.status, 200);
   assert.equal(calls.length, 2);
-  assert.equal(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
+  assert.notEqual(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
 }
 
 async function retryTransientStatusesWithAffinity() {
@@ -365,13 +367,14 @@ async function parentIsPreservedAcrossZenRetries() {
   assert.equal(result.config.__providerResponse.status, 200);
   assert.equal(calls.length, 2);
   for (const c of calls) assert.equal(c.headers["x-parent-session-id"], parentId);
-  assert.equal(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
+  assert.notEqual(calls[0].headers["x-opencode-session"], calls[1].headers["x-opencode-session"]);
   assert.equal(calls[0].headers["x-opencode-request"], calls[1].headers["x-opencode-request"]);
 }
 
-async function exhaustedRoutingFailureKeepsSessionForNextTurn() {
-  // Session is fixed per conversation: 5 exhausted routing 400s keep one
-  // session across all attempts, and the next turn reuses it.
+async function exhaustedRoutingFailureInvalidatesSessionForNextTurn() {
+  // Regression for /tmp/ccr-logs ccr-20260830000000_1.log L6772-L6817:
+  // req-1fa exhausted 5 routing 400s and cached poisoned g0sb; req-1fc
+  // reused it and burned its first attempt on the same bad bucket.
   const transformer = new OpencodeHeadersTransformer();
   const ctx = makeContext(); // conv-1
 
@@ -387,15 +390,16 @@ async function exhaustedRoutingFailureKeepsSessionForNextTurn() {
     }
   );
   assert.equal(calls.length, 5);
-  assert.equal(new Set(calls.map((c) => c.headers["x-opencode-session"])).size, 1);
-  const sticky = calls[4].headers["x-opencode-session"];
+  // Each attempt re-rolled — 5 distinct sessions exhausted.
+  assert.equal(new Set(calls.map((c) => c.headers["x-opencode-session"])).size, 5);
+  const poisoned = calls[4].headers["x-opencode-session"];
 
-  // Next turn in the same conversation reuses the same session.
+  // Next turn in the same conversation must not reuse the poisoned session.
   const nextCalls = installFetch([okResponse]);
   const result = await transformer.transformRequestIn(body, provider, ctx);
   assert.equal(result.config.__providerResponse.status, 200);
   assert.equal(nextCalls.length, 1);
-  assert.equal(nextCalls[0].headers["x-opencode-session"], sticky);
+  assert.notEqual(nextCalls[0].headers["x-opencode-session"], poisoned);
 }
 
 async function exhaustedTransientKeepsSessionForNextTurn() {
@@ -439,7 +443,7 @@ async function main() {
     await zenModelIsNeverSent();
     await forwardsParentSessionIdWhenPresent();
     await parentIsPreservedAcrossZenRetries();
-    await exhaustedRoutingFailureKeepsSessionForNextTurn();
+    await exhaustedRoutingFailureInvalidatesSessionForNextTurn();
     await exhaustedTransientKeepsSessionForNextTurn();
     console.log("opencode-headers reliability: PASS");
   } finally {

@@ -843,27 +843,46 @@ function testCatalogDrivenGating() {
   // Explicit spot checks called out by the plan.
   assert.ok(resolveClaudeAuthBetas("claude-sonnet-5").includes("mid-conversation-system-2026-04-07"));
   assert.ok(resolveClaudeAuthBetas("claude-opus-4-8").includes("mid-conversation-system-2026-04-07"));
-  assert.ok(resolveClaudeAuthBetas("claude-opus-4-7").includes("mid-conversation-system-2026-04-07"));
+  // 2.1.280 binary: opus-4-7 does not carry mid_conv_system.
+  assert.ok(!resolveClaudeAuthBetas("claude-opus-4-7").includes("mid-conversation-system-2026-04-07"));
   assert.ok(resolveClaudeAuthBetas("claude-opus-5-5").includes("mid-conversation-system-2026-04-07"));
 }
 
-// --- Opus 5.5 / Fable 5.1 always-on thinking + no forced tools -----------
+// --- API constraints: always-on thinking, no forced tools, no sampling ----
 
-function testAlwaysAdaptiveAndNoForcedToolChoice() {
-  for (const modelId of ["claude-opus-5-5", "claude-fable-5-1"]) {
-    const entry = CLAUDE_MODEL_CATALOG[modelId];
-
+function testApiConstraintNormalization() {
+  for (const modelId of [
+    "claude-opus-5-5",
+    "claude-fable-5",
+    "claude-fable-5-1",
+    "claude-mythos-5-1",
+  ]) {
     const disabled: Record<string, any> = { thinking: { type: "disabled" } };
-    applyClaudeModelCapabilityAdjustments(disabled, entry);
-    assert.deepEqual(disabled.thinking, { type: "adaptive", display: "summarized" });
+    applyClaudeModelCapabilityAdjustments(disabled, CLAUDE_MODEL_CATALOG[modelId]);
+    assert.deepEqual(
+      disabled.thinking,
+      { type: "adaptive", display: "summarized" },
+      `disabled thinking must become adaptive for ${modelId}`
+    );
+  }
 
+  for (const modelId of ["claude-opus-5-5", "claude-fable-5-1", "claude-mythos-5-1"]) {
+    const entry = CLAUDE_MODEL_CATALOG[modelId];
     for (const forced of ["any", "tool"]) {
+      const warnings: any[] = [];
       const body: Record<string, any> = {
+        model: modelId,
         tool_choice:
           forced === "tool" ? { type: "tool", name: "x" } : { type: forced },
       };
-      applyClaudeModelCapabilityAdjustments(body, entry);
+      applyClaudeModelCapabilityAdjustments(body, entry, {
+        warn: (obj: any) => warnings.push(obj),
+      });
       assert.equal(body.tool_choice.type, "auto");
+      // The lost forcing guarantee must be visible, not silent.
+      assert.equal(warnings.length, 1);
+      assert.equal(warnings[0].toolChoice, forced);
+      if (forced === "tool") assert.equal(warnings[0].tool, "x");
     }
     const parallel: Record<string, any> = {
       tool_choice: { type: "any", disable_parallel_tool_use: true },
@@ -879,13 +898,44 @@ function testAlwaysAdaptiveAndNoForcedToolChoice() {
     assert.deepEqual(untouched.tool_choice, { type: "none" });
   }
 
-  // opus-5 shares rejects_disabled_thinking yet still accepts disabled
-  // thinking at low effort, so the coercion must not fire there.
+  // Fable 5 rejects disabled thinking but still accepts forced tool use.
+  const fable5: Record<string, any> = { tool_choice: { type: "any" } };
+  applyClaudeModelCapabilityAdjustments(fable5, CLAUDE_MODEL_CATALOG["claude-fable-5"]);
+  assert.deepEqual(fable5.tool_choice, { type: "any" });
+
+  // Opus 5 accepts disabled thinking (at effort <= high), so no coercion.
   const opus5: Record<string, any> = { thinking: { type: "disabled" } };
   applyClaudeModelCapabilityAdjustments(opus5, CLAUDE_MODEL_CATALOG["claude-opus-5"]);
   assert.deepEqual(opus5.thinking, { type: "disabled" });
 
-  // Models without the caps pass everything through.
+  // Sampling knobs are dropped wherever the model rejects them, including the
+  // coerced-thinking case, and kept where the model still accepts them.
+  for (const modelId of [
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-opus-5-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-fable-5-1",
+  ]) {
+    const body: Record<string, any> = {
+      thinking: { type: "disabled" },
+      temperature: 0,
+      top_p: 0.9,
+      top_k: 5,
+    };
+    applyClaudeModelCapabilityAdjustments(body, CLAUDE_MODEL_CATALOG[modelId]);
+    assert.equal(body.temperature, undefined, `temperature kept for ${modelId}`);
+    assert.equal(body.top_p, undefined, `top_p kept for ${modelId}`);
+    assert.equal(body.top_k, undefined, `top_k kept for ${modelId}`);
+  }
+  const opus46: Record<string, any> = { temperature: 0.2, top_p: 0.9 };
+  applyClaudeModelCapabilityAdjustments(opus46, CLAUDE_MODEL_CATALOG["claude-opus-4-6"]);
+  assert.equal(opus46.temperature, 0.2);
+  assert.equal(opus46.top_p, 0.9);
+
+  // Models without constraints pass everything through.
   const legacy: Record<string, any> = {
     thinking: { type: "disabled" },
     tool_choice: { type: "any" },
@@ -898,10 +948,12 @@ function testAlwaysAdaptiveAndNoForcedToolChoice() {
   const unknown: Record<string, any> = {
     thinking: { type: "disabled" },
     tool_choice: { type: "tool", name: "x" },
+    temperature: 0,
   };
   applyClaudeModelCapabilityAdjustments(unknown, undefined);
   assert.deepEqual(unknown.thinking, { type: "disabled" });
   assert.deepEqual(unknown.tool_choice, { type: "tool", name: "x" });
+  assert.equal(unknown.temperature, 0);
 }
 
 // --- Chain composition (step 0) ---------------------------------------------
@@ -1215,7 +1267,7 @@ async function main() {
     await testToolNamesSurviveUnprefixed();
     await testAuthRecoveryContract();
     testCatalogDrivenGating();
-    testAlwaysAdaptiveAndNoForcedToolChoice();
+    testApiConstraintNormalization();
     await testGatewayHintHeadersForwardedForGenuineClient();
     await testChainAnthropicAloneHasNoMarkers();
     await testChainClaudeAuthPlusAnthropicMergesNotReplaces();

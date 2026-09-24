@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setTimeout as sleep } from "node:timers/promises";
 import { OpencodeHeadersTransformer } from "../transformer/opencode-headers.transformer";
 import { OpenAIResponsesTransformer } from "../transformer/openai.responses.transformer";
 import { isFallbackEligibleError } from "../utils/retry";
@@ -681,14 +682,14 @@ async function cacheKeyEqualsSessionHeader() {
   );
   assert.equal(sent.length, 2);
   for (const call of sent) {
-    // Same stable session on every attempt, key locked to it.
+    // Key locked to the session on every attempt.
     assert.equal(call.body.prompt_cache_key, call.headers["x-opencode-session"]);
   }
-  assert.equal(
+  // The routing failure re-rolled the session; the key followed it.
+  assert.notEqual(
     sent[0].headers["x-opencode-session"],
     sent[1].headers["x-opencode-session"]
   );
-  assert.equal(sent[0].body.prompt_cache_key, sent[1].body.prompt_cache_key);
 
   // Chat wire keeps existing behavior (out of the proven scope).
   const chatSent = installFetch();
@@ -962,6 +963,35 @@ async function firstZenEventMustComplete() {
         }),
         { headers: { "Content-Type": "text/event-stream" } }
       );
+    // An open reasoning item is bounded by the reasoning timeout, not the
+    // (shorter) output-progress timeout.
+    const reasoningStall = new OpencodeHeadersTransformer();
+    (reasoningStall as any).firstProgressTimeoutMs = 25;
+    (reasoningStall as any).reasoningIdleTimeoutMs = 60;
+    const reasoningStarted = Date.now();
+    await assert.rejects(
+      () => reasoningStall.transformRequestIn(structuredClone(request), zenResponses, makeContext()),
+      (error: any) => {
+        assert.equal(error.statusCode, 504);
+        assert.equal(isFallbackEligibleError(error), true);
+        assert.match(error.message, /reasoning sent no event within 60ms/);
+        return true;
+      }
+    );
+    assert.ok(Date.now() - reasoningStarted >= 55, "reasoning bound must replace the progress bound");
+
+    (globalThis as any).fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(
+              'data: {"type":"response.created"}\n\n' +
+              'data: {"type":"response.in_progress"}\n\n'
+            ));
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } }
+      );
     const noProgress = new OpencodeHeadersTransformer();
     (noProgress as any).firstProgressTimeoutMs = 25;
     await assert.rejects(
@@ -969,7 +999,7 @@ async function firstZenEventMustComplete() {
       (error: any) => {
         assert.equal(error.statusCode, 504);
         assert.equal(isFallbackEligibleError(error), true);
-        assert.match(error.message, /no output progress/);
+        assert.match(error.message, /no output progress within 25ms/);
         return true;
       }
     );
@@ -1021,6 +1051,153 @@ async function firstZenEventMustComplete() {
   }
 }
 
+async function chatDeltasPassZenGate() {
+  const originalFetch = (globalThis as any).fetch;
+  const request = {
+    model: FREE,
+    messages: [{ role: "user", content: "hi" }],
+    stream: true,
+    tools: [chatClientTool("read"), chatClientTool("shell")],
+  };
+  try {
+    // Chat chunks carry no `type`; content deltas are output progress. The
+    // stream stays open, so passing the gate proves no wait for [DONE].
+    (globalThis as any).fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(
+              'data: {"id":"c","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n' +
+              'data: {"id":"c","choices":[{"index":0,"delta":{"content":"tok"},"finish_reason":null}]}\n\n'
+            ));
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } }
+      );
+    const tf = new OpencodeHeadersTransformer();
+    (tf as any).firstProgressTimeoutMs = 50;
+    (tf as any).streamIdleTimeoutMs = 50;
+    const result = await tf.transformRequestIn(structuredClone(request), zenChat, makeContext());
+    const reader = result.config.__providerResponse.body.getReader();
+    const first = new TextDecoder().decode((await reader.read()).value);
+    assert.match(first, /"content":"tok"/);
+    void reader.cancel().catch(() => {});
+
+    // A role-only opening chunk is not progress.
+    (globalThis as any).fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(
+              'data: {"id":"c","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n'
+            ));
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } }
+      );
+    const stalled = new OpencodeHeadersTransformer();
+    (stalled as any).firstProgressTimeoutMs = 25;
+    await assert.rejects(
+      () => stalled.transformRequestIn(structuredClone(request), zenChat, makeContext()),
+      /no output progress/
+    );
+  } finally {
+    (globalThis as any).fetch = originalFetch;
+  }
+}
+
+async function silentReasoningOutlivesProgressBound() {
+  const originalFetch = (globalThis as any).fetch;
+  const request = {
+    model: FREE,
+    input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
+    stream: true,
+    tools: [responsesClientTool("read"), responsesClientTool("shell")],
+  };
+  try {
+    // Reasoning without summary deltas stays silent longer than both the
+    // progress and idle bounds, then output arrives: no 504 either side.
+    (globalThis as any).fetch = async () =>
+      new Response(
+        new ReadableStream({
+          async start(controller) {
+            const enc = new TextEncoder();
+            controller.enqueue(enc.encode(
+              'data: {"type":"response.created"}\n\n' +
+              'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning"}}\n\n'
+            ));
+            await sleep(120);
+            controller.enqueue(enc.encode(
+              'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning"}}\n\n' +
+              'data: {"type":"response.output_text.delta","delta":"hi"}\n\n' +
+              'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"reasoning"}}\n\n'
+            ));
+            await sleep(120);
+            controller.enqueue(enc.encode(
+              'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning"}}\n\n' +
+              'data: {"type":"response.completed","response":{"id":"r"}}\n\n'
+            ));
+            controller.close();
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } }
+      );
+    const tf = new OpencodeHeadersTransformer();
+    (tf as any).firstProgressTimeoutMs = 40;
+    (tf as any).streamIdleTimeoutMs = 40;
+    (tf as any).reasoningIdleTimeoutMs = 1_000;
+    const result = await tf.transformRequestIn(structuredClone(request), zenResponses, makeContext());
+    const text = await result.config.__providerResponse.text();
+    assert.match(text, /response\.completed/);
+  } finally {
+    (globalThis as any).fetch = originalFetch;
+  }
+}
+
+async function explicitClientSessionSeparatesConversations() {
+  // Anonymous-by-router clients that still send a session header must not
+  // collapse onto one Zen session just because their first message matches.
+  const sent = installFetch();
+  const tf = new OpencodeHeadersTransformer();
+  const body = () => ({
+    model: FREE,
+    input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+    stream: true,
+    tools: [responsesClientTool("read"), responsesClientTool("shell")],
+  });
+  const ctxFor = (session: string) => ({
+    req: {
+      headers: { "x-session-id": session, "user-agent": "pi" },
+      ip: "127.0.0.1",
+      log: { warn() {}, info() {}, debug() {} },
+      server: { configService: { getHttpsProxy: () => undefined } },
+    },
+  });
+  await tf.transformRequestIn(body(), zenResponses, ctxFor("conv-a") as any);
+  await tf.transformRequestIn(body(), zenResponses, ctxFor("conv-b") as any);
+  await tf.transformRequestIn(body(), zenResponses, ctxFor("conv-a") as any);
+  const sessions = sent.map((call) => call.headers["x-opencode-session"]);
+  assert.notEqual(sessions[0], sessions[1]);
+  assert.equal(sessions[0], sessions[2]);
+}
+
+async function returnedBodyIsTheWireBody() {
+  const sent = installFetch();
+  const result = await new OpencodeHeadersTransformer().transformRequestIn(
+    {
+      model: FREE,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+      stream: true,
+      prompt_cache_key: "ccr_foreignkey",
+      tools: [responsesClientTool("read"), responsesClientTool("shell")],
+    },
+    zenResponses,
+    makeContext()
+  );
+  assert.equal(result.body.prompt_cache_key, sent[0].body.prompt_cache_key);
+  assert.equal(result.body.prompt_cache_key, sent[0].headers["x-opencode-session"]);
+}
+
 async function main() {
   const originalFetch = (globalThis as any).fetch;
   try {
@@ -1046,6 +1223,10 @@ async function main() {
     await bufferedTerminalSurvivesDebugAndLatencyTaps();
     await restoresJsonForNonStreamingChatClient();
     await firstZenEventMustComplete();
+    await chatDeltasPassZenGate();
+    await silentReasoningOutlivesProgressBound();
+    await explicitClientSessionSeparatesConversations();
+    await returnedBodyIsTheWireBody();
     console.log("opencode-gate-stubs: PASS");
   } finally {
     (globalThis as any).fetch = originalFetch;

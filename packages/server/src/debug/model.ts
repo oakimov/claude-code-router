@@ -5,7 +5,7 @@ import {
   getQwenAccessToken,
   getXaiAccessToken,
 } from "@caeliq/llms";
-import { resolveCodexPat } from "@caeliq/ccr-shared";
+import { CODEX_CLI_VERSION, resolveCodexPat } from "@caeliq/ccr-shared";
 import {
   REASONING_EFFORTS,
   type DebugChatInput,
@@ -13,8 +13,6 @@ import {
   type InboundProtocol,
   type ReasoningEffort,
 } from "./types";
-
-const CODEX_CLI_VERSION = process.env.CODEX_CLI_VERSION || "0.156.1";
 
 export function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
   if (typeof value !== "string") return undefined;

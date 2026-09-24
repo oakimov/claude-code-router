@@ -152,6 +152,7 @@ PAT 认证不需要浏览器流程，但仍使用容器内相同的提供商配�
 - 两种模式都仍使用 `codex` 转换器
 - `ccr model get codex` 适用于任一认证模式
 - 模型发现会发送当前的 Codex CLI `client_version`，因为 ChatGPT 后端可能按客户端版本对最新发布的 Codex 模型 slug 进行限制。CCR 默认使用发布时已知的最新稳定版本；可在提供商上通过 `codex_client_version` 覆盖，或在测试更新版本 Codex CLI 时通过 `CCR_CODEX_CLIENT_VERSION` 覆盖。运行时 Codex 请求由核心 Codex 转换器单独处理，它会按 Codex CLI 的方式模拟请求版本和身份头，而不依赖 CCR 的 CLI 包。
+- CCR 所模拟的 Codex CLI 版本（当前为 `0.156.1`）由 CCR 服务端的 `CODEX_CLI_VERSION` 环境变量设置；它决定运行时的 `User-Agent` 和 `client_version`，以及模型发现的默认值。请保持不低于上游各模型要求的最低客户端版本：GPT-6 Sol/Luna 要求至少 `0.155.0`。
 
 ## 转换器行为
 

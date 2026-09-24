@@ -212,7 +212,8 @@ export class AnthropicTransformer implements Transformer {
     if (isApiKeyAnthropic) {
       applyClaudeModelCapabilityAdjustments(
         anthropicBody,
-        lookupClaudeModelCatalogEntry(anthropicBody.model)
+        lookupClaudeModelCatalogEntry(anthropicBody.model),
+        this.logger
       );
       anthropicBody.metadata = {
         ...(anthropicBody.metadata || {}),

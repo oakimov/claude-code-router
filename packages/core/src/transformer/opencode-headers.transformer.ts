@@ -10,8 +10,12 @@ import {
   isProviderNetworkError,
   toClientAbortError,
 } from "@/utils/retry";
-import { deriveCacheSessionKey } from "@/utils/cacheControl";
 import {
+  deriveCacheSessionKey,
+  extractClientSessionId,
+} from "@/utils/cacheControl";
+import {
+  deletePersistedSession,
   getPersistedSession,
   putPersistedSession,
 } from "@/session-registry";
@@ -32,7 +36,8 @@ const OPENCODE_USER_AGENT = `opencode/${OPENCODE_VERSION}`;
 // (e.g. CCR's `ccr_<sha256>`) makes Zen return `response.incomplete` right
 // after the reasoning item with zero further events — an indefinite stall
 // from the client's perspective (A/B 2026-09-24: `ses_…` key completes,
-// `ccr_…` key goes `incomplete`).
+// `ccr_…` key goes `incomplete`). The key is re-applied per attempt, so it
+// follows the session through a bad-bucket re-roll.
 // Scope: models ending in `-free` on a zen (opencode.ai) endpoint; paid Zen
 // models are left untouched.
 
@@ -46,12 +51,15 @@ const OPENCODE_USER_AGENT = `opencode/${OPENCODE_VERSION}`;
 //     — the hashed slot has no provider at all.
 //   - HTTP 400 `{"error":{...,"message":"Error from provider (Console): Upstream
 //     request failed"}}` — the hashed backend failed its own upstream call.
-// These are retried on the SAME session (which must not change during a
-// conversation — Zen binds provider/cache affinity to it), then passed to
-// CCR's normal fallback handling. The whole mechanism is contained to this
-// transformer: it owns its upstream call via `config.__providerResponse` so no
-// opencode-specific status-code semantics leak into the generic provider error
-// path (which correctly treats 400/401 as terminal for every other provider).
+// Retrying on the same session cannot succeed (and Zen pins the sticky
+// provider per session with no expiry), so these re-roll the session (new
+// random suffix => new hash bucket) and retry. Affinity to a failing bucket
+// has no value; the new session is persisted and stays sticky from then on.
+// Transient failures keep the session for provider/cache affinity. The whole
+// mechanism is contained to this transformer: it owns its upstream call via
+// `config.__providerResponse` so no opencode-specific status-code semantics
+// leak into the generic provider error path (which correctly treats 400/401
+// as terminal for every other provider).
 const MAX_ZEN_ATTEMPTS = 5;
 const ZEN_RETRY_BACKOFF_BASE_MS = 2_000;
 const ZEN_RETRY_BACKOFF_MAX_MS = 30_000;
@@ -59,8 +67,87 @@ const ZEN_RETRY_AFTER_MAX_MS = 2_147_483_647;
 const ZEN_FIRST_EVENT_TIMEOUT_MS = 30_000;
 const ZEN_FIRST_PROGRESS_TIMEOUT_MS = 60_000;
 const ZEN_STREAM_IDLE_TIMEOUT_MS = 60_000;
+// A reasoning item without summary deltas emits nothing until it finishes, so
+// silence while one is open is the model working, not a stall. Bound it more
+// loosely than ordinary idle time.
+const ZEN_REASONING_IDLE_TIMEOUT_MS = 300_000;
 // Matches OpenCode's RETRY_JITTER_FACTOR in session/retry.ts.
 const ZEN_RETRY_JITTER_FACTOR = 0.25;
+
+/** Human-readable timeout for error messages (sub-second values stay exact). */
+function formatDuration(ms: number): string {
+  return ms < 1_000 ? `${ms}ms` : `${Math.round(ms / 1_000)}s`;
+}
+
+/** Split buffered SSE text into complete events plus the unterminated tail. */
+function takeSseEvents(buffer: string): { events: string[]; rest: string } {
+  const events = buffer.split(/\r?\n\r?\n/);
+  const rest = events.pop() ?? "";
+  return { events, rest };
+}
+
+/** Join an SSE event's `data:` lines (one optional leading space stripped). */
+function sseEventData(event: string): string {
+  return event
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).replace(/^ /, ""))
+    .join("\n")
+    .trim();
+}
+
+type ZenEventKind = "progress" | "reasoning_start" | "reasoning_end" | "other";
+
+/**
+ * Classify one SSE event for the free-tier stall guard. Progress means output
+ * the client can use (text, visible reasoning, tool calls, a finish or a
+ * terminal/error event) on either wire: Responses events carry `type`,
+ * Chat Completions chunks carry `choices[].delta`.
+ */
+function classifyZenEvent(data: string): ZenEventKind {
+  if (!data) return "other";
+  if (data === "[DONE]") return "progress";
+  let parsed: any;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    // Preserve malformed events for the response transformer to reject.
+    return "other";
+  }
+  if (parsed?.error) return "progress";
+  const type = typeof parsed?.type === "string" ? parsed.type : "";
+  if (type) {
+    if (
+      type.endsWith(".delta") ||
+      type === "response.completed" ||
+      type === "response.incomplete" ||
+      type === "response.failed" ||
+      type === "error"
+    ) {
+      return "progress";
+    }
+    if (type === "response.output_item.added" && parsed?.item?.type === "reasoning") {
+      return "reasoning_start";
+    }
+    if (type === "response.output_item.done") {
+      return parsed?.item?.type === "reasoning" ? "reasoning_end" : "progress";
+    }
+    return "other";
+  }
+  const choice = parsed?.choices?.[0];
+  if (!choice) return "other";
+  if (choice.finish_reason) return "progress";
+  const delta = choice.delta ?? {};
+  if (
+    (typeof delta.content === "string" && delta.content) ||
+    (typeof delta.reasoning_content === "string" && delta.reasoning_content) ||
+    (typeof delta.reasoning === "string" && delta.reasoning) ||
+    (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0)
+  ) {
+    return "progress";
+  }
+  return "other";
+}
 
 export class OpencodeHeadersTransformer implements Transformer {
   name = "opencode-headers";
@@ -72,14 +159,14 @@ export class OpencodeHeadersTransformer implements Transformer {
   private firstEventTimeoutMs = ZEN_FIRST_EVENT_TIMEOUT_MS;
   private firstProgressTimeoutMs = ZEN_FIRST_PROGRESS_TIMEOUT_MS;
   private streamIdleTimeoutMs = ZEN_STREAM_IDLE_TIMEOUT_MS;
+  private reasoningIdleTimeoutMs = ZEN_REASONING_IDLE_TIMEOUT_MS;
 
   async transformRequestIn(
     request: any,
     provider: any,
     context: any
   ): Promise<Record<string, any>> {
-    const conversationId =
-      context?.req?.sessionId || this.fingerprintConversation(request, context);
+    const conversationId = this.resolveConversationId(request, context);
     let body = request.body || request;
     const baseConfig = request.config || {};
     const req = context?.req;
@@ -127,10 +214,11 @@ export class OpencodeHeadersTransformer implements Transformer {
       }
     }
     // OpenCode identifies one logical user turn with the user-message id. Keep
-    // this stable across transport retries, like the session.
+    // this stable across transport retries; only a bad-bucket re-roll
+    // changes the session.
     const requestId = this.generateId("msg", "ascending");
 
-    const response = await this.sendWithSessionRetry(
+    const sent = await this.sendWithSessionRetry(
       body,
       baseConfig,
       provider,
@@ -140,13 +228,15 @@ export class OpencodeHeadersTransformer implements Transformer {
     );
 
     return {
-      body,
+      // The body actually sent (per-attempt free-tier cache key included), so
+      // downstream debug summaries report the real wire shape.
+      body: sent.body,
       config: {
         ...baseConfig,
         // Placeholder URL kept for parity; __providerResponse short-circuits
         // sendRequestToProvider so this value is never fetched.
         url: provider?.baseUrl || provider?.api_base_url,
-        __providerResponse: response,
+        __providerResponse: sent.response,
       },
     };
   }
@@ -198,63 +288,12 @@ export class OpencodeHeadersTransformer implements Transformer {
         502
       );
 
-    const events: string[] = [];
-    try {
-      const reader = response.body?.getReader();
-      if (!reader) return failure("Upstream response has no stream body");
-      const decoder = new TextDecoder();
-      let pending = "";
-      let terminalSeen = false;
-      while (!terminalSeen) {
-        const { done, value } = await reader.read();
-        pending += done
-          ? decoder.decode()
-          : decoder.decode(value, { stream: true });
-        const complete = pending.split(/\r?\n\r?\n/);
-        pending = done ? "" : complete.pop() || "";
-        for (const event of complete) {
-          events.push(event);
-          const data = event
-            .split(/\r?\n/)
-            .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trimStart())
-            .join("\n");
-          if (data === "[DONE]") terminalSeen = true;
-          else if (data) {
-            try {
-              const parsed = JSON.parse(data);
-              if (
-                parsed?.type === "response.completed" ||
-                parsed?.type === "response.incomplete" ||
-                parsed?.type === "response.failed" ||
-                parsed?.type === "error" ||
-                parsed?.error
-              ) {
-                terminalSeen = true;
-              }
-            } catch {
-              // The parse below returns a protocol-shaped error.
-            }
-          }
-          if (terminalSeen) break;
-        }
-        if (done) break;
-      }
-      logger?.debug?.(
-        { shape, terminalSeen, eventCount: events.length },
-        "opencode: forced stream collection finished"
-      );
-      // Zen may keep the network stream open after a terminal event, and
-      // Undici's cancellation promise may wait indefinitely for that socket.
-      // The response is complete already, so do not hold the client on cancel.
-      if (terminalSeen) void reader.cancel().catch(() => {});
-    } catch (error) {
-      if (isClientAbortError(error)) throw error;
-      return failure(error instanceof Error ? error.message : String(error));
-    }
     let terminal: any;
     let streamError: any;
+    let malformed = false;
     let sawDone = false;
+    let finished = false;
+    let eventCount = 0;
     const chat: any = {
       id: "",
       object: "chat.completion",
@@ -265,22 +304,25 @@ export class OpencodeHeadersTransformer implements Transformer {
       ],
     };
     const calls = new Map<number, any>();
-    for (const event of events) {
-      const data = event
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n");
-      if (!data) continue;
+
+    // Each event is parsed once, as it arrives; collection ends at the
+    // protocol terminal rather than at EOF.
+    const consume = (event: string): void => {
+      const data = sseEventData(event);
+      if (!data) return;
+      eventCount++;
       if (data === "[DONE]") {
         sawDone = true;
-        continue;
+        finished = true;
+        return;
       }
       let parsed: any;
       try {
         parsed = JSON.parse(data);
       } catch {
-        return failure("Malformed upstream event stream");
+        malformed = true;
+        finished = true;
+        return;
       }
       if (
         parsed?.type === "error" ||
@@ -288,20 +330,24 @@ export class OpencodeHeadersTransformer implements Transformer {
         parsed?.error
       ) {
         streamError = parsed?.response?.error ?? parsed?.error ?? parsed;
-        break;
+        finished = true;
+        return;
       }
-      if (shape === "responses") {
-        if (parsed?.type === "response.completed" || parsed?.type === "response.incomplete") {
-          terminal = parsed.response;
-        }
-        continue;
+      if (
+        parsed?.type === "response.completed" ||
+        parsed?.type === "response.incomplete"
+      ) {
+        if (shape === "responses") terminal = parsed.response;
+        finished = true;
+        return;
       }
+      if (shape === "responses") return;
       if (parsed?.id) chat.id = parsed.id;
       if (parsed?.model) chat.model = parsed.model;
       if (parsed?.created) chat.created = parsed.created;
       if (parsed?.usage) chat.usage = parsed.usage;
       const choice = parsed?.choices?.[0];
-      if (!choice) continue;
+      if (!choice) return;
       const delta = choice.delta ?? {};
       if (typeof delta.content === "string") chat.choices[0].message.content += delta.content;
       for (const field of ["reasoning_content", "reasoning"]) {
@@ -322,6 +368,41 @@ export class OpencodeHeadersTransformer implements Transformer {
         calls.set(index, existing);
       }
       if (choice.finish_reason) chat.choices[0].finish_reason = choice.finish_reason;
+    };
+
+    try {
+      const reader = response.body?.getReader();
+      if (!reader) return failure("Upstream response has no stream body");
+      const decoder = new TextDecoder();
+      let pending = "";
+      while (!finished) {
+        const { done, value } = await reader.read();
+        pending += done
+          ? decoder.decode()
+          : decoder.decode(value, { stream: true });
+        const { events, rest } = takeSseEvents(pending);
+        if (done && rest) events.push(rest);
+        pending = done ? "" : rest;
+        for (const event of events) {
+          consume(event);
+          if (finished) break;
+        }
+        if (done) break;
+      }
+      logger?.debug?.(
+        { shape, finished, eventCount },
+        "opencode: forced stream collection finished"
+      );
+      // Zen may keep the network stream open after a terminal event, and
+      // Undici's cancellation promise may wait indefinitely for that socket.
+      // The response is complete already, so do not hold the client on cancel.
+      if (finished) void reader.cancel().catch(() => {});
+    } catch (error) {
+      if (isClientAbortError(error)) throw error;
+      return failure(error instanceof Error ? error.message : String(error));
+    }
+    if (malformed) {
+      return failure("Malformed upstream event stream");
     }
     if (streamError) {
       return failure(String(streamError.message || streamError));
@@ -344,10 +425,10 @@ export class OpencodeHeadersTransformer implements Transformer {
   }
 
   /**
-   * Own the full upstream call so Zen routing failures can be retried while
-   * retaining session affinity. Exhausted routing failures become 503 so the
-   * normal fallback path can try another model; ordinary 4xx errors retain
-   * their upstream status.
+   * Own the full upstream call so Zen routing failures can be recovered by
+   * re-rolling the session, and transient failures retried on the same one.
+   * Exhausted routing failures become 503 so the normal fallback path can try
+   * another model; ordinary 4xx errors retain their upstream status.
    */
   private async sendWithSessionRetry(
     body: any,
@@ -356,19 +437,18 @@ export class OpencodeHeadersTransformer implements Transformer {
     context: any,
     conversationId: string,
     requestId: string
-  ): Promise<Response> {
+  ): Promise<{ response: Response; body: any }> {
     const url = provider?.baseUrl || provider?.api_base_url;
     const httpsProxy = context?.req?.server?.configService?.getHttpsProxy?.();
     const logger = context?.req?.log ?? context?.req?.server?.log;
     const model = body?.model;
     const signal = context?.signal ?? baseConfig?.signal;
 
-    // The session is fixed per conversation for the lifetime of the turn
-    // AND all its retries: Zen binds provider/cache affinity (and the
-    // free-tier cache key, set below) to x-opencode-session, so it must not
-    // change mid-conversation. Derived once here; every attempt below sends
-    // the same session header and cache key.
-    const sessionId = this.getOrCreateSessionId(conversationId);
+    // Zen binds provider/cache affinity (and the free-tier cache key, set
+    // below) to x-opencode-session. It changes only when the current bucket
+    // is deterministically broken; header and cache key are rebuilt from the
+    // same value on every attempt so they can never diverge.
+    let sessionId = this.getOrCreateSessionId(conversationId);
 
     for (let attempt = 0; attempt < MAX_ZEN_ATTEMPTS; attempt++) {
       body = this.applyFreeTierCacheKey(body, provider, sessionId);
@@ -425,9 +505,12 @@ export class OpencodeHeadersTransformer implements Transformer {
           { provider: provider?.name, model, freeTier, contentType: response.headers.get("content-type") },
           "opencode: upstream stream gate"
         );
-        return freeTier
-          ? await this.requireFirstZenEvent(response, provider, model, signal, logger)
-          : response;
+        return {
+          response: freeTier
+            ? await this.requireFirstZenEvent(response, provider, model, signal, logger)
+            : response,
+          body,
+        };
       }
 
       // Non-ok: read the body once to classify. Error responses are small JSON,
@@ -440,10 +523,15 @@ export class OpencodeHeadersTransformer implements Transformer {
       );
       const transientFailure = this.isZenTransientStatus(response.status);
 
+      if (routingFailure) {
+        // The bucket fails deterministically for this session, on this and
+        // every later turn. Re-roll now; after exhaustion this also keeps the
+        // next turn from starting on the poisoned session.
+        this.invalidateSession(conversationId);
+        if (!isLastAttempt) sessionId = this.getOrCreateSessionId(conversationId);
+      }
+
       if (!isLastAttempt && (routingFailure || transientFailure)) {
-        // Retries keep the SAME session: Zen binds affinity to it and it
-        // must not change during a conversation. A persistently bad bucket
-        // fails through to fallback after MAX_ZEN_ATTEMPTS.
         const waitMs = transientFailure
           ? this.retryDelayMs(response, attempt)
           : 0;
@@ -454,9 +542,10 @@ export class OpencodeHeadersTransformer implements Transformer {
             status: response.status,
             attempt: attempt + 1,
             waitMs,
+            sessionRerolled: routingFailure,
           },
           routingFailure
-            ? "opencode: Zen provider-routing failure — same session, retrying"
+            ? "opencode: Zen provider-routing failure — re-rolling session and retrying"
             : "opencode: transient Zen failure — preserving session and retrying"
         );
         if (waitMs > 0) await delay(waitMs, signal);
@@ -487,8 +576,10 @@ export class OpencodeHeadersTransformer implements Transformer {
 
   /**
    * Zen can send SSE headers and lifecycle events, then stall before any
-   * output. Wait for a complete event and actual output progress while a
-   * fallback is still possible. Bound later idle reads as well.
+   * output. Hold the response until a complete event and real output progress
+   * arrive while a fallback is still possible, then bound later idle reads.
+   * An open reasoning item emits nothing until it finishes when no summary is
+   * streamed, so while one is open the looser reasoning bound applies instead.
    */
   private async requireFirstZenEvent(
     response: Response,
@@ -507,7 +598,42 @@ export class OpencodeHeadersTransformer implements Transformer {
     let pending = "";
     let firstEventSeen = false;
     let progressSeen = false;
+    let reasoningOpen = false;
     const startedAt = Date.now();
+    let deadlineAt = startedAt + this.firstEventTimeoutMs;
+    const firstProgressTimeoutMs = this.firstProgressTimeoutMs;
+    const streamIdleTimeoutMs = this.streamIdleTimeoutMs;
+    const reasoningIdleTimeoutMs = this.reasoningIdleTimeoutMs;
+
+    // Track gate state across complete events. After the gate passes only
+    // reasoning open/close transitions matter, so skip parsing other events.
+    const observe = (text: string): void => {
+      pending += text;
+      const { events, rest } = takeSseEvents(pending);
+      pending = rest;
+      for (const event of events) {
+        const data = sseEventData(event);
+        if (!data) continue;
+        if (!firstEventSeen) {
+          firstEventSeen = true;
+          deadlineAt = startedAt + firstProgressTimeoutMs;
+        }
+        if (progressSeen && !data.includes('"reasoning"')) continue;
+        const kind = classifyZenEvent(data);
+        if (kind === "progress") {
+          progressSeen = true;
+        } else if (kind === "reasoning_start") {
+          reasoningOpen = true;
+        } else if (kind === "reasoning_end") {
+          reasoningOpen = false;
+          // Output normally follows reasoning; expect it within the progress bound.
+          deadlineAt = Date.now() + firstProgressTimeoutMs;
+        }
+      }
+      if (reasoningOpen) {
+        deadlineAt = Math.max(deadlineAt, Date.now() + reasoningIdleTimeoutMs);
+      }
+    };
 
     const readWithTimeout = async (timeoutMs: number) => {
       if (signal?.aborted) throw toClientAbortError(signal.reason);
@@ -534,50 +660,16 @@ export class OpencodeHeadersTransformer implements Transformer {
 
     try {
       while (!progressSeen) {
-        const deadlineMs = firstEventSeen
-          ? this.firstProgressTimeoutMs
-          : this.firstEventTimeoutMs;
-        const remainingMs = deadlineMs - (Date.now() - startedAt);
+        const remainingMs = deadlineAt - Date.now();
         if (remainingMs <= 0) break;
         const next = await readWithTimeout(remainingMs);
         if (next.kind === "abort") throw toClientAbortError(signal?.reason);
+        // A timed-out read stays pending on the reader; never issue another.
         if (next.kind === "timeout") break;
         if (next.result.done) break;
         if (!next.result.value) continue;
         buffered.push(next.result.value.slice());
-        pending += decoder.decode(next.result.value, { stream: true });
-        const events = pending.split(/\r?\n\r?\n/);
-        pending = events.pop() || "";
-        for (const event of events) {
-          const data = event.split(/\r?\n/)
-            .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trimStart())
-            .join("\n");
-          if (!data) continue;
-          firstEventSeen = true;
-          if (data === "[DONE]") {
-            progressSeen = true;
-            break;
-          }
-          try {
-            const parsed = JSON.parse(data);
-            const type = String(parsed?.type || "");
-            if (
-              type.endsWith(".delta") ||
-              type === "response.completed" ||
-              type === "response.incomplete" ||
-              type === "response.failed" ||
-              type === "error" ||
-              parsed?.error ||
-              (type === "response.output_item.done" && parsed?.item?.type !== "reasoning")
-            ) {
-              progressSeen = true;
-              break;
-            }
-          } catch {
-            // Preserve malformed events for the response transformer to reject.
-          }
-        }
+        observe(decoder.decode(next.result.value, { stream: true }));
       }
     } catch (error) {
       void reader.cancel(error).catch(() => {});
@@ -586,23 +678,25 @@ export class OpencodeHeadersTransformer implements Transformer {
 
     if (!progressSeen) {
       logger?.warn?.(
-        { provider: provider?.name, model, firstEventSeen },
+        { provider: provider?.name, model, firstEventSeen, reasoningOpen },
         "opencode: Zen stream stalled before output progress"
       );
       void reader.cancel("Zen initial stream timeout").catch(() => {});
       if (signal?.aborted) {
         throw toClientAbortError(signal.reason);
       }
+      const message = !firstEventSeen
+        ? `OpenCode Zen sent no complete response event within ${formatDuration(this.firstEventTimeoutMs)}`
+        : reasoningOpen
+          ? `OpenCode Zen reasoning sent no event within ${formatDuration(reasoningIdleTimeoutMs)}`
+          : `OpenCode Zen sent no output progress within ${formatDuration(firstProgressTimeoutMs)}`;
       throw createApiError(
-        firstEventSeen
-          ? `OpenCode Zen sent no output progress within ${Math.round(this.firstProgressTimeoutMs / 1_000)}s for ${provider?.name},${model}`
-          : `OpenCode Zen sent no complete response event within ${Math.round(this.firstEventTimeoutMs / 1_000)}s for ${provider?.name},${model}`,
+        `${message} for ${provider?.name},${model}`,
         504,
         "provider_response_error"
       );
     }
 
-    const idleTimeoutMs = this.streamIdleTimeoutMs;
     logger?.debug?.(
       { provider: provider?.name, model, bufferedChunks: buffered.length },
       "opencode: Zen stream passed output gate"
@@ -616,22 +710,31 @@ export class OpencodeHeadersTransformer implements Transformer {
             controller.enqueue(chunk);
             return;
           }
+          const idleTimeoutMs = reasoningOpen
+            ? reasoningIdleTimeoutMs
+            : streamIdleTimeoutMs;
           const next = await readWithTimeout(idleTimeoutMs);
           if (next.kind === "abort") throw toClientAbortError(signal?.reason);
           if (next.kind === "timeout") {
             logger?.warn?.(
-              { provider: provider?.name, model },
+              { provider: provider?.name, model, reasoningOpen },
               "opencode: Zen stream idle after output progress"
             );
             throw createApiError(
-              `OpenCode Zen stream idle for ${Math.round(idleTimeoutMs / 1_000)}s`,
+              reasoningOpen
+                ? `OpenCode Zen reasoning idle for ${formatDuration(idleTimeoutMs)}`
+                : `OpenCode Zen stream idle for ${formatDuration(idleTimeoutMs)}`,
               504,
               "provider_response_error"
             );
           }
           const { done, value } = next.result;
-          if (done) controller.close();
-          else if (value) controller.enqueue(value);
+          if (done) {
+            controller.close();
+          } else if (value) {
+            observe(decoder.decode(value, { stream: true }));
+            controller.enqueue(value);
+          }
         } catch (error) {
           void reader.cancel(error).catch(() => {});
           controller.error(error);
@@ -683,8 +786,8 @@ export class OpencodeHeadersTransformer implements Transformer {
             controller.enqueue(value);
 
             pending += decoder.decode(value, { stream: true });
-            const events = pending.split(/\r?\n\r?\n/);
-            pending = events.pop() || "";
+            const { events, rest } = takeSseEvents(pending);
+            pending = rest;
             let failure: string | undefined;
             for (const event of events) {
               failure = OpencodeHeadersTransformer.zenStreamFailure(event);
@@ -719,29 +822,26 @@ export class OpencodeHeadersTransformer implements Transformer {
   }
 
   private static zenStreamFailure(event: string): string | undefined {
-    for (const line of event.split(/\r?\n/)) {
-      if (!line.startsWith("data:")) continue;
-      const data = line.slice(5).trim();
-      if (!data || data === "[DONE]") continue;
-      let parsed: any;
-      try {
-        parsed = JSON.parse(data);
-      } catch {
-        continue;
-      }
-      const finishReason = String(parsed?.choices?.[0]?.finish_reason || "");
-      if (/^network[-_\s]error$/i.test(finishReason)) {
-        return `Provider finish_reason: ${finishReason}`;
-      }
-      if (parsed?.error) {
-        const message =
-          typeof parsed.error?.message === "string"
-            ? parsed.error.message
-            : typeof parsed.error === "string"
-              ? parsed.error
-              : "OpenCode provider stream error";
-        return sanitizeUpstreamErrorText(message) || "OpenCode provider stream error";
-      }
+    const data = sseEventData(event);
+    if (!data || data === "[DONE]") return undefined;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      return undefined;
+    }
+    const finishReason = String(parsed?.choices?.[0]?.finish_reason || "");
+    if (/^network[-_\s]error$/i.test(finishReason)) {
+      return `Provider finish_reason: ${finishReason}`;
+    }
+    if (parsed?.error) {
+      const message =
+        typeof parsed.error?.message === "string"
+          ? parsed.error.message
+          : typeof parsed.error === "string"
+            ? parsed.error
+            : "OpenCode provider stream error";
+      return sanitizeUpstreamErrorText(message) || "OpenCode provider stream error";
     }
     return undefined;
   }
@@ -941,8 +1041,9 @@ export class OpencodeHeadersTransformer implements Transformer {
   /**
    * The free-tier gate answers `stream: false` with 403 FreeTierError even
    * when everything else is exact (curl A/B 2026-09-24). Force SSE on the
-   * wire; downstream non-streaming clients are unaffected because CCR
-   * de-streams SSE for them in the normal response path.
+   * wire; the normal response path does not de-stream SSE for JSON clients,
+   * so transformRequestIn records the forced shape and transformResponseOut
+   * restores JSON via collectForcedStream.
    */
   private ensureStreamedForFreeTier(body: any, context: any): any {
     if (!body || typeof body !== "object" || (body as any).stream === true) {
@@ -1168,24 +1269,27 @@ export class OpencodeHeadersTransformer implements Transformer {
     let pending = "";
     let terminated = false;
 
+    // Only events naming a stub can need a rename; skip parsing the rest
+    // (every text/reasoning delta) entirely.
+    const stubNeedles = Object.keys(aliases).map((name) => `"${name}"`);
     const rewriteEvent = (eventText: string): string => {
-      const lines = eventText.split(/\r?\n/);
-      const dataLines = lines.filter((line) => line.startsWith("data:"));
-      if (dataLines.length === 0) return eventText;
-      const payloads = dataLines.map((line) => line.slice(5).trim());
-      if (payloads.some((data) => !data || data === "[DONE]")) {
+      if (!stubNeedles.some((needle) => eventText.includes(needle))) {
         return eventText;
       }
+      const data = sseEventData(eventText);
+      if (!data || data === "[DONE]") return eventText;
       let parsed: any;
       try {
-        parsed = JSON.parse(payloads.join("\n"));
+        parsed = JSON.parse(data);
       } catch {
         return eventText;
       }
       if (!OpencodeHeadersTransformer.renameGateStubCalls(parsed, aliases)) {
         return eventText;
       }
-      const kept = lines.filter((line) => !line.startsWith("data:"));
+      const kept = eventText
+        .split(/\r?\n/)
+        .filter((line) => !line.startsWith("data:"));
       return [...kept, `data: ${JSON.stringify(parsed)}`].join("\n");
     };
 
@@ -1199,7 +1303,8 @@ export class OpencodeHeadersTransformer implements Transformer {
               pending = "";
               terminated = true;
               if (tail) {
-                const events = tail.split(/\r?\n\r?\n/);
+                const { events, rest } = takeSseEvents(tail);
+                if (rest) events.push(rest);
                 for (const event of events) {
                   if (!event) continue;
                   controller.enqueue(
@@ -1211,8 +1316,8 @@ export class OpencodeHeadersTransformer implements Transformer {
               return;
             }
             pending += decoder.decode(value, { stream: true });
-            const events = pending.split(/\r?\n\r?\n/);
-            pending = events.pop() || "";
+            const { events, rest } = takeSseEvents(pending);
+            pending = rest;
             let emitted = false;
             for (const event of events) {
               if (!event) continue;
@@ -1298,6 +1403,27 @@ export class OpencodeHeadersTransformer implements Transformer {
       .update(`${model}|${ip}|${ua}|${sample}`)
       .digest("hex")
       .slice(0, 32);
+  }
+
+  private invalidateSession(key: string): void {
+    deletePersistedSession("zen", key);
+  }
+
+  /**
+   * Conversation identity for the Zen session binding: an explicit client
+   * session id wherever the client supplies one (router-parsed, protocol
+   * context, or the shared header/body extractor used for cache keys), and
+   * the content fingerprint only for fully anonymous clients.
+   */
+  private resolveConversationId(request: any, context: any): string {
+    const body = request?.body || request;
+    const explicit =
+      context?.req?.sessionId ||
+      context?.protocolContext?.sessionId ||
+      context?.req?.protocolContext?.sessionId ||
+      extractClientSessionId({ body, headers: context?.req?.headers });
+    if (typeof explicit === "string" && explicit) return explicit;
+    return this.fingerprintConversation(request, context);
   }
 
   private getOrCreateSessionId(key: string): string {

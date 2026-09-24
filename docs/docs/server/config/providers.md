@@ -244,6 +244,57 @@ Requires the bridge process via `ccr chrome-bridge`.
 }
 ```
 
+### OpenCode Zen
+
+`opencode-headers` presents requests as the OpenCode CLI (session, request and
+project headers) and owns the upstream call to Zen. Keep it provider-wide,
+after the protocol owner.
+
+```json
+{
+  "name": "opencode",
+  "api_base_url": "https://opencode.ai/zen/v1/responses",
+  "api_key": "$OPENCODE_API_KEY",
+  "models": ["muse-spark-1.3-contributor-free"],
+  "transformer": {
+    "use": ["openai-responses", "opencode-headers"]
+  }
+}
+```
+
+**Session and retries.** Each conversation gets a persisted `x-opencode-session`
+(stable across restarts), keyed by the client's own session id when it sends
+one (Claude Code metadata, or headers such as `x-session-id`) and by a
+first-message fingerprint otherwise. Zen routes by that session. Transient
+failures (408/409/425/429/5xx, network errors) retry on the same session;
+Zen's deterministic bad-bucket errors (`401 No provider available`,
+`400 … Upstream request failed`) re-roll the session. When retries run out,
+bad-bucket errors surface as `503`, so CCR's normal fallback can try another
+model.
+
+**Free-tier models** (model id ending in `-free` on an `opencode.ai/zen/`
+endpoint) pass Zen's free-tier check only when requests look like the OpenCode
+client. For those models CCR:
+
+- always streams upstream. A non-streaming client still receives a JSON
+  response, collected from the stream.
+- adds function tools named exactly `read` and `shell` when the client lacks
+  them. Each stub clones a matching client tool's schema (`Read` / `read_file`,
+  `Bash` / `pwsh` / `exec`, or a `run_code`-style tool), and calls to a stub
+  are renamed back to that client tool in the response. A stub with no
+  counterpart tells the model not to call it.
+- sets `prompt_cache_key` to the Zen session id (Responses wire). Zen stalls
+  with `response.incomplete` when given a foreign key.
+- asks for `reasoning.summary: "detailed"` when the client reasons without
+  stating a summary preference.
+- fails over stalled streams: CCR holds the response until Zen sends real
+  output. It returns `504` (fallback-eligible) if no complete event arrives
+  within 30 s or no output within 60 s. A reasoning item that streams nothing
+  may stay silent for up to 5 minutes. After output starts, 60 s without data
+  (5 minutes inside reasoning) ends the stream with an error.
+
+Paid Zen models are sent unchanged.
+
 ## Model Selection
 
 When selecting a model in routing, use the format:
