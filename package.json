@@ -35,7 +35,7 @@
   "author": "caeliq",
   "license": "MIT",
   "dependencies": {
-    "@cursor/sdk": "^1.0.30"
+    "@cursor/sdk": "^1.0.32"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -51,5 +51,5 @@
     "node": ">=22.19.0",
     "pnpm": ">=8.0.0"
   },
-  "packageManager": "pnpm@11.24.0"
+  "packageManager": "pnpm@12.6.0"
 }

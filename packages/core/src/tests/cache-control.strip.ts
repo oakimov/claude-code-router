@@ -234,7 +234,7 @@ function testCacheSessionKeyIgnoresSystemTextWhenSessionPresent() {
     messages: [
       {
         role: "system",
-        content: "x-anthropic-billing-header: cc_version=2.1.251.86c",
+        content: "x-anthropic-billing-header: cc_version=2.1.280.86c",
       },
       { role: "user", content: "hi" },
     ],
@@ -244,7 +244,7 @@ function testCacheSessionKeyIgnoresSystemTextWhenSessionPresent() {
     messages: [
       {
         role: "system",
-        content: "x-anthropic-billing-header: cc_version=2.1.251.e59; longer",
+        content: "x-anthropic-billing-header: cc_version=2.1.280.e59; longer",
       },
       { role: "user", content: "hi" },
     ],
@@ -262,7 +262,7 @@ function testCacheSessionKeyFromAnthropicMetadataJson() {
           session_id: "32c43daa-888d-4573-a563-ee88b833801d",
         }),
       },
-      system: "x-anthropic-billing-header: cc_version=2.1.251.e59",
+      system: "x-anthropic-billing-header: cc_version=2.1.280.e59",
     },
   });
   assert.equal(session, "32c43daa-888d-4573-a563-ee88b833801d");

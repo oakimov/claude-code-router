@@ -134,7 +134,7 @@ Beta token 只会通过 `anthropic-beta` HTTP 请求头发送。CCR 不会在 Me
 
 对于**其他客户端**路由到范围内的 Anthropic 配置时，CCR 会在 Anthropic `system` 数组最前面（调用方自带的 system 文本之前）插入两个条目，与 Claude Code 自身发送的内容一致：
 
-1. 账单标记文本块：对于一方 Anthropic 配置为 `x-anthropic-billing-header: cc_version=${CC_VERSION}.${suffix}; cc_entrypoint=unknown; cch=00000;` —— 尽管名字里带 "header"，它实际是以 `system[0]` 文本形式传输，**不是** HTTP 请求头。`suffix` 是依据第一条用户消息文本与 CLI 版本推导出的 3 位十六进制摘要。当前 `2.1.226` 配置不再使用旧版随机 `cch` 行为。二者均不带 `cache_control`。
+1. 账单标记文本块：对于一方 Anthropic 配置为 `x-anthropic-billing-header: cc_version=${CC_VERSION}.${suffix}; cc_entrypoint=unknown; cch=00000;` —— 尽管名字里带 "header"，它实际是以 `system[0]` 文本形式传输，**不是** HTTP 请求头。`suffix` 是依据第一条用户消息文本与 CLI 版本推导出的 3 位十六进制摘要。当前 `2.1.280` 配置不再使用旧版随机 `cch` 行为。二者均不带 `cache_control`。
 2. 身份文本块：`You are Claude Code, Anthropic's official CLI for Claude.`（`system[1]`）。模拟路径会将选定的缓存配置应用到这个可缓存块；调用方自带的 `cache_control` 不会覆盖固定的版本配置。
 
 对于**真实的 Claude Code 客户端**，其自身的 system 块 —— 包括自带的账单标记和身份字符串 —— 会被原样转发；`claude-auth` 不会触碰、移除或重新排列它们。
@@ -149,7 +149,7 @@ Claude Code 只有在请求的模型 id 携带 `[1m]` 标记时，才会从 wire
 
 ### Prompt 缓存：原生透传 vs 模拟
 
-原生 Claude Desktop 和 Claude Code CLI 请求会完整保留客户端自己的缓存标记；CCR 不会添加、删除或重排它们。当前 Desktop 3P 对话通过 Desktop 内置的 Agent SDK 运行，因此可以像 Claude Code 一样在 system 和 message 内容上生成缓存断点；实测请求使用 5 分钟 ephemeral 缓存。没有标记的原生请求仍不会由 CCR 自动添加标记。只有“其他客户端”在目标为范围内的 Anthropic 配置时才会生成缓存字段：账单块不加缓存标记，可缓存的 system 块使用固定的 2.1.226 配置，并在消息尾部设置最终断点。其他目标以及其他客户端协议都不会套用 Claude Code 的 system 或缓存改写。
+原生 Claude Desktop 和 Claude Code CLI 请求会完整保留客户端自己的缓存标记；CCR 不会添加、删除或重排它们。当前 Desktop 3P 对话通过 Desktop 内置的 Agent SDK 运行，因此可以像 Claude Code 一样在 system 和 message 内容上生成缓存断点；实测请求使用 5 分钟 ephemeral 缓存。没有标记的原生请求仍不会由 CCR 自动添加标记。只有“其他客户端”在目标为范围内的 Anthropic 配置时才会生成缓存字段：账单块不加缓存标记，可缓存的 system 块使用固定的 2.1.280 配置，并在消息尾部设置最终断点。其他目标以及其他客户端协议都不会套用 Claude Code 的 system 或缓存改写。
 
 ### 认证恢复
 
@@ -169,7 +169,7 @@ CCR 的目标是让请求**与真实 Claude Code 流量无法区分**，而不�
 
 | 变量 | 作用 |
 |---|---|
-| `ANTHROPIC_CLI_VERSION` | 覆盖账单标记与合成 `User-Agent` 中使用的 `CC_VERSION`（默认 `2.1.226`） |
+| `ANTHROPIC_CLI_VERSION` | 覆盖账单标记与合成 `User-Agent` 中使用的 `CC_VERSION`（默认 `2.1.280`） |
 | `CLAUDE_CODE_ENTRYPOINT` | 覆盖账单标记与合成 `User-Agent` 中的 `cc_entrypoint` 值（账单默认 `unknown`，User-Agent 默认 `cli`） |
 | `ANTHROPIC_USER_AGENT` | 直接覆盖合成的 `User-Agent` 请求头（仅作用于其他客户端分支；原生 Desktop/CLI 自身的 `User-Agent` 始终原样转发） |
 | `ANTHROPIC_CUSTOM_HEADERS` | 向合成 CLI 配置添加按行分隔的自定义应用请求头；凭据和传输层请求头会被忽略 |

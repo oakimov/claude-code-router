@@ -71,7 +71,7 @@ function ensureHermeticAuthFileForTest(): string {
 // --- Classification -------------------------------------------------------
 
 function testIsClaudeCodeClient() {
-  assert.equal(isClaudeCodeClient("claude-cli/2.1.226 (external, cli)"), true);
+  assert.equal(isClaudeCodeClient("claude-cli/2.1.280 (external, cli)"), true);
   assert.equal(isClaudeCodeClient("opencode/0.x"), false);
   assert.equal(isClaudeCodeClient("cursor"), false);
   assert.equal(isClaudeCodeClient(undefined), false);
@@ -84,6 +84,11 @@ function testSuffixVectorsPinned() {
   assert.equal(
     computeVersionSuffix("completely different prompt here xyz", "2.1.226"),
     "906"
+  );
+  assert.equal(computeVersionSuffix("say ok", "2.1.280"), "790");
+  assert.equal(
+    computeVersionSuffix("completely different prompt here xyz", "2.1.280"),
+    "0ec"
   );
 }
 
@@ -283,7 +288,7 @@ async function testForeignSystemContentNotRelocatedForClaudeCode() {
     messages: [{ role: "user", content: "hi" }],
   } as UnifiedChatRequest;
   const context: TransformerContext = {
-    req: { headers: { "user-agent": "claude-cli/2.1.226" } },
+    req: { headers: { "user-agent": "claude-cli/2.1.280" } },
   };
 
   await transformer.transformRequestIn(request, {}, context);
@@ -302,6 +307,10 @@ function testExactBetaLists() {
   try {
     assert.equal(
       resolveClaudeAuthBetas("claude-opus-5"),
+      "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07"
+    );
+    assert.equal(
+      resolveClaudeAuthBetas("claude-opus-5-5"),
       "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07"
     );
     assert.equal(
@@ -331,6 +340,8 @@ function testExactBetaLists() {
     // only models advertising the capability receive its beta.
     assert.ok(!resolveClaudeAuthBetas("claude-sonnet-4-5", { includeEffort: true }).includes("effort-2025-11-24"));
     assert.ok(resolveClaudeAuthBetas("claude-opus-5", { includeEffort: true }).includes("effort-2025-11-24"));
+    assert.ok(resolveClaudeAuthBetas("claude-opus-5-5", { includeEffort: true }).includes("effort-2025-11-24"));
+    assert.ok(resolveClaudeAuthBetas("claude-fable-5-1", { includeEffort: true }).includes("effort-2025-11-24"));
   } finally {
     if (originalEnvBeta === undefined) delete process.env.ANTHROPIC_BETAS;
     else process.env.ANTHROPIC_BETAS = originalEnvBeta;
@@ -353,6 +364,10 @@ function testUsageParityOneMillionSuffix() {
   assert.equal(
     modelIdForRequestedOneMillionBeta("claude-sonnet-5", true),
     "claude-sonnet-5"
+  );
+  assert.equal(
+    modelIdForRequestedOneMillionBeta("claude-opus-5-5", true),
+    "claude-opus-5-5"
   );
 }
 
@@ -387,7 +402,7 @@ async function testNoPreflightCountTokensCall() {
       messages: [{ role: "user", content: "hello" }],
     } as UnifiedChatRequest;
     await transformer.transformRequestIn(request, {}, {
-      req: { headers: { "user-agent": "claude-cli/2.1.226" } },
+      req: { headers: { "user-agent": "claude-cli/2.1.280" } },
     });
     assert.equal(
       calledUrls.some((url) => url.includes("count_tokens")),
@@ -436,7 +451,7 @@ async function testNoLocalContextRejection() {
     let result: any;
     try {
       result = await transformer.transformRequestIn(request, {}, {
-        req: { headers: { "user-agent": "claude-cli/2.1.226" } },
+        req: { headers: { "user-agent": "claude-cli/2.1.280" } },
       });
     } catch (err) {
       thrown = err;
@@ -554,7 +569,7 @@ async function testSynthesizedHeadersPresenceByClient() {
       messages: [{ role: "user", content: "hi" }],
     } as UnifiedChatRequest;
     const ccResult = await ccTransformer.transformRequestIn(ccRequest, {}, {
-      req: { headers: { "user-agent": "claude-cli/2.1.226" } },
+      req: { headers: { "user-agent": "claude-cli/2.1.280" } },
     });
     for (const name of [
       "x-app",
@@ -567,6 +582,86 @@ async function testSynthesizedHeadersPresenceByClient() {
         ccResult.config.headers[name],
         undefined,
         `did not expect synthesized header ${name} to be fabricated for a genuine CC client (only forwarded if present on the inbound request)`
+      );
+    }
+  } finally {
+    if (originalAuthFile === undefined) delete process.env.CCR_CLAUDE_AUTH_FILE;
+    else process.env.CCR_CLAUDE_AUTH_FILE = originalAuthFile;
+    if (originalDeviceFile === undefined) delete process.env.CCR_CLAUDE_DEVICE_FILE;
+    else process.env.CCR_CLAUDE_DEVICE_FILE = originalDeviceFile;
+    rmSync(dir, { recursive: true, force: true });
+    resetState();
+  }
+}
+
+async function testGatewayHintHeadersForwardedForGenuineClient() {
+  const dir = mkdtempSync(join(tmpdir(), "ccr-claude-auth-gateway-hints-"));
+  const authFile = join(dir, "claude_auth.json");
+  const deviceFile = join(dir, "claude_device.json");
+  const originalAuthFile = process.env.CCR_CLAUDE_AUTH_FILE;
+  const originalDeviceFile = process.env.CCR_CLAUDE_DEVICE_FILE;
+  process.env.CCR_CLAUDE_AUTH_FILE = authFile;
+  process.env.CCR_CLAUDE_DEVICE_FILE = deviceFile;
+  writeFileSync(
+    authFile,
+    JSON.stringify({
+      access_token: "hermetic-subscription-token",
+      token_type: "Bearer",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    }),
+    { mode: 0o600 }
+  );
+
+  const hintHeaders = {
+    "x-claude-code-request-class": "coding",
+    "x-claude-code-agent-type": "main",
+    "x-claude-code-prev-tool-durations": "[]",
+    "x-claude-code-compaction": "auto",
+    "x-claude-code-context-compacted": "false",
+  };
+  try {
+    resetState();
+    const transformer = new ClaudeAuthTransformer();
+    const result = await transformer.transformRequestIn(
+      {
+        model: "claude-opus-5-5",
+        max_tokens: 100,
+        messages: [{ role: "user", content: "hi" }],
+      } as UnifiedChatRequest,
+      {},
+      {
+        req: {
+          headers: {
+            "user-agent": "claude-cli/2.1.280 (external, cli)",
+            "x-app": "cli",
+            ...hintHeaders,
+          },
+        },
+      }
+    );
+    for (const [name, value] of Object.entries(hintHeaders)) {
+      assert.equal(
+        result.config.headers[name],
+        value,
+        `expected gateway hint header ${name} forwarded for genuine CC client`
+      );
+    }
+
+    resetState();
+    const bare = await transformer.transformRequestIn(
+      {
+        model: "claude-opus-5-5",
+        max_tokens: 100,
+        messages: [{ role: "user", content: "hi" }],
+      } as UnifiedChatRequest,
+      {},
+      { req: { headers: { "user-agent": "claude-cli/2.1.280 (external, cli)" } } }
+    );
+    for (const name of Object.keys(hintHeaders)) {
+      assert.equal(
+        bare.config.headers[name],
+        undefined,
+        `did not expect gateway hint header ${name} fabricated when client omits it`
       );
     }
   } finally {
@@ -651,7 +746,7 @@ async function testAuthRecoveryContract() {
       messages: [{ role: "user", content: "hi" }],
     } as UnifiedChatRequest;
     const result = await transformer.transformRequestIn(request, {}, {
-      req: { headers: { "user-agent": "claude-cli/2.1.226" } },
+      req: { headers: { "user-agent": "claude-cli/2.1.280" } },
     });
     writeAuth({
       access_token: "token-b",
@@ -748,7 +843,65 @@ function testCatalogDrivenGating() {
   // Explicit spot checks called out by the plan.
   assert.ok(resolveClaudeAuthBetas("claude-sonnet-5").includes("mid-conversation-system-2026-04-07"));
   assert.ok(resolveClaudeAuthBetas("claude-opus-4-8").includes("mid-conversation-system-2026-04-07"));
-  assert.ok(!resolveClaudeAuthBetas("claude-opus-4-7").includes("mid-conversation-system-2026-04-07"));
+  assert.ok(resolveClaudeAuthBetas("claude-opus-4-7").includes("mid-conversation-system-2026-04-07"));
+  assert.ok(resolveClaudeAuthBetas("claude-opus-5-5").includes("mid-conversation-system-2026-04-07"));
+}
+
+// --- Opus 5.5 / Fable 5.1 always-on thinking + no forced tools -----------
+
+function testAlwaysAdaptiveAndNoForcedToolChoice() {
+  for (const modelId of ["claude-opus-5-5", "claude-fable-5-1"]) {
+    const entry = CLAUDE_MODEL_CATALOG[modelId];
+
+    const disabled: Record<string, any> = { thinking: { type: "disabled" } };
+    applyClaudeModelCapabilityAdjustments(disabled, entry);
+    assert.deepEqual(disabled.thinking, { type: "adaptive", display: "summarized" });
+
+    for (const forced of ["any", "tool"]) {
+      const body: Record<string, any> = {
+        tool_choice:
+          forced === "tool" ? { type: "tool", name: "x" } : { type: forced },
+      };
+      applyClaudeModelCapabilityAdjustments(body, entry);
+      assert.equal(body.tool_choice.type, "auto");
+    }
+    const parallel: Record<string, any> = {
+      tool_choice: { type: "any", disable_parallel_tool_use: true },
+    };
+    applyClaudeModelCapabilityAdjustments(parallel, entry);
+    assert.deepEqual(parallel.tool_choice, {
+      disable_parallel_tool_use: true,
+      type: "auto",
+    });
+
+    const untouched: Record<string, any> = { tool_choice: { type: "none" } };
+    applyClaudeModelCapabilityAdjustments(untouched, entry);
+    assert.deepEqual(untouched.tool_choice, { type: "none" });
+  }
+
+  // opus-5 shares rejects_disabled_thinking yet still accepts disabled
+  // thinking at low effort, so the coercion must not fire there.
+  const opus5: Record<string, any> = { thinking: { type: "disabled" } };
+  applyClaudeModelCapabilityAdjustments(opus5, CLAUDE_MODEL_CATALOG["claude-opus-5"]);
+  assert.deepEqual(opus5.thinking, { type: "disabled" });
+
+  // Models without the caps pass everything through.
+  const legacy: Record<string, any> = {
+    thinking: { type: "disabled" },
+    tool_choice: { type: "any" },
+  };
+  applyClaudeModelCapabilityAdjustments(legacy, CLAUDE_MODEL_CATALOG["claude-opus-4-8"]);
+  assert.deepEqual(legacy.thinking, { type: "disabled" });
+  assert.deepEqual(legacy.tool_choice, { type: "any" });
+
+  // Unknown models degrade to no clamping.
+  const unknown: Record<string, any> = {
+    thinking: { type: "disabled" },
+    tool_choice: { type: "tool", name: "x" },
+  };
+  applyClaudeModelCapabilityAdjustments(unknown, undefined);
+  assert.deepEqual(unknown.thinking, { type: "disabled" });
+  assert.deepEqual(unknown.tool_choice, { type: "tool", name: "x" });
 }
 
 // --- Chain composition (step 0) ---------------------------------------------
@@ -919,7 +1072,7 @@ async function testChainClaudeAuthPlusAnthropicMergesNotReplaces() {
       messages: [{ role: "user", content: "hi" }],
     } as UnifiedChatRequest;
     const ccContext: TransformerContext = {
-      req: { headers: { "user-agent": "claude-cli/2.1.226" } },
+      req: { headers: { "user-agent": "claude-cli/2.1.280" } },
     };
     const cc = await runProviderChain(ccRequest, provider, ccContext);
     const ccOutbound = canonicalizeOutboundHeaders(cc.config.headers, provider.apiKey);
@@ -979,7 +1132,7 @@ async function testSingletonSafetyConcurrentRequests() {
       messages: [{ role: "user", content: "native request" }],
     } as UnifiedChatRequest;
     const nativeContext: TransformerContext = {
-      req: { headers: { "user-agent": "claude-cli/2.1.226" } },
+      req: { headers: { "user-agent": "claude-cli/2.1.280" } },
     };
 
     const nonClaudeCodeRequest: UnifiedChatRequest = {
@@ -1062,6 +1215,8 @@ async function main() {
     await testToolNamesSurviveUnprefixed();
     await testAuthRecoveryContract();
     testCatalogDrivenGating();
+    testAlwaysAdaptiveAndNoForcedToolChoice();
+    await testGatewayHintHeadersForwardedForGenuineClient();
     await testChainAnthropicAloneHasNoMarkers();
     await testChainClaudeAuthPlusAnthropicMergesNotReplaces();
     await testSingletonSafetyConcurrentRequests();

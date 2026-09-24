@@ -113,8 +113,8 @@ Native Desktop and CLI requests use raw Anthropic request/response pass-through.
 | `Authorization` / `x-api-key` | Provider-owned credential: API key for direct `Anthropic`, OAuth Bearer for `claude-auth` | Provider-owned credential for the selected profile |
 | `Content-Type` | `application/json` (set by `Anthropic`) | same |
 | `anthropic-version` | `2023-06-01` (set by `Anthropic`) | same |
-| `anthropic-beta` | Preserved; OAuth additionally ensures `oauth-2025-04-20` | Synthesized from the 2.1.226 profile; API-key mode does not add the OAuth beta |
-| Application headers | Forwarded verbatim, including Desktop custom headers | Synthesized as the 2.1.226 CLI profile |
+| `anthropic-beta` | Preserved; OAuth additionally ensures `oauth-2025-04-20` | Synthesized from the 2.1.280 profile; API-key mode does not add the OAuth beta |
+| Application headers | Forwarded verbatim, including Desktop custom headers | Synthesized as the 2.1.280 CLI profile |
 
 Hop-by-hop headers (`connection`, `host`, `accept-encoding`, `content-length`) sent by the client are never forwarded. The billing marker (`x-anthropic-billing-header`) is **not** an HTTP header — see [Billing and identity system blocks](#billing-and-identity-system-blocks).
 
@@ -124,7 +124,7 @@ Hop-by-hop headers (`connection`, `host`, `accept-encoding`, `content-length`) s
 
 **Native Desktop/CLI:** application headers and body shapes are preserved. OAuth adds the required `oauth-2025-04-20` token; API-key auth does not invent OAuth headers.
 
-**Other clients:** the value is built from the frozen Claude Code 2.1.226 profile and model capability catalog. OAuth mode includes `oauth-2025-04-20`; API-key mode does not:
+**Other clients:** the value is built from the frozen Claude Code 2.1.280 profile and model capability catalog. OAuth mode includes `oauth-2025-04-20`; API-key mode does not:
 
 - `claude-code-20250219` — ordinary non-Haiku profiles (the current CLI omits it for ordinary Haiku requests)
 - `oauth-2025-04-20` — OAuth mode only
@@ -142,9 +142,9 @@ Beta tokens are emitted only in the `anthropic-beta` HTTP header. CCR does not p
 
 ### Billing and identity system blocks
 
-For **other clients routed to an in-scope Anthropic provider**, CCR builds the Anthropic `system` array down to the Claude Code 2.1.226 profile:
+For **other clients routed to an in-scope Anthropic provider**, CCR builds the Anthropic `system` array down to the Claude Code 2.1.280 profile:
 
-1. A billing marker text block: `x-anthropic-billing-header: cc_version=${CC_VERSION}.${suffix}; cc_entrypoint=unknown; cch=00000;` for the first-party Anthropic profile — despite its name this travels as `system[0]` text, **not** an HTTP header. `suffix` is a 3-hex-char digest derived from the first user message's text and the CLI version. The current `2.1.226` profile does not use the older random `cch` behavior. Neither carries `cache_control`.
+1. A billing marker text block: `x-anthropic-billing-header: cc_version=${CC_VERSION}.${suffix}; cc_entrypoint=unknown; cch=00000;` for the first-party Anthropic profile — despite its name this travels as `system[0]` text, **not** an HTTP header. `suffix` is a 3-hex-char digest derived from the first user message's text and the CLI version. The current `2.1.280` profile does not use the older random `cch` behavior. Neither carries `cache_control`.
 2. The identity text block: `You are Claude Code, Anthropic's official CLI for Claude.` (`system[1]`). The emulation then applies the selected cache profile to this cacheable block; caller-authored cache markers are not allowed to override the pinned profile.
 
 Anthropic's OAuth billing validator inspects `system[]` content past the identity block and rejects requests carrying a foreign harness prompt there with an "out of extra usage" 400 — the calling client's own system prompt makes the traffic self-evidently non-Claude-Code even with correct headers. CCR's third-party Anthropic emulation mirrors the technique used by Claude Code OAuth clients (e.g. `opencode-claude-auth`): whatever the caller supplied beyond `system[1]` is relocated into the first user message (prepended, in order) rather than left in `system[]`. The content still reaches the model unchanged, just as part of the first user turn. If there is no user message to attach it to, nothing is relocated — the caller's system content stays in `system[]` rather than being dropped.
@@ -163,7 +163,7 @@ Claude Code strips the `[1m]` marker from the wire `model` field and adds the `c
 
 ### Prompt caching: native vs. emulated
 
-Native Desktop and CLI cache markers are preserved exactly, including feature-gated TTL/scope choices. Current Desktop 3P conversations run through Desktop's bundled Agent SDK and can therefore author Claude Code-shaped system/message breakpoints; observed requests use 5-minute ephemeral entries. CCR neither adds markers to a marker-less native request nor changes markers that are present. Only the `other` path authors cache fields, using the 2.1.226 profile: the billing block remains unmarked, cacheable system blocks receive the profile's cache control, and one message tail receives the final breakpoint. There is no universal CCR cache normalizer.
+Native Desktop and CLI cache markers are preserved exactly, including feature-gated TTL/scope choices. Current Desktop 3P conversations run through Desktop's bundled Agent SDK and can therefore author Claude Code-shaped system/message breakpoints; observed requests use 5-minute ephemeral entries. CCR neither adds markers to a marker-less native request nor changes markers that are present. Only the `other` path authors cache fields, using the 2.1.280 profile: the billing block remains unmarked, cacheable system blocks receive the profile's cache control, and one message tail receives the final breakpoint. There is no universal CCR cache normalizer.
 
 ### Auth recovery
 
@@ -183,7 +183,7 @@ CCR's goal is to make requests **indistinguishable from genuine Claude Code traf
 
 | Variable | Effect |
 |---|---|
-| `ANTHROPIC_CLI_VERSION` | Overrides the emulation profile's billing marker and synthesized `User-Agent` (default `2.1.226`) |
+| `ANTHROPIC_CLI_VERSION` | Overrides the emulation profile's billing marker and synthesized `User-Agent` (default `2.1.280`) |
 | `CLAUDE_CODE_ENTRYPOINT` | Overrides the `cc_entrypoint` value in the billing marker and the synthesized `User-Agent` (billing default `unknown`; User-Agent default `cli`) |
 | `ANTHROPIC_USER_AGENT` | Overrides the synthesized `User-Agent` header outright (non-Claude-Code branch only; a real Claude Code client's own `User-Agent` is always forwarded verbatim) |
 | `ANTHROPIC_CUSTOM_HEADERS` | Adds newline-delimited custom application headers to the synthesized CLI profile; credentials and transport headers are ignored |

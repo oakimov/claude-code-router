@@ -356,6 +356,184 @@ async function testFailedAfterPartialToolCall() {
   assert.equal(doneCount, 1);
 }
 
+async function testIncompleteMaxOutputTokensClosesStream() {
+  // Zen free-tier: reasoning consumes max_output_tokens, then
+  // response.incomplete with an empty output and no response.completed.
+  // The Chat stream must still finish (length) and emit [DONE], or the
+  // Anthropic client sits on message_start until it aborts.
+  const { chunks, doneCount } = await convertStream([
+    '{"type":"response.created","response":{"id":"resp_inc","model":"muse-spark-1.3-contributor-free","status":"in_progress"}}',
+    '{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","status":"in_progress","summary":[]}}',
+    '{"type":"response.incomplete","response":{"id":"resp_inc","status":"incomplete","model":"muse-spark-1.3-contributor-free","incomplete_details":{"reason":"max_output_tokens"},"output":[],"usage":{"input_tokens":594,"output_tokens":60,"total_tokens":654,"input_tokens_details":{"cached_tokens":0}}}}',
+  ]);
+  assert.equal(doneCount, 1);
+  const finish = chunks.find((chunk) => chunk.choices?.[0]?.finish_reason);
+  assert.ok(finish, "expected a finish chunk");
+  assert.equal(finish.choices[0].finish_reason, "length");
+  assert.equal(finish.usage.completion_tokens, 60);
+  assert.equal(finish.usage.prompt_tokens, 594);
+}
+
+async function testIncompleteContentFilter() {
+  const { chunks, doneCount } = await convertStream([
+    '{"type":"response.incomplete","response":{"id":"resp_cf","status":"incomplete","model":"muse","incomplete_details":{"reason":"content_filter"},"output":[]}}',
+  ]);
+  assert.equal(doneCount, 1);
+  assert.equal(chunks.at(-1).choices[0].finish_reason, "content_filter");
+}
+
+async function testIncompletePartialToolCallIsNotExecutable() {
+  const partial = {
+    id: "fc_partial",
+    type: "function_call",
+    name: "shell",
+    call_id: "call_partial",
+    arguments: '{"command":',
+    status: "in_progress",
+  };
+  const { chunks, doneCount } = await convertStream([
+    JSON.stringify({
+      type: "response.incomplete",
+      response: {
+        id: "resp_partial",
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        output: [partial],
+      },
+    }),
+  ]);
+  assert.equal(doneCount, 1);
+  assert.equal(chunks.at(-1).choices[0].finish_reason, "length");
+
+  const tf = new OpenAIResponsesTransformer();
+  tf.logger = logger;
+  const out = await tf.transformResponseOut(
+    new Response(
+      JSON.stringify({
+        id: "resp_partial",
+        object: "response",
+        status: "incomplete",
+        model: "muse",
+        created_at: 1,
+        incomplete_details: { reason: "max_output_tokens" },
+        output: [partial],
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    )
+  );
+  const chat: any = await out.json();
+  assert.equal(chat.choices[0].finish_reason, "length");
+}
+
+async function testIncompleteJsonFinishReason() {
+  const tf = new OpenAIResponsesTransformer();
+  tf.logger = logger;
+  const out = await tf.transformResponseOut(
+    new Response(
+      JSON.stringify({
+        id: "resp_inc_json",
+        object: "response",
+        status: "incomplete",
+        model: "muse-spark-1.3-contributor-free",
+        created_at: 1,
+        incomplete_details: { reason: "max_output_tokens" },
+        output: [],
+        usage: { input_tokens: 10, output_tokens: 60, total_tokens: 70 },
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    )
+  );
+  const chat = await out.json();
+  assert.equal(chat.choices[0].finish_reason, "length");
+  assert.equal(chat.usage.completion_tokens, 60);
+}
+
+async function testErrorEventClosesStream() {
+  const { chunks, doneCount } = await convertStream([
+    '{"type":"response.output_text.delta","item_id":"msg_1","delta":"partial"}',
+    '{"type":"error","code":"ERR_SOMETHING","message":"Something went wrong","param":null,"sequence_number":2}',
+  ]);
+  assert.equal(chunks[0].choices[0].delta.content, "partial");
+  assert.equal(chunks[1].error.message, "Something went wrong");
+  assert.equal(chunks[1].error.type, "api_error");
+  assert.equal(chunks[1].error.code, "ERR_SOMETHING");
+  assert.equal(chunks.length, 2);
+  assert.equal(doneCount, 1);
+}
+
+async function jsonTerminal(status: string, error?: Record<string, string>) {
+  const tf = new OpenAIResponsesTransformer();
+  tf.logger = logger;
+  return tf.transformResponseOut(
+    new Response(
+      JSON.stringify({
+        id: "resp_term",
+        object: "response",
+        status,
+        model: "gpt",
+        created_at: 1,
+        error: error ?? null,
+        output: [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "partial" }],
+          },
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    )
+  );
+}
+
+async function testFailedJsonIsError() {
+  const out = await jsonTerminal("failed", {
+    message: "server exploded",
+    type: "server_error",
+    code: "server_error",
+  });
+  assert.equal(out.status, 502);
+  const body = await out.json();
+  assert.equal(body.error.message, "server exploded");
+  assert.equal(body.error.type, "server_error");
+  assert.equal(body.choices, undefined);
+}
+
+async function testCancelledJsonIsError() {
+  const out = await jsonTerminal("cancelled");
+  assert.equal(out.status, 502);
+  const body = await out.json();
+  assert.equal(body.error.message, "Upstream response cancelled");
+  assert.equal(body.error.code, "response_cancelled");
+  assert.equal(body.choices, undefined);
+}
+
+async function testResponsesErrorEventPassesThrough() {
+  const tf = new OpenAIResponsesTransformer();
+  tf.logger = logger;
+  const out = await tf.transformResponseIn(
+    new Response(
+      [
+        'data: {"type":"response.created","response":{"id":"resp_e","status":"in_progress","output":[]}}',
+        "",
+        'data: {"type":"error","code":"ERR_SOMETHING","message":"Something went wrong","param":null,"sequence_number":2}',
+        "",
+        'data: {"type":"response.completed","response":{"id":"resp_e","status":"completed","output":[]}}',
+        "",
+      ].join("\n"),
+      { headers: { "Content-Type": "text/event-stream" } }
+    )
+  );
+  const raw = await out.text();
+  const events = raw
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(5)));
+  assert.equal(events.length, 2);
+  assert.equal(events[1].type, "error");
+  assert.equal(events[1].message, "Something went wrong");
+  assert.ok(!events.some((event) => event.type === "response.completed"));
+}
+
 async function testFailedMessageIsRedacted() {
   const secret = "sk-zzzzzzzzzzzzzzzzzzzzzzzz";
   const { chunks, raw } = await convertStream([
@@ -378,6 +556,14 @@ async function main() {
   await testCompletedStreamPreservesUsage();
   await testAddedWithContentDoesNotDuplicateOnCompleted();
   await testMessageThenToolCallTerminalTextNotDuplicated();
+  await testIncompleteMaxOutputTokensClosesStream();
+  await testIncompleteContentFilter();
+  await testIncompletePartialToolCallIsNotExecutable();
+  await testIncompleteJsonFinishReason();
+  await testErrorEventClosesStream();
+  await testFailedJsonIsError();
+  await testCancelledJsonIsError();
+  await testResponsesErrorEventPassesThrough();
   await testFailedBeforeOutput();
   await testFailedAfterPartialText();
   await testFailedAfterPartialToolCall();

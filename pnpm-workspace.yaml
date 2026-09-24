@@ -47,9 +47,12 @@ minimumReleaseAgeExclude:
   - adm-zip@0.6.0
   - body-parser@1.20.6
   - find-my-way@9.6.1
-  - '@ai-sdk/gateway@3.0.176'
-  - '@ai-sdk/react@3.0.261'
-  - ai@6.0.258
+  - '@ai-sdk/gateway@3.0.176 || 3.0.200'
+  - '@ai-sdk/react@3.0.261 || 3.0.293'
+  - ai@6.0.258 || 6.0.290
+  - '@ai-sdk/anthropic@3.0.122'
+  - '@ai-sdk/openai@3.0.117'
+  - '@ai-sdk/provider-utils@4.0.54'
 overrides:
   # Upstream parents are current but cannot reach these maintained children yet.
   # Keep every compatibility/security bridge scoped to the exact dependency edge.
@@ -65,20 +68,28 @@ overrides:
   # imports Headers (and only uses it on Node <18), so share core's direct
   # maintained undici 8 line instead of installing a second major.
   '@connectrpc/connect-node@1.7.0>undici': ^8.9.0
-  # @ai-sdk/provider-utils@4.0.46 declares undici ^6.28.0 but never imports it
+  # @ai-sdk/provider-utils@4.0.54 declares undici ^6.28.0 but never imports it
   # (its fetch path uses globalThis.fetch / safe-node-fetch). Collapse the
   # declared major onto core's maintained undici 8 line to drop the 6.x major.
-  '@ai-sdk/provider-utils@4.0.46>undici': ^8.9.0
+  '@ai-sdk/provider-utils@4.0.54>undici': ^8.9.0
   # Consolidate narrow patch/minor splits whose newer releases preserve the
   # APIs used by these exact parents. Keep exact edges so unrelated consumers
   # retain their declared compatibility boundaries.
   '@pnpm/network.ca-file@1.0.2>graceful-fs': 4.2.11
-  'sitemap@7.1.3>@types/node': 26.4.0
+  'sitemap@7.1.3>@types/node': 26.4.1
   'p-retry@4.6.2>@types/retry': 0.12.2
   'serve-handler@6.1.7>bytes': 3.1.2
   'accepts@1.3.8>negotiator': 0.6.4
   'readable-stream@2.3.8>safe-buffer': 5.2.1
   'string_decoder@1.1.1>safe-buffer': 5.2.1
+  # Transitive security consolidations: every parent range already admits the
+  # patched child; the lockfile pin is stale, so scope the resolution to the
+  # exact edge instead of letting the old version linger.
+  'postcss-colormin@6.1.0>colord': ^2.10.0
+  'postcss-minify-gradients@6.0.3>colord': ^2.10.0
+  '@svgr/plugin-svgo@8.1.0>svgo': ^3.3.5
+  'postcss-svgo@6.0.3>svgo': ^3.3.5
+  '@modelcontextprotocol/sdk@1.30.0>hono': ^4.13.8
   # @google/genai pins google-auth-library 10 while core depends on 11. The two
   # majors ship a byte-identical build/src — 11.0.0 exists only to raise the
   # Node floor to >=22 (met here) and to take gcp-metadata 9 / logging-utils 2.

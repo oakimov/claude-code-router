@@ -28,7 +28,8 @@ const QWEN_AUTH_FILE = join(homedir(), ".claude-code-router", "qwen_auth.json");
 const XAI_AUTH_FILE = join(homedir(), ".claude-code-router", "xai_auth.json");
 const CONFIG_PATH_DISPLAY = "~/.claude-code-router/config.json";
 const READABLE_CONFIG_FILE = process.env.CCR_CONFIG_FILE || CONFIG_FILE;
-const DEFAULT_CODEX_CLIENT_VERSION = "0.153.1";
+const DEFAULT_CODEX_CLIENT_VERSION =
+  process.env.CODEX_CLI_VERSION || "0.156.1";
 const CLAUDE_OAUTH_REQUIRED_BETA = "oauth-2025-04-20";
 
 const RESET = "\x1B[0m";

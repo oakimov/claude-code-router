@@ -14,6 +14,8 @@ import {
   type ReasoningEffort,
 } from "./types";
 
+const CODEX_CLI_VERSION = process.env.CODEX_CLI_VERSION || "0.156.1";
+
 export function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
@@ -226,7 +228,7 @@ async function resolveDirectAuth(
     const headers: Record<string, string> = {
       Authorization: `Bearer ${tokens.access_token}`,
       originator: "codex_cli_rs",
-      "User-Agent": "codex_cli_rs/0.153.1",
+      "User-Agent": `codex_cli_rs/${CODEX_CLI_VERSION}`,
     };
     if (metadata.accountId) headers["ChatGPT-Account-ID"] = metadata.accountId;
     if (metadata.isFedramp) headers["X-OpenAI-Fedramp"] = "true";
@@ -244,7 +246,7 @@ function withCodexClientVersion(url: string, authKind: OAuthKind | null): string
   if (authKind !== "codex") return url;
   const parsed = new URL(url);
   if (!parsed.searchParams.has("client_version")) {
-    parsed.searchParams.set("client_version", "0.153.1");
+    parsed.searchParams.set("client_version", CODEX_CLI_VERSION);
   }
   return parsed.toString();
 }

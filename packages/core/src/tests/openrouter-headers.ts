@@ -45,13 +45,13 @@ function testSynthesizedClaudeIdentityWhenClientIsNotCli() {
 
 function testForwardsGenuineClaudeCodeIdentity() {
   const headers = buildOpenRouterOutboundHeaders({
-    "user-agent": "claude-cli/2.1.226 (external, cli)",
+    "user-agent": "claude-cli/2.1.280 (external, cli)",
     "x-app": "cli",
     "x-claude-code-session-id": "sess-from-client",
     "x-stainless-lang": "js",
     "x-stainless-package-version": "0.94.0",
   });
-  assert.equal(headers["user-agent"], "claude-cli/2.1.226 (external, cli)");
+  assert.equal(headers["user-agent"], "claude-cli/2.1.280 (external, cli)");
   assert.equal(headers["x-app"], "cli");
   assert.equal(headers["x-claude-code-session-id"], "sess-from-client");
   assert.equal(headers["x-stainless-package-version"], "0.94.0");

@@ -74,6 +74,8 @@ interface ResponsesAPIPayload {
   object: string;
   model: string;
   created_at: number;
+  status?: string;
+  incomplete_details?: { reason?: string };
   output: ResponsesAPIOutputItem[];
   usage?: {
     input_tokens: number;
@@ -124,6 +126,7 @@ interface ResponsesStreamEvent {
       type?: string;
       code?: string;
     };
+    incomplete_details?: { reason?: string };
     output?: Array<{
       type: string;
       id?: string;
@@ -146,6 +149,9 @@ interface ResponsesStreamEvent {
       };
     };
   };
+  code?: string | null;
+  message?: string;
+  param?: string | null;
   reasoning_summary?: string;
   annotation?: {
     url?: string;
@@ -155,6 +161,80 @@ interface ResponsesStreamEvent {
   };
   part?: any;
   text?: string;
+}
+
+function responsesTerminalFinishReason(data: {
+  type?: string;
+  response?: {
+    incomplete_details?: { reason?: string };
+    output?: Array<{ type?: string }>;
+  };
+}): "tool_calls" | "stop" | "length" | "content_filter" {
+  if (data.type === "response.incomplete") {
+    return data.response?.incomplete_details?.reason === "content_filter"
+      ? "content_filter"
+      : "length";
+  }
+  const output = data.response?.output || [];
+  if (
+    output.some(
+      (item) =>
+        item.type === "function_call" || item.type === "custom_tool_call"
+    )
+  ) {
+    return "tool_calls";
+  }
+  return "stop";
+}
+
+function responsesTerminalErrorResponse(
+  responseData: {
+    status?: string;
+    error?: { message?: string; type?: string; code?: string };
+  },
+  upstream: Response
+): Response {
+  const cancelled = responseData.status === "cancelled";
+  const fallback = cancelled
+    ? "Upstream response cancelled"
+    : "Upstream response failed";
+  const err = responseData.error ?? {};
+  const message =
+    sanitizeUpstreamErrorText(String(err.message || fallback)) || fallback;
+  return new Response(
+    JSON.stringify({
+      error: {
+        message,
+        type: typeof err.type === "string" ? err.type : "api_error",
+        code:
+          typeof err.code === "string"
+            ? err.code
+            : cancelled
+              ? "response_cancelled"
+              : null,
+      },
+    }),
+    {
+      status: upstream.status >= 400 ? upstream.status : 502,
+      statusText: upstream.statusText,
+      headers: upstream.headers,
+    }
+  );
+}
+
+function chatFinishReason(
+  responseData: ResponsesAPIPayload,
+  hasToolCalls: boolean
+): "tool_calls" | "stop" | "length" | "content_filter" {
+  const incomplete =
+    responseData.status === "incomplete" ||
+    responseData.incomplete_details != null;
+  if (incomplete) {
+    return responseData.incomplete_details?.reason === "content_filter"
+      ? "content_filter"
+      : "length";
+  }
+  return hasToolCalls ? "tool_calls" : "stop";
 }
 
 export class OpenAIResponsesTransformer implements Transformer {
@@ -300,12 +380,28 @@ export class OpenAIResponsesTransformer implements Transformer {
         try {
           const data = JSON.parse(dataStr);
 
+          // ResponseErrorEvent (`type: "error"`) is a terminal Responses
+          // stream event. It does not start with "response." and has no
+          // nested `error` object, so the branches below would drop it and
+          // leave the stream open.
+          if (data?.type === "error") {
+            ctx.controller.enqueue(
+              encodeSSEData(JSON.stringify(data), ctx.encoder)
+            );
+            state.finished = true;
+            return;
+          }
+
           // Upstream already speaking Responses — pass through.
           if (typeof data?.type === "string" && data.type.startsWith("response.")) {
             ctx.controller.enqueue(
               encodeSSEData(JSON.stringify(data), ctx.encoder)
             );
-            if (data.type === "response.completed" || data.type === "response.failed") {
+            if (
+              data.type === "response.completed" ||
+              data.type === "response.incomplete" ||
+              data.type === "response.failed"
+            ) {
               state.finished = true;
             }
             return;
@@ -682,6 +778,12 @@ export class OpenAIResponsesTransformer implements Transformer {
       const jsonResponse: any = await response.json();
 
       if (jsonResponse.object === "response" && jsonResponse.output) {
+        if (
+          jsonResponse.status === "failed" ||
+          jsonResponse.status === "cancelled"
+        ) {
+          return responsesTerminalErrorResponse(jsonResponse, response);
+        }
         if (shouldCacheEncrypted) {
           recordEncryptedReasoningResponseMessage(
             assistantMessageFromResponsesOutput(jsonResponse.output),
@@ -771,9 +873,12 @@ export class OpenAIResponsesTransformer implements Transformer {
               // error, then [DONE]. Partial output already delivered stays
               // delivered, but the stream must never end looking like a
               // successful empty completion.
-              if (data.type === "response.failed") {
+              if (data.type === "response.failed" || data.type === "error") {
                 terminate();
-                const failed = data.response?.error ?? {};
+                const streamError = data.type === "error";
+                const failed = streamError
+                  ? data
+                  : (data.response?.error ?? {});
                 const message =
                   sanitizeUpstreamErrorText(
                     String(failed.message || "Upstream response failed")
@@ -783,8 +888,9 @@ export class OpenAIResponsesTransformer implements Transformer {
                     JSON.stringify({
                       error: {
                         message,
-                        type:
-                          typeof failed.type === "string"
+                        type: streamError
+                          ? "api_error"
+                          : typeof failed.type === "string"
                             ? failed.type
                             : "api_error",
                         code:
@@ -811,10 +917,17 @@ export class OpenAIResponsesTransformer implements Transformer {
                 );
               }
 
-              // Responses upstreams end after response.completed without a
-              // [DONE]; Chat consumers rely on the terminator, so add it.
+              // Responses upstreams end after response.completed or
+              // response.incomplete without a [DONE]. Chat consumers rely on
+              // the terminator. Incomplete is terminal too: Zen stops after
+              // it (often max_output_tokens spent on reasoning, empty output)
+              // and never sends completed. Leaving the stream open makes
+              // Claude Code sit on message_start until it aborts.
               // Ciphertext often arrives only on the completed reasoning item.
-              if (data.type === "response.completed") {
+              if (
+                data.type === "response.completed" ||
+                data.type === "response.incomplete"
+              ) {
                 if (shouldCacheEncrypted) {
                   recordEncryptedReasoningResponseMessage(
                     assistantMessageFromResponsesOutput(
@@ -963,7 +1076,10 @@ export class OpenAIResponsesTransformer implements Transformer {
       });
     }
 
-    if (data.type === "response.completed") {
+    if (
+      data.type === "response.completed" ||
+      data.type === "response.incomplete"
+    ) {
       const chunks: any[] = [];
       const terminalOutput = data.response?.output || [];
       for (const item of terminalOutput) {
@@ -1258,12 +1374,11 @@ export class OpenAIResponsesTransformer implements Transformer {
       };
     }
 
-    if (data.type === "response.completed") {
-      const finishReason = data.response?.output?.some(
-        (item: any) => item.type === "function_call" || item.type === "custom_tool_call"
-      )
-        ? "tool_calls"
-        : "stop";
+    if (
+      data.type === "response.completed" ||
+      data.type === "response.incomplete"
+    ) {
+      const finishReason = responsesTerminalFinishReason(data);
 
       const chunk: any = {
         id: data.response?.id || "chatcmpl-" + Date.now(),
@@ -1525,7 +1640,7 @@ export class OpenAIResponsesTransformer implements Transformer {
             annotations: annotations,
           },
           logprobs: null,
-          finish_reason: toolCalls ? "tool_calls" : "stop",
+          finish_reason: chatFinishReason(responseData, Boolean(toolCalls)),
         },
       ],
       usage: responseData.usage

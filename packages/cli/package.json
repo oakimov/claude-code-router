@@ -20,19 +20,20 @@
   "author": "caeliq",
   "license": "MIT",
   "dependencies": {
-    "@ai-sdk/anthropic": "3.0.111",
-    "@ai-sdk/openai": "3.0.97",
-    "@cursor/sdk": "^1.0.30",
-    "ai": "6.0.258",
+    "@ai-sdk/anthropic": "3.0.122",
+    "@ai-sdk/openai": "3.0.117",
+    "@cursor/sdk": "^1.0.32",
+    "ai": "6.0.290",
     "json5": "^2.2.3",
-    "zod": "4.4.3"
+    "shell-quote": "^1.10.0",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@caeliq/ccr-server": "workspace:*",
     "@caeliq/ccr-shared": "workspace:*",
     "@inquirer/prompts": "^8.7.0",
     "@types/node": "^26.4.1",
-    "adm-zip": "^0.6.0",
+    "adm-zip": "^0.6.1",
     "esbuild": "^0.28.2",
     "find-process": "^2.1.1",
     "minimist": "^1.2.8",

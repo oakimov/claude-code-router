@@ -9,6 +9,7 @@ import {
   applyGpt6ReasoningEffortCoercion,
   coerceGpt6ReasoningEffort,
   isGpt6FamilyModel,
+  isGpt6LunaModel,
   stripGpt6UnsupportedSampling,
 } from "../utils/reasoning-effort";
 
@@ -23,6 +24,8 @@ function mockCodexAuth(transformer: CodexTransformer) {
 
 function testModelDetection() {
   assert.equal(isGpt6FamilyModel("gpt-6-astra"), true);
+  assert.equal(isGpt6FamilyModel("gpt-6-sol"), true);
+  assert.equal(isGpt6FamilyModel("gpt-6-luna"), true);
   assert.equal(isGpt6FamilyModel("gpt-6"), true);
   assert.equal(isGpt6FamilyModel("openai/gpt-6-astra"), true);
   assert.equal(isGpt6FamilyModel("codex,gpt-6-astra"), true);
@@ -54,6 +57,29 @@ function testEffortHelpers() {
   applyGpt6ReasoningEffortCoercion(other);
   assert.equal(other.reasoning.effort, "none");
   assert.equal(other.reasoning.enabled, false);
+}
+
+function testLunaUltraClamp() {
+  assert.equal(isGpt6LunaModel("gpt-6-luna"), true);
+  assert.equal(isGpt6LunaModel("openai/gpt-6-luna"), true);
+  assert.equal(isGpt6LunaModel("codex,gpt-6-luna"), true);
+  assert.equal(isGpt6LunaModel("gpt-6-sol"), false);
+  assert.equal(isGpt6LunaModel("gpt-6-astra"), false);
+  assert.equal(isGpt6LunaModel("gpt-5.6-luna"), false);
+  assert.equal(isGpt6LunaModel(undefined), false);
+
+  // Luna tops out at max (no ultra); Astra/Sol keep ultra.
+  assert.equal(coerceGpt6ReasoningEffort("gpt-6-luna", "ultra"), "max");
+  assert.equal(coerceGpt6ReasoningEffort("gpt-6-astra", "ultra"), "ultra");
+  assert.equal(coerceGpt6ReasoningEffort("gpt-6-sol", "ultra"), "ultra");
+  assert.equal(coerceGpt6ReasoningEffort("gpt-6-luna", "high"), "high");
+
+  const req = {
+    model: "codex,gpt-6-luna",
+    reasoning: { effort: "ultra" as const },
+  };
+  applyGpt6ReasoningEffortCoercion(req);
+  assert.equal(req.reasoning.effort, "max");
 }
 
 function testSamplingStrip() {
@@ -178,6 +204,7 @@ async function codexAlwaysStripsTopP() {
 async function main() {
   testModelDetection();
   testEffortHelpers();
+  testLunaUltraClamp();
   testSamplingStrip();
   await responsesConvertCoercesNoneAndStripsSampling();
   await responsesConvertCoercesMinimal();

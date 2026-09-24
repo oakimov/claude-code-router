@@ -6,9 +6,9 @@ import { CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX } from "./router";
 export const BILLING_SALT = "59cf53e54c78";
 // Frozen current Claude Code reference used by third-party emulation. Update
 // intentionally with a new golden profile when the CLI reference changes.
-export const CC_VERSION = process.env.ANTHROPIC_CLI_VERSION || "2.1.226";
+export const CC_VERSION = process.env.ANTHROPIC_CLI_VERSION || "2.1.280";
 // Claude Code uses different fallbacks for the HTTP user agent and billing
-// attribution marker in the current 2.1.226 build.
+// attribution marker in the current 2.1.280 build.
 export const CC_ENTRYPOINT = process.env.CLAUDE_CODE_ENTRYPOINT ?? "unknown";
 export const CC_USER_AGENT_ENTRYPOINT =
   process.env.CLAUDE_CODE_ENTRYPOINT ?? "cli";
@@ -43,7 +43,7 @@ export function computeVersionSuffix(text: string, version: string): string {
 
 /**
  * Current first-party Anthropic requests use the literal cch marker. Older
- * captures showed a random session value; the current 2.1.226 decompilation
+ * captures showed a random session value; the current 2.1.280 decompilation
  * gates this field to first-party/Vertex and emits `00000`.
  */
 export function sessionCch(): string {

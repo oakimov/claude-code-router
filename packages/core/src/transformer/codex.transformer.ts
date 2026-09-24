@@ -22,7 +22,8 @@ const whoamiCache = new Map<
   { value: PatAuth; expiresAt: number }
 >();
 const whoamiRequests = new Map<string, Promise<PatAuth>>();
-const CODEX_CLI_VERSION = "0.153.1";
+const CODEX_CLI_VERSION =
+  process.env.CODEX_CLI_VERSION || "0.156.1";
 const CODEX_ORIGINATOR = "codex_cli_rs";
 const CODEX_REQUIRES_RESPONSES =
   'codex requires openai-responses in transformer.use (e.g. ["openai-responses", "codex"]). Codex is ChatGPT auth/headers middleware on the Responses wire and does not convert Chat Completions bodies.';
@@ -215,7 +216,12 @@ function getCodexOsVersion(): string {
 }
 
 function getCodexUserAgent(): string {
-  return `${CODEX_ORIGINATOR}/${CODEX_CLI_VERSION} (${getCodexOsType()} ${getCodexOsVersion()}; ${getCodexArchitecture()})`;
+  // The real CLI appends a detected terminal token
+  // (`Apple_Terminal/x`, `vscode/x`, …; `unknown` headless). CCR is a
+  // server-side proxy with no terminal of its own, so it sends `unknown`
+  // rather than misattributing the server host's terminal. Upstream needs
+  // >= 0.155.0 for GPT-6 Sol/Luna (minimal_client_version).
+  return `${CODEX_ORIGINATOR}/${CODEX_CLI_VERSION} (${getCodexOsType()} ${getCodexOsVersion()}; ${getCodexArchitecture()}) unknown`;
 }
 
 function appendCodexClientVersion(url: string): string {

@@ -166,14 +166,25 @@ export function isGpt6FamilyModel(model: unknown): boolean {
   return /(?:^|[/,:])gpt-6(?:$|[.-])/i.test(model);
 }
 
-/** Astra rejects `none` / `minimal`; OpenAI's migration floor is `low`. */
+/** Astra/Sol reject `none` / `minimal`; OpenAI's migration floor is `low`. */
 export function coerceGpt6ReasoningEffort(
   model: unknown,
   effort: ThinkLevel | undefined
 ): ThinkLevel | undefined {
   if (!effort || !isGpt6FamilyModel(model)) return effort;
   if (effort === "none" || effort === "minimal") return "low";
+  // Luna's level set tops out at `max` (no `ultra`, unlike Astra/Sol).
+  if (effort === "ultra" && isGpt6LunaModel(model)) return "max";
   return effort;
+}
+
+/**
+ * GPT-6 Luna slugs (`gpt-6-luna`, `openai/gpt-6-luna`, `codex,gpt-6-luna`).
+ * Anchored so `gpt-6-sol` / `gpt-6-astra` do not match.
+ */
+export function isGpt6LunaModel(model: unknown): boolean {
+  if (typeof model !== "string" || !model) return false;
+  return /(?:^|[/,:])gpt-6-luna(?:$|[.-])/i.test(model);
 }
 
 /**

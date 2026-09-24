@@ -190,6 +190,38 @@ export function applyClaudeModelCapabilityAdjustments(
   if (
     anthropicBody.thinking &&
     typeof anthropicBody.thinking === "object" &&
+    anthropicBody.thinking.type === "disabled" &&
+    cap("always_adaptive_thinking")
+  ) {
+    // Opus 5.5 / Fable 5.1 return 400 for disabled thinking (and for manual
+    // enabled-budget thinking, which the branch below already normalizes):
+    // thinking is always on there, effort is the only knob. Gated on the
+    // dedicated capability because opus-5 also carries
+    // rejects_disabled_thinking yet still accepts disabled at low effort.
+    anthropicBody.thinking = { type: "adaptive", display: "summarized" };
+  }
+
+  if (
+    anthropicBody.tool_choice &&
+    typeof anthropicBody.tool_choice === "object" &&
+    (anthropicBody.tool_choice.type === "any" ||
+      anthropicBody.tool_choice.type === "tool") &&
+    cap("no_forced_tool_choice")
+  ) {
+    // Opus 5.5 / Fable 5.1 return 400 for forced tool use; auto plus strict
+    // tool use is the supported equivalent.
+    const { disable_parallel_tool_use } = anthropicBody.tool_choice;
+    anthropicBody.tool_choice = {
+      ...(typeof disable_parallel_tool_use === "boolean"
+        ? { disable_parallel_tool_use }
+        : {}),
+      type: "auto",
+    };
+  }
+
+  if (
+    anthropicBody.thinking &&
+    typeof anthropicBody.thinking === "object" &&
     anthropicBody.thinking.type !== "disabled"
   ) {
     // Claude Code uses display:"summarized". "omitted" returns signature-only
@@ -431,11 +463,17 @@ export class ClaudeAuthTransformer implements Transformer {
     };
 
     if (isClaudeCode) {
-      // Forward Claude Code identity headers verbatim.
+      // Forward Claude Code identity headers verbatim, including the
+      // opt-in LLM-gateway hint headers (2.1.273+, CLAUDE_CODE_GATEWAY_HINT_HEADERS=1).
       for (const name of [
         "user-agent",
         "x-app",
         "x-claude-code-session-id",
+        "x-claude-code-request-class",
+        "x-claude-code-agent-type",
+        "x-claude-code-prev-tool-durations",
+        "x-claude-code-compaction",
+        "x-claude-code-context-compacted",
         "anthropic-dangerous-direct-browser-access",
         "x-client-request-id",
         "x-stainless-arch",

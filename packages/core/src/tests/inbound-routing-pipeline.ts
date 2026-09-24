@@ -280,7 +280,7 @@ async function main() {
       "x-claude-code-session-id": "session-id",
       "x-client-request-id": "request-id",
       "anthropic-client-platform": "desktop_app",
-      "anthropic-client-version": "1.26832.0",
+      "anthropic-client-version": "2.7032.0",
     });
     assert.equal(headers.authorization, undefined);
     assert.equal(headers["x-api-key"], undefined);
@@ -294,7 +294,7 @@ async function main() {
     assert.equal(headers["x-claude-code-session-id"], "session-id");
     assert.equal(headers["x-client-request-id"], "request-id");
     assert.equal(headers["anthropic-client-platform"], "desktop_app");
-    assert.equal(headers["anthropic-client-version"], "1.26832.0");
+    assert.equal(headers["anthropic-client-version"], "2.7032.0");
   }
 
   // Transformer headers compose without casing duplicates or auth leakage.

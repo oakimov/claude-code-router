@@ -17,7 +17,7 @@ function desktopHeaders() {
 
 function cliHeaders() {
   return {
-    "user-agent": "claude-cli/2.1.226 (subscriber, cli)",
+    "user-agent": "claude-cli/2.1.280 (subscriber, cli)",
     "x-app": "cli",
     "x-claude-code-session-id": "session-1",
     "x-stainless-package-version": "0.94.0",
@@ -32,7 +32,7 @@ function desktopAgentSdkHeaders() {
     "x-claude-code-session-id": "desktop-session-1",
     "x-stainless-package-version": "0.94.0",
     "anthropic-client-platform": "desktop_app",
-    "anthropic-client-version": "1.26832.0",
+    "anthropic-client-version": "2.7032.0",
   };
 }
 
@@ -41,7 +41,7 @@ function cliBody() {
     system: [
       {
         type: "text",
-        text: "x-anthropic-billing-header: cc_version=2.1.226.abc;",
+        text: "x-anthropic-billing-header: cc_version=2.1.280.abc;",
       },
       {
         type: "text",
@@ -57,7 +57,7 @@ function desktopAgentSdkBody() {
     system: [
       {
         type: "text",
-        text: "x-anthropic-billing-header: cc_version=2.1.222.abc;",
+        text: "x-anthropic-billing-header: cc_version=2.1.280.abc;",
       },
       {
         type: "text",
@@ -103,7 +103,7 @@ function testClassification() {
   );
   assert.equal(
     classifyAnthropicClient(
-      { "user-agent": "claude-cli/2.1.226", "x-app": "cli" },
+      { "user-agent": "claude-cli/2.1.280", "x-app": "cli" },
       cliBody()
     ),
     "other"

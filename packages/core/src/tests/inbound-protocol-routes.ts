@@ -330,7 +330,7 @@ async function testRewriteSystemPromptAffectsCanonicalBody() {
         system: [
           {
             type: "text",
-            text: "x-anthropic-billing-header: cc_version=2.1.226.abc;",
+            text: "x-anthropic-billing-header: cc_version=2.1.280.abc;",
           },
           { type: "text", text: "original prefix<env>original env body</env>" },
         ],
@@ -667,7 +667,7 @@ async function main() {
           cookie: "session=client-cookie",
           "x-forwarded-for": "10.0.0.1",
           // Claude Code identity headers must survive verbatim.
-          "user-agent": "claude-cli/2.0.14 (external, cli)",
+          "user-agent": "claude-cli/2.1.280 (external, cli)",
           "x-app": "cli",
           "anthropic-version": "2023-06-01",
           "anthropic-beta": "claude-code-20250219,fine-grained-tool-streaming-2025-05-14",
@@ -730,7 +730,7 @@ async function main() {
       // Identity headers are forwarded unchanged.
       assert.equal(
         upstream.headers.get("user-agent"),
-        "claude-cli/2.0.14 (external, cli)"
+        "claude-cli/2.1.280 (external, cli)"
       );
       assert.equal(upstream.headers.get("x-app"), "cli");
       assert.equal(upstream.headers.get("anthropic-version"), "2023-06-01");
@@ -838,7 +838,7 @@ async function main() {
         system: [
           {
             type: "text",
-            text: "x-anthropic-billing-header: cc_version=2.1.222.abc;",
+            text: "x-anthropic-billing-header: cc_version=2.1.280.abc;",
           },
           {
             type: "text",
@@ -871,7 +871,7 @@ async function main() {
           "x-stainless-package-version": "0.94.0",
           "x-stainless-runtime": "node",
           "anthropic-client-platform": "desktop_app",
-          "anthropic-client-version": "1.26832.0",
+          "anthropic-client-version": "2.7032.0",
           "x-desktop-custom-header": "keep-agent-header",
           "anthropic-beta": "desktop-agent-beta",
           authorization: "Bearer desktop-client-secret",
@@ -906,7 +906,7 @@ async function main() {
       );
       assert.equal(
         upstream.headers.get("anthropic-client-version"),
-        "1.26832.0"
+        "2.7032.0"
       );
       assert.equal(
         upstream.headers.get("x-desktop-custom-header"),
@@ -960,7 +960,7 @@ async function main() {
         url: "/v1/messages",
         headers: {
           authorization: "Bearer ccr-client-secret",
-          "user-agent": "claude-cli/2.0.14 (external, cli)",
+          "user-agent": "claude-cli/2.1.280 (external, cli)",
           "x-app": "cli",
           "x-claude-code-session-id": "session-subscription",
           "x-stainless-package-version": "0.94.0",
