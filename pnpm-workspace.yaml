@@ -90,6 +90,13 @@ overrides:
   '@svgr/plugin-svgo@8.1.0>svgo': ^3.3.5
   'postcss-svgo@6.0.3>svgo': ^3.3.5
   '@modelcontextprotocol/sdk@1.30.0>hono': ^4.13.8
+  '@11ty/gray-matter@1.0.0>js-yaml': ^4.3.2
+  '@docusaurus/plugin-content-docs@3.10.2>js-yaml': ^4.3.2
+  '@docusaurus/utils-validation@3.10.2>js-yaml': ^4.3.2
+  '@docusaurus/utils@3.10.2>js-yaml': ^4.3.2
+  'cosmiconfig@8.3.6>js-yaml': ^4.3.2
+  '@docusaurus/types@3.10.2>joi': ^17.13.8
+  '@docusaurus/utils-validation@3.10.2>joi': ^17.13.8
   # @google/genai pins google-auth-library 10 while core depends on 11. The two
   # majors ship a byte-identical build/src — 11.0.0 exists only to raise the
   # Node floor to >=22 (met here) and to take gcp-metadata 9 / logging-utils 2.
