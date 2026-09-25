@@ -105,9 +105,11 @@ import {
   tapResponseFirstByte,
 } from "@/utils/request-latency";
 import {
+  applyNativeClaudeOAuthCacheTtl,
   applyThirdPartyAnthropicPolicy,
   getAnthropicProviderMode,
   isNativeAnthropicClient,
+  resolveNativeClaudeOAuthCacheTtlMode,
 } from "@/utils/anthropic-client-policy";
 
 function isManualExactProtocolPassthrough(
@@ -342,6 +344,15 @@ async function handleTransformerEndpoint(
     (req as any)._autoWireKeep = keep.isAutoKeep;
 
     recordClientCachePrefix(req, fastify, provider, pipelineBody);
+    if (isNativeWire) {
+      applyNativeClaudeOAuthCacheTtl(
+        pipelineBody,
+        prepared.protocolContext,
+        resolveNativeClaudeOAuthCacheTtlMode(
+          fastify.configService.get("CLAUDE_AUTH_NATIVE_CACHE_TTL")
+        )
+      );
+    }
     // Exact-wire keep skips the Responses owner's body rebuild, but call_id is
     // still provider-validated (<=64). Repair only those correlation fields
     // after the client snapshot so cache diagnostics attribute it to the wire.
@@ -629,6 +640,15 @@ async function handleFallback(
         : unifiedBody;
 
       recordClientCachePrefix(newReq, fastify, provider, pipelineBody);
+      if (fallbackIsNativeWire) {
+        applyNativeClaudeOAuthCacheTtl(
+          pipelineBody,
+          fallbackProtocolContext,
+          resolveNativeClaudeOAuthCacheTtlMode(
+            fastify.configService.get("CLAUDE_AUTH_NATIVE_CACHE_TTL")
+          )
+        );
+      }
       if (
         fallbackUseWireKeep &&
         fallbackProtocolContext?.protocol === "openai_responses"
@@ -1129,7 +1149,6 @@ async function sendRequestToProvider(
       cacheAffinity: {
         sessionId: config?.headers?.["session-id"],
         threadId: config?.headers?.["thread-id"],
-        clientRequestId: config?.headers?.["x-client-request-id"],
       },
     });
     return tapUpstreamSSEDebug(response, {

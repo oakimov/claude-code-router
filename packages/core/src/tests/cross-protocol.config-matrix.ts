@@ -340,12 +340,18 @@ async function testRequestChains() {
       (m: any) => m.role === "assistant"
     );
     const types = anthAssistant.content.map((b: any) => b.type);
-    assert.equal(types[0], "thinking", `${source}→claude thinking leads`);
     assert.ok(types.includes("tool_use"), `${source}→claude tool_use`);
-    assert.notEqual(
-      anthAssistant.content.find((b: any) => b.type === "thinking")?.signature,
-      CIPHER
-    );
+    if (source === "anthropic") {
+      assert.equal(types[0], "thinking", `${source}→claude thinking leads`);
+      assert.equal(
+        anthAssistant.content.find((b: any) => b.type === "thinking")?.signature,
+        ANTHROPIC_SIG
+      );
+    } else {
+      // Chat/Responses history has no Anthropic signature (ciphertext is not
+      // one); Anthropic 400s on unsigned thinking, so it is omitted.
+      assert.equal(types.includes("thinking"), false, `${source}→claude omits unsigned thinking`);
+    }
 
     const geminiTf = new GeminiTransformer({
       cachedContent: false,

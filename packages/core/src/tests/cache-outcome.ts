@@ -115,6 +115,34 @@ function brokenDiff(): CachePrefixDiff {
   assert.equal(noBp.predictedHit, false);
   assert.equal(noBp.reason, "no-ephemeral-breakpoints");
   assert.equal(classifyCacheOutcome(noBp, 0), "expected-miss");
+
+  // An intact prefix after a gap longer than the TTL is an expiry, not a
+  // cache break (observed live: 5m markers, 10-21 min idle, full rewrite).
+  const idle = { ...intactDiff(), msSinceLastTurn: 10 * 60_000 };
+  const expired = predictAnthropicEphemeral(idle, withBp);
+  assert.equal(expired.predictedHit, false);
+  assert.equal(expired.reason, "ttl-expired");
+  assert.equal(classifyCacheOutcome(expired, 0), "expected-miss");
+
+  const withHourBp = {
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "hi", cache_control: { type: "ephemeral", ttl: "1h" } },
+        ],
+      },
+    ],
+  };
+  const hourHit = predictAnthropicEphemeral(idle, withHourBp);
+  assert.equal(hourHit.predictedHit, true, "1h entries outlive a 10 min gap");
+
+  // A rewritten history after a long gap is reported as the break, not expiry.
+  const brokenIdle = { ...brokenDiff(), msSinceLastTurn: 10 * 60_000 };
+  const broken = predictAnthropicEphemeral(brokenIdle, withBp);
+  assert.equal(broken.predictedHit, false);
+  assert.equal(broken.reason, "messages[0]");
+  assert.equal(broken.firstDivergencePath, "messages[0]");
 }
 
 // --- Gemini cachedContent ---

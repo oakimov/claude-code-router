@@ -105,10 +105,6 @@ export function unifiedToolHasMedia(content: unknown): boolean {
 export function unifiedToolContentToAnthropic(content: unknown): string | any[] {
   const parts = normalizeUnifiedToolParts(content);
   if (parts.length === 0) return "";
-  if (parts.length === 1 && parts[0].type === "text") {
-    return parts[0].text;
-  }
-
   const blocks: any[] = [];
   for (const part of parts) {
     if (part.type === "text") {
@@ -177,11 +173,37 @@ export function unifiedToolContentToAnthropic(content: unknown): string | any[] 
       });
     }
   }
-  return blocks.length === 1 && blocks[0].type === "text"
+  // The string form cannot carry a cache breakpoint; keep the block form then.
+  return blocks.length === 1 &&
+    blocks[0].type === "text" &&
+    !blocks[0].cache_control
     ? blocks[0].text
     : blocks.length > 0
       ? blocks
       : "";
+}
+
+/**
+ * Anthropic blocks for one Unified user content part. Empty when the part is
+ * not sent (empty text, image without URL, file without data or URL, unknown
+ * type), so callers placing cache breakpoints can skip it.
+ */
+export function unifiedUserPartToAnthropic(part: any): any[] {
+  if (!part || typeof part !== "object") return [];
+  const cacheControl = part.cache_control
+    ? { cache_control: part.cache_control }
+    : {};
+  if (part.type === "text") {
+    return part.text
+      ? [{ type: "text", text: part.text, ...cacheControl }]
+      : [];
+  }
+  if (part.type === "image_url" || part.type === "file") {
+    // Same image/document mapping as tool results (honours part.media_type).
+    const blocks = unifiedToolContentToAnthropic([part]);
+    return Array.isArray(blocks) ? blocks : [];
+  }
+  return [];
 }
 
 /**

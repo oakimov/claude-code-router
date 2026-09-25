@@ -345,8 +345,9 @@ async function testRewriteSystemPromptAffectsCanonicalBody() {
     );
     assert.equal(
       upstream.body.messages[0].content[0].text,
-      "REWRITTEN PROMPT<env>original env body</env>\n\nhi"
+      "REWRITTEN PROMPT<env>original env body</env>"
     );
+    assert.equal(upstream.body.messages[0].content[1].text, "hi");
   } finally {
     globalThis.fetch = originalFetch;
     await app.close();
@@ -830,7 +831,8 @@ async function main() {
     // Current Desktop 3P uses its bundled Agent SDK/CLI transport. The
     // Desktop entrypoint in that otherwise CLI-shaped fingerprint must still
     // select Desktop raw passthrough; all application headers and native cache
-    // markers survive while CCR replaces only auth and adds the OAuth beta.
+    // marker placement survive while CCR replaces auth, adds the OAuth beta and
+    // extends default-TTL markers to 1h on the OAuth route.
     {
       const desktopBody = {
         model: "subscription,claude",
@@ -880,7 +882,22 @@ async function main() {
       });
       assert.equal(result.statusCode, 200, result.body);
       const upstream = captured.at(-1)!;
-      assert.deepEqual(upstream.body, { ...desktopBody, model: "claude" });
+      const oneHour = { type: "ephemeral", ttl: "1h" };
+      assert.deepEqual(upstream.body, {
+        ...desktopBody,
+        model: "claude",
+        system: [
+          desktopBody.system[0],
+          { ...desktopBody.system[1], cache_control: oneHour },
+        ],
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "hello", cache_control: oneHour }],
+          },
+        ],
+      });
+      assert.deepEqual(desktopBody.system[1].cache_control, { type: "ephemeral" });
       assert.equal(
         upstream.headers.get("authorization"),
         "Bearer hermetic-subscription-token"
@@ -950,7 +967,8 @@ async function main() {
     // Normalized Anthropic (Claude Code client) → subscription (claude-auth)
     // chain. Source provenance (metadata/thinking/output_config/stop
     // sequences), the client's own billing block, and explicit cache
-    // directives must survive pre-routing normalization even though the
+    // directives (default TTL extended to 1h on OAuth) must survive
+    // pre-routing normalization even though the
     // destination provider builds its wire body from the Unified form
     // rather than exact passthrough. Auth must be the OAuth bearer only —
     // never a synthesized "Bearer no-key" fallback.
@@ -1007,6 +1025,7 @@ async function main() {
       );
       assert.deepEqual(upstream.body.system[1].cache_control, {
         type: "ephemeral",
+        ttl: "1h",
       });
     }
 
@@ -1390,6 +1409,135 @@ async function main() {
           (item?.type === "message" && item?.role === "user")
       );
       assert.ok(user, JSON.stringify(upstream!.body.input));
+    }
+
+    // Agent loops (e.g. Mastra) end most requests on a tool result, on every
+    // inbound protocol. Third-party emulation must reach Anthropic with the
+    // identity, relocated-system-prompt and tool_result tail breakpoints.
+    {
+      const instructions = "agent instructions";
+      const payloads: Record<string, { url: string; body: any }> = {
+        chat: {
+          url: "/v1/chat/completions",
+          body: {
+            messages: [
+              { role: "system", content: instructions },
+              { role: "user", content: "go" },
+              {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    id: "call_tail",
+                    type: "function",
+                    function: { name: "lookup", arguments: "{}" },
+                  },
+                ],
+              },
+              { role: "tool", tool_call_id: "call_tail", content: "found" },
+            ],
+          },
+        },
+        responses: {
+          url: "/v1/responses",
+          body: {
+            input: [
+              { role: "system", content: instructions },
+              { role: "user", content: [{ type: "input_text", text: "go" }] },
+              {
+                type: "function_call",
+                call_id: "call_tail",
+                name: "lookup",
+                arguments: "{}",
+              },
+              { type: "function_call_output", call_id: "call_tail", output: "found" },
+            ],
+          },
+        },
+        anthropic: {
+          url: "/v1/messages",
+          body: {
+            max_tokens: 32,
+            system: [{ type: "text", text: instructions }],
+            messages: [
+              { role: "user", content: [{ type: "text", text: "go" }] },
+              {
+                role: "assistant",
+                content: [
+                  { type: "tool_use", id: "call_tail", name: "lookup", input: {} },
+                ],
+              },
+              {
+                role: "user",
+                content: [
+                  { type: "tool_result", tool_use_id: "call_tail", content: "found" },
+                ],
+              },
+            ],
+          },
+        },
+      };
+      const tools: Record<string, any[]> = {
+        chat: [
+          {
+            type: "function",
+            function: {
+              name: "lookup",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+        responses: [
+          {
+            type: "function",
+            name: "lookup",
+            parameters: { type: "object", properties: {} },
+          },
+        ],
+        anthropic: [
+          { name: "lookup", input_schema: { type: "object", properties: {} } },
+        ],
+      };
+      for (const provider of ["anthropic", "subscription"]) {
+        for (const [protocol, { url, body }] of Object.entries(payloads)) {
+          const result = await app.inject({
+            method: "POST",
+            url,
+            payload: {
+              ...body,
+              model: `${provider},claude`,
+              tools: tools[protocol],
+            },
+          });
+          assert.equal(result.statusCode, 200, `${provider}/${protocol}: ${result.body}`);
+          const wire = findLastCaptured(captured, (request) =>
+            request.url.includes(`${provider}.invalid`)
+          )!.body;
+          const breakpoints: string[] = [];
+          wire.system.forEach((block: any, index: number) => {
+            if (block.cache_control) breakpoints.push(`system[${index}]`);
+          });
+          wire.messages.forEach((message: any, index: number) => {
+            message.content.forEach((part: any, partIndex: number) => {
+              if (part.cache_control) {
+                breakpoints.push(`messages[${index}].content[${partIndex}]:${part.type}`);
+              }
+            });
+          });
+          const tail = wire.messages.length - 1;
+          assert.deepEqual(
+            breakpoints,
+            [
+              "system[1]",
+              "messages[0].content[0]:text",
+              `messages[${tail}].content[0]:tool_result`,
+            ],
+            `${provider}/${protocol}`
+          );
+          assert.equal(wire.messages[0].content[0].text, instructions);
+          assert.equal(wire.messages[0].content[1].text, "go");
+        }
+      }
     }
 
     // A Responses provider mutates its attempt body into input[]. Its failed

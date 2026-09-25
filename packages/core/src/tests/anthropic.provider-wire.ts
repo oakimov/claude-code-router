@@ -8,6 +8,7 @@ import { AnthropicTransformer } from "../transformer/anthropic.transformer";
 import { OpenAIResponsesTransformer } from "../transformer/openai.responses.transformer";
 import type { UnifiedChatRequest } from "../types/llm";
 import { responsesRequestToUnified } from "../utils/openai.responses.util";
+import { buildRequestBody as buildVertexClaudeBody } from "../utils/vertex-claude.util";
 
 const logger = { debug() {}, info() {}, warn() {}, error() {} } as any;
 
@@ -655,6 +656,77 @@ async function testResponsesCustomToolsAreAnthropicInputSchema() {
   assert.equal(toolUse.input.input, "*** Begin Patch\n*** End Patch");
 }
 
+/**
+ * Claude rejects empty text blocks ("text content blocks must be non-empty",
+ * observed live). Both Claude body builders omit them, and drop a turn that is
+ * left with no content; adjacent same-role turns are accepted.
+ */
+async function testEmptyUserTextIsNotSent() {
+  const request: any = {
+    model: "claude-haiku-4-5",
+    max_tokens: 10,
+    messages: [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "" },
+      { role: "assistant", content: "?" },
+      { role: "user", content: [{ type: "text", text: "" }, { type: "text", text: "say ok" }] },
+    ],
+  };
+  const hasEmptyText = (messages: any[]) =>
+    messages.some((m) =>
+      m.content.some((b: any) => b.type === "text" && !b.text)
+    );
+
+  const body = AnthropicTransformer.buildAnthropicBody(
+    JSON.parse(JSON.stringify(request))
+  );
+  assert.deepEqual(
+    body.messages.map((m: any) => m.role),
+    ["user", "assistant", "assistant", "user"]
+  );
+  assert.equal(hasEmptyText(body.messages), false);
+
+  const vertex = buildVertexClaudeBody(JSON.parse(JSON.stringify(request)));
+  assert.equal(hasEmptyText(vertex.messages as any[]), false);
+}
+
+// A Responses client replays a reasoning item as {id, summary}: Unified
+// thinking with content and an rs_ id but no Anthropic signature. Sending it
+// 400s with "messages.N.content.0.thinking.signature: Field required".
+async function testUnsignedThinkingIsNotSent() {
+  const body = AnthropicTransformer.buildAnthropicBody({
+    model: "claude-opus-5-5",
+    max_tokens: 64,
+    messages: [
+      { role: "user", content: "run it" },
+      {
+        role: "assistant",
+        content: null,
+        thinking: { content: "I should run it.", id: "rs_resp_msg_011CfQtpP4WKmB1TvciTpz3t" },
+        tool_calls: [
+          { id: "toolu_01", type: "function", function: { name: "bash", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "toolu_01", content: "ok" },
+      {
+        role: "assistant",
+        content: "done",
+        thinking: { content: "signed", signature: "sig" },
+      },
+    ],
+  } as any);
+  assert.deepEqual(
+    body.messages[1].content.map((block: any) => block.type),
+    ["tool_use"]
+  );
+  assert.deepEqual(body.messages[3].content[0], {
+    type: "thinking",
+    thinking: "signed",
+    signature: "sig",
+  });
+}
+
 async function main() {
   await testUnifiedToAnthropicRequest();
   await testBuildAnthropicBodyRoundTripViaClientOut();
@@ -675,6 +747,8 @@ async function main() {
   await testAnthropicStructuredOutputMapsToUnifiedResponseFormat();
   await testAnthropicStructuredOutputDefaultsJsonSchemaName();
   await testAnthropicThinkingHistoryMapsToResponsesReasoning();
+  await testEmptyUserTextIsNotSent();
+  await testUnsignedThinkingIsNotSent();
   console.log("anthropic.provider-wire: PASS");
 }
 

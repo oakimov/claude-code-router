@@ -232,29 +232,21 @@ async function testRequestMatrixThinkingAndTools() {
     const anthropic = await toAnthropic(unified);
     const anthAssistant = assistantAnthropic(anthropic);
     const thinkingBlock = anthAssistant.content.find((b: any) => b.type === "thinking");
-    assert.ok(thinkingBlock, `${source}→Anthropic keeps thinking`);
-    assert.equal(thinkingBlock.thinking, PLAN, `${source}→Anthropic thinking text`);
     assert.ok(
       anthAssistant.content.some((b: any) => b.type === "tool_use"),
       `${source}→Anthropic keeps tool_use`
     );
-    assert.notEqual(
-      thinkingBlock.signature,
-      CIPHER,
-      `${source}→Anthropic must not put ciphertext on signature`
-    );
-    assert.notEqual(
-      thinkingBlock.signature,
-      REASONING_ID,
-      `${source}→Anthropic must not put rs_ id on signature`
-    );
     if (source === "anthropic") {
+      assert.ok(thinkingBlock, `${source}→Anthropic keeps signed thinking`);
+      assert.equal(thinkingBlock.thinking, PLAN, `${source}→Anthropic thinking text`);
       assert.equal(thinkingBlock.signature, ANTHROPIC_SIG);
     } else {
+      // Only Anthropic carries a signature; ciphertext and rs_ ids are not
+      // signatures, and Anthropic 400s on unsigned thinking, so it is omitted.
       assert.equal(
-        thinkingBlock.signature,
+        thinkingBlock,
         undefined,
-        `${source}→Anthropic must not invent a signature (official API may 400 on unsigned thinking)`
+        `${source}→Anthropic must omit unsigned thinking (Anthropic 400s on it)`
       );
     }
 

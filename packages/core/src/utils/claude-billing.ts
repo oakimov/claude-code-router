@@ -133,13 +133,46 @@ export function applyClaudeBillingSystemBlock(
   system: TextContent[],
   messages: UnifiedMessage[] | undefined
 ): void {
+  fillClaudeBillingSystemBlock(
+    system,
+    reserveClaudeBillingSystemBlock(system),
+    messages
+  );
+}
+
+/**
+ * Drop any existing billing entry (dedupe) and reserve system[0] for a fresh
+ * one, so applyClaudeSystemIdentity places identity right after it. The value
+ * samples the first user text as sent, which relocation may still change, so
+ * fill it afterwards with fillClaudeBillingSystemBlock.
+ */
+export function reserveClaudeBillingSystemBlock(
+  system: TextContent[]
+): TextContent {
   for (let i = system.length - 1; i >= 0; i--) {
     if (system[i].text.startsWith(CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX)) {
       system.splice(i, 1);
     }
   }
+  const block: TextContent = {
+    type: "text",
+    text: CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX,
+  };
+  system.unshift(block);
+  return block;
+}
+
+/** Fill a reserved billing block; remove it when attribution is disabled. */
+export function fillClaudeBillingSystemBlock(
+  system: TextContent[],
+  block: TextContent,
+  messages: UnifiedMessage[] | undefined
+): void {
+  const index = system.indexOf(block);
+  if (index < 0) return;
   const billing = buildClaudeBillingHeaderValue(messages);
-  if (billing) system.unshift({ type: "text", text: billing });
+  if (billing) block.text = billing;
+  else system.splice(index, 1);
 }
 
 /**
@@ -193,37 +226,46 @@ export function applyClaudeSystemIdentity(system: TextContent[]): void {
  * A no-op when there is no user message to attach the content to, so nothing
  * is silently dropped — the caller's system content stays in `system[]`
  * instead.
+ *
+ * Returns the inserted block unless the first user message has non-empty
+ * string content (the relocated text is then a standalone block a cache
+ * breakpoint can end on); non-empty string content is prefixed in place and
+ * returns undefined.
  */
 export function relocateForeignSystemContent(
   system: TextContent[],
   messages: UnifiedMessage[] | undefined
-): void {
+): TextContent | undefined {
   const identityIndex = system.findIndex(
     (block) => block.text === SYSTEM_IDENTITY
   );
   if (identityIndex < 0 || system.length <= identityIndex + 1 || !Array.isArray(messages)) {
-    return;
+    return undefined;
   }
 
   const firstUser = messages.find((msg) => msg.role === "user");
-  if (!firstUser) return;
+  if (!firstUser) return undefined;
 
   const foreign = system.splice(identityIndex + 1);
   const text = foreign
     .map((block) => block.text)
     .filter((t) => t.length > 0)
     .join("\n\n");
-  if (!text) return;
+  if (!text) return undefined;
 
-  if (typeof firstUser.content === "string") {
-    firstUser.content = firstUser.content
-      ? `${text}\n\n${firstUser.content}`
-      : text;
-  } else if (Array.isArray(firstUser.content)) {
-    firstUser.content.unshift({ type: "text", text });
-  } else {
-    firstUser.content = text;
+  if (typeof firstUser.content === "string" && firstUser.content) {
+    firstUser.content = `${text}\n\n${firstUser.content}`;
+    return undefined;
   }
+  const block: TextContent = { type: "text", text };
+  if (Array.isArray(firstUser.content)) {
+    firstUser.content.unshift(block);
+  } else {
+    // Empty or non-text content carries nothing to prefix; the relocated
+    // prompt becomes the sole block so it can still take a breakpoint.
+    firstUser.content = [block];
+  }
+  return block;
 }
 
 /**

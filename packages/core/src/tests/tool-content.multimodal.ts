@@ -13,6 +13,7 @@ import {
   anthropicToolResultToUnified,
   extractToolMediaForStringToolApis,
   unifiedToolContentToAnthropic,
+  unifiedUserPartToAnthropic,
 } from "../utils/tool-content";
 
 const IMAGE_URL = "data:image/png;base64,iVBORw0KGgo=";
@@ -135,6 +136,18 @@ async function testAnthropicToolResultImages() {
   ]);
   assert.ok(Array.isArray(withDoc));
   assert.equal((withDoc as any)[1].type, "document");
+
+  // Single text part collapses to a string unless it carries a breakpoint.
+  assert.equal(
+    unifiedToolContentToAnthropic([{ type: "text", text: "plain" }]),
+    "plain"
+  );
+  assert.deepEqual(
+    unifiedToolContentToAnthropic([
+      { type: "text", text: "cached", cache_control: { type: "ephemeral" } },
+    ]),
+    [{ type: "text", text: "cached", cache_control: { type: "ephemeral" } }]
+  );
 }
 
 async function testGeminiToolMediaSiblings() {
@@ -255,8 +268,28 @@ async function testExtractHelperIsIdempotentOnStrings() {
   assert.deepEqual(out, msgs);
 }
 
+// User image parts share the tool-result mapping, so an explicit media_type
+// wins over the data URL's (or a missing) type in both places.
+async function testUserImagePartHonoursMediaType() {
+  const part = {
+    type: "image_url",
+    image_url: { url: "data:application/octet-stream;base64,iVBORw0KGgo=" },
+    media_type: "image/png",
+  };
+  assert.deepEqual(unifiedUserPartToAnthropic(part), unifiedToolContentToAnthropic([part]));
+  assert.equal(unifiedUserPartToAnthropic(part)[0].source.media_type, "image/png");
+  const body = AnthropicTransformer.buildAnthropicBody({
+    model: "claude-test",
+    max_tokens: 10,
+    messages: [{ role: "user", content: [{ type: "text", text: "see" }, part] }],
+  });
+  assert.equal(body.messages[0].content[1].source.media_type, "image/png");
+  assert.deepEqual(unifiedUserPartToAnthropic({ type: "image_url", image_url: {} }), []);
+}
+
 async function main() {
   await testResponsesRoundTrip();
+  await testUserImagePartHonoursMediaType();
   await testAnthropicToolResultImages();
   await testGeminiToolMediaSiblings();
   await testChatExtractsToolMedia();

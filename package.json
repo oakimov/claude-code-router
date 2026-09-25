@@ -13,6 +13,7 @@
     "build:docs": "pnpm --filter claude-code-router-docs build",
     "test": "node scripts/run-tests.js",
     "test:chrome-bridge": "node scripts/run-tests.js --chrome-bridge",
+    "test:live": "node scripts/run-tests.js --live cli",
     "typecheck": "pnpm -r --no-bail typecheck",
     "lint": "pnpm -r --no-bail lint",
     "release": "pnpm build && bash scripts/release.sh all",

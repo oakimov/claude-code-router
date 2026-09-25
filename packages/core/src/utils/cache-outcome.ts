@@ -71,6 +71,24 @@ function hasEphemeralBreakpoint(value: unknown, depth = 0): boolean {
   return false;
 }
 
+/**
+ * Longest ephemeral TTL on the body in ms (default 5m, `ttl: "1h"`), 0 when
+ * there is no breakpoint. Each read refreshes an entry for its TTL, so a gap
+ * longer than this since the previous turn means every entry has expired.
+ */
+function longestEphemeralTtlMs(value: unknown, depth = 0): number {
+  if (!value || typeof value !== "object" || depth > 8) return 0;
+  let longest = 0;
+  const cc = (value as any).cache_control;
+  if (cc && typeof cc === "object" && cc.type === "ephemeral") {
+    longest = cc.ttl === "1h" ? 3_600_000 : 300_000;
+  }
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    longest = Math.max(longest, longestEphemeralTtlMs(child, depth + 1));
+  }
+  return longest;
+}
+
 function geminiCachedContentName(
   body: Record<string, any> | null | undefined
 ): string | undefined {
@@ -192,6 +210,22 @@ export function predictAnthropicEphemeral(
       conversationId: diff?.conversationId,
       conversationIdSource: diff?.conversationIdSource,
     };
+  }
+
+  // Expiry only explains a miss when the prefix was intact; a rewritten
+  // history after a long gap keeps its divergence path.
+  const ttlMs = body ? longestEphemeralTtlMs(body) : 0;
+  if (
+    diff &&
+    !diff.firstTurn &&
+    diff.prefixIntact &&
+    ttlMs > 0 &&
+    (diff.msSinceLastTurn ?? 0) > ttlMs
+  ) {
+    return fromPrefixDiff("anthropic_ephemeral", diff, {
+      predictedHit: false,
+      reason: "ttl-expired",
+    });
   }
 
   return fromPrefixDiff("anthropic_ephemeral", diff, {

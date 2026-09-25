@@ -18,6 +18,7 @@ import { sanitizeToolCallId } from "@/utils/toolCallId";
 import {
   anthropicToolResultToUnified,
   unifiedToolContentToAnthropic,
+  unifiedUserPartToAnthropic,
 } from "@/utils/tool-content";
 import { buildAnthropicRequestRuntime } from "@/types/turn-intent";
 import {
@@ -702,12 +703,19 @@ export class AnthropicTransformer implements Transformer {
         const content: any[] = [];
         // Fixed order: thinking → text → images → tool_use.
         const turn = canonicalAssistantTurn(msg);
-        if (turn.thinking) {
-          const signature = anthropicThinkingSignatureFrom(turn.thinking);
+        // Anthropic rejects a thinking block without its signature
+        // ("thinking.signature: Field required") but accepts history with the
+        // block omitted, including mid tool loop. Unsigned thinking arrives from
+        // clients that cannot carry the signature (Responses reasoning summaries,
+        // Chat reasoning_content), so it is dropped here as on Anthropic inbound.
+        const signature = turn.thinking
+          ? anthropicThinkingSignatureFrom(turn.thinking)
+          : undefined;
+        if (turn.thinking && signature) {
           content.push({
             type: "thinking",
             thinking: turn.thinking.content,
-            ...(signature ? { signature } : {}),
+            signature,
           });
         }
         for (const text of turn.texts) {
@@ -754,37 +762,17 @@ export class AnthropicTransformer implements Transformer {
 
       if (msg.role === "user") {
         const content: any[] = [];
+        // Anthropic rejects empty text blocks; a user turn with no sendable
+        // content is omitted. The resulting shapes are accepted (live, 200):
+        // two adjacent assistant turns, the first carrying signed thinking,
+        // and a request that starts with an assistant turn. An assistant
+        // tool_use turn is never left adjacent: its tool_result keeps the next
+        // user turn non-empty.
         if (typeof msg.content === "string") {
-          content.push({ type: "text", text: msg.content });
+          if (msg.content) content.push({ type: "text", text: msg.content });
         } else if (Array.isArray(msg.content)) {
           for (const part of msg.content) {
-            if (part.type === "text" && part.text) {
-              content.push({ type: "text", text: part.text, ...((part as any).cache_control ? { cache_control: (part as any).cache_control } : {}) });
-            } else if (part.type === "image_url" && (part as any).image_url?.url) {
-              const url = (part as any).image_url.url;
-              if (url.startsWith("data:")) {
-                const [meta, data] = url.split(",");
-                const mediaType = meta.split(":")[1]?.split(";")[0] ?? "image/jpeg";
-                content.push({
-                  type: "image",
-                  source: { type: "base64", media_type: mediaType, data },
-                  ...((part as any).cache_control
-                    ? { cache_control: (part as any).cache_control }
-                    : {}),
-                });
-              } else {
-                content.push({
-                  type: "image",
-                  source: { type: "url", url },
-                  ...((part as any).cache_control
-                    ? { cache_control: (part as any).cache_control }
-                    : {}),
-                });
-              }
-            } else if ((part as any).type === "file") {
-              const fileBlocks = unifiedToolContentToAnthropic([part]);
-              if (Array.isArray(fileBlocks)) content.push(...fileBlocks);
-            }
+            content.push(...unifiedUserPartToAnthropic(part));
           }
         }
         if (content.length > 0) messages.push({ role: "user", content });

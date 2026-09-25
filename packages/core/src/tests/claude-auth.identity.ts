@@ -848,6 +848,48 @@ function testCatalogDrivenGating() {
   assert.ok(resolveClaudeAuthBetas("claude-opus-5-5").includes("mid-conversation-system-2026-04-07"));
 }
 
+// --- Manual thinking budget for effort-only clients -----------------------
+// Responses/Chat reasoning.effort reaches the builder as adaptive thinking with
+// no budget; on a model without adaptive thinking (Haiku 4.5) the shape becomes
+// `enabled`, which Anthropic rejects without budget_tokens (live 400:
+// "thinking.enabled.budget_tokens: Field required").
+
+function testManualThinkingBudget() {
+  const haiku = CLAUDE_MODEL_CATALOG["claude-haiku-4-5"];
+  const shaped = (thinking: any, extra: Record<string, any> = {}) => {
+    const body: Record<string, any> = { max_tokens: 4097, thinking, ...extra };
+    applyClaudeModelCapabilityAdjustments(body, haiku);
+    return body;
+  };
+
+  assert.deepEqual(
+    shaped({ type: "adaptive" }, { output_config: { effort: "high" } }).thinking,
+    { type: "enabled", budget_tokens: 4096, display: "summarized" }
+  );
+  assert.equal(
+    shaped({ type: "adaptive" }, { output_config: { effort: "medium" } }).thinking.budget_tokens,
+    2048
+  );
+  // Sub-floor shares rise to Anthropic's 1024 minimum.
+  assert.equal(
+    shaped({ type: "adaptive" }, { output_config: { effort: "minimal" } }).thinking.budget_tokens,
+    1024
+  );
+  // The client's own budget wins, kept below max_tokens.
+  assert.equal(shaped({ type: "enabled", budget_tokens: 2000 }).thinking.budget_tokens, 2000);
+  assert.equal(shaped({ type: "enabled", budget_tokens: 9000 }).thinking.budget_tokens, 4096);
+
+  // No room for the floor below max_tokens: omit thinking rather than 400.
+  const tight: Record<string, any> = { max_tokens: 1000, thinking: { type: "adaptive" } };
+  applyClaudeModelCapabilityAdjustments(tight, haiku);
+  assert.equal(tight.thinking, undefined);
+
+  // Adaptive models keep adaptive with no budget.
+  const opus: Record<string, any> = { max_tokens: 4097, thinking: { type: "adaptive" } };
+  applyClaudeModelCapabilityAdjustments(opus, CLAUDE_MODEL_CATALOG["claude-opus-5-5"]);
+  assert.deepEqual(opus.thinking, { type: "adaptive", display: "summarized" });
+}
+
 // --- API constraints: always-on thinking, no forced tools, no sampling ----
 
 function testApiConstraintNormalization() {
@@ -1268,6 +1310,7 @@ async function main() {
     await testAuthRecoveryContract();
     testCatalogDrivenGating();
     testApiConstraintNormalization();
+    testManualThinkingBudget();
     await testGatewayHintHeadersForwardedForGenuineClient();
     await testChainAnthropicAloneHasNoMarkers();
     await testChainClaudeAuthPlusAnthropicMergesNotReplaces();

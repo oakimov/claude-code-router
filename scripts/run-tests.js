@@ -14,6 +14,7 @@
  * Usage:
  *   node scripts/run-tests.js                  # all hermetic tests (CI default)
  *   node scripts/run-tests.js --chrome-bridge  # also run Chrome bridge tests
+ *   node scripts/run-tests.js --live cli       # live CCR → Anthropic tests
  *   node scripts/run-tests.js core cli         # only the named packages
  */
 
@@ -41,6 +42,16 @@ const OPT_IN_ONLY = {
   'cli/ccr-anthropic-flow.test.ts': {
     flag: '--chrome-bridge',
     reason: 'needs a running CCR server plus `ccr chrome-bridge` on a Chrome with Gemini Nano',
+  },
+  'cli/ccr-live.caching.test.ts': {
+    flag: '--live',
+    reason: 'needs a running CCR (LOG_LEVEL=debug) routed to a live Anthropic provider',
+    timeoutMs: 600_000,
+  },
+  'cli/ccr-live.thinking.test.ts': {
+    flag: '--live',
+    reason: 'needs a running CCR routed to a live Anthropic provider',
+    timeoutMs: 300_000,
   },
 };
 
@@ -106,10 +117,11 @@ const failures = [];
 const started = process.hrtime.bigint();
 
 for (const test of tests) {
+  const timeoutMs = OPT_IN_ONLY[test.id]?.timeoutMs ?? PER_TEST_TIMEOUT_MS;
   const result = spawnSync('npx', ['tsx', path.join('src', 'tests', test.file)], {
     cwd: path.join(repoRoot, 'packages', test.pkg),
     encoding: 'utf8',
-    timeout: PER_TEST_TIMEOUT_MS,
+    timeout: timeoutMs,
     env: testEnv,
   });
 
@@ -120,7 +132,7 @@ for (const test of tests) {
   }
 
   const reason = timedOut
-    ? `timed out after ${PER_TEST_TIMEOUT_MS / 1000}s`
+    ? `timed out after ${timeoutMs / 1000}s`
     : `exit ${result.status !== null ? result.status : 'signal ' + result.signal}`;
   console.log(`  FAIL  ${test.id}  (${reason})`);
   failures.push({

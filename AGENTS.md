@@ -86,6 +86,7 @@ pnpm typecheck            # tsc --noEmit across all packages
 pnpm lint                 # eslint across all packages
 pnpm test                 # all hermetic tests
 pnpm test:chrome-bridge   # additionally runs the Chrome bridge test
+pnpm test:live            # live CCR → Anthropic thinking + caching tests (cli)
 ```
 
 `pnpm test` executes every `packages/*/src/tests/*.ts` file via
@@ -101,7 +102,27 @@ fails for that reason.
 Claude Code → CCR → Gemini Nano bridge → CCR round trip. It needs a running CCR
 server plus `ccr chrome-bridge` against a Chrome with Gemini Nano available, so
 it is opt-in via `--chrome-bridge` and never runs in CI. Register any other test
-with operator-provided dependencies in `OPT_IN_ONLY` in the runner.
+with operator-provided dependencies in `OPT_IN_ONLY` in the runner (an entry may
+set its own `timeoutMs`).
+
+`ccr-live.thinking.test.ts` and `ccr-live.caching.test.ts` (opt-in via `--live`)
+drive a running CCR routed to a live Anthropic provider through all three chat
+protocols (`/v1/messages`, `/v1/chat/completions`, `/v1/responses`):
+
+- **thinking**: a two-turn tool loop per protocol; turn 1 must return thinking
+  plus a tool call, and replaying that turn the way each client does (signed
+  thinking, reasoning item, `reasoning_content`) must succeed.
+- **caching**: a fresh multi-turn conversation per protocol over a ~12k-token
+  stable prompt. Every follow-up must read the previous turn's prompt from
+  cache (≥90% hit), and CCR's `cache outcome` debug record for each request
+  must match the client-visible token counts with verdict `cold`/`warm-start`
+  on turn 1 and `hit` afterwards. Needs `LOG_LEVEL=debug`.
+
+Both require `CCR_API_KEY` (the CCR server's API key; no default) and default to
+`http://localhost:3456` and `claude,claude-haiku-4-5-20251001`; override with
+`CCR_URL` and `CCR_LIVE_MODEL`. The caching test reads logs from
+`packages/server/ccr-config/logs` (the Docker mount) unless `CCR_LOG_DIR` is set,
+and runs `CCR_LIVE_TURNS` turns (default 4). They spend real tokens.
 
 ### Publish
 ```bash

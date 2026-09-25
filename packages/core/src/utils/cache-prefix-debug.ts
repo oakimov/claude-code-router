@@ -12,10 +12,14 @@ const CHARS_PER_TOKEN = 4;
  */
 export type CachePrefixStage = "client" | "wire";
 
+/**
+ * Routing headers that pin prompt-cache affinity. `x-client-request-id` is
+ * deliberately absent: claude-auth mints a fresh one per request (as Claude
+ * Code does), and Codex sets it equal to `thread-id`, which is tracked here.
+ */
 export type CacheAffinityHeaders = {
   sessionId?: string;
   threadId?: string;
-  clientRequestId?: string;
 };
 
 export type CachePrefixSegment = {
@@ -128,11 +132,18 @@ function fingerprint(value: unknown): string {
   return digest(value).hash;
 }
 
+/**
+ * `cache_control` marks where a cache entry ends; it is not prompt content.
+ * Clients move the tail marker forward every turn, so hashing it would report
+ * the previous tail as modified on every healthy append. Marker positions are
+ * tracked separately via `breakpointPaths` / segment `breakpoints`.
+ */
 function stableValue(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(stableValue);
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(value as object).sort()) {
+    if (key === "cache_control") continue;
     out[key] = stableValue((value as Record<string, unknown>)[key]);
   }
   return out;
@@ -227,6 +238,20 @@ function collectUnstableIds(value: unknown, out: Set<string>, depth = 0): void {
   }
 }
 
+/**
+ * String content and a single text block with the same text are the same
+ * prompt to the provider. Claude Code sends its tail message as a marked text
+ * block and the same message as a plain string on later turns (observed on
+ * mid-conversation `role:"system"` and user messages), so hash both as blocks
+ * or every healthy append reads as a rewrite of the previous tail.
+ */
+function canonicalMessage(item: unknown): unknown {
+  const message = item as any;
+  if (!message || typeof message !== "object") return item;
+  if (typeof message.content !== "string") return item;
+  return { ...message, content: [{ type: "text", text: message.content }] };
+}
+
 function segment(
   path: string,
   value: unknown,
@@ -303,7 +328,7 @@ export function snapshotOutboundCachePrefix(
   if (conversation) {
     conversation.items.forEach((item: any, index: number) => {
       const path = `${conversation.key}[${index}]`;
-      segments.push(segment(path, item));
+      segments.push(segment(path, canonicalMessage(item)));
       collectBreakpointPaths(item, path, breakpointPaths);
       if (item?.role === "assistant" || item?.role === "model") {
         lastAssistantBlockOrder =
@@ -490,9 +515,14 @@ export function diffCachePrefixSnapshots(
     if (prompt_cache_keyChanged) firstDivergencePath = "prompt_cache_key";
     else if (affinityChanged) firstDivergencePath = "affinity";
     else if (modelChanged) firstDivergencePath = "model";
-    else if (lastAssistantBlockOrderChanged) {
+    // A healthy append moves the tail breakpoint and usually adds an assistant
+    // turn with a different block layout. Those name a divergence only when
+    // they are the sole change (identical segments escalated to "modified"
+    // above); otherwise `breakpointsMoved` / `lastAssistantBlockOrderChanged`
+    // remain as informational flags.
+    else if (change === "modified" && lastAssistantBlockOrderChanged) {
       firstDivergencePath = "lastAssistantBlockOrder";
-    } else if (breakpointsMoved) {
+    } else if (change === "modified" && breakpointsMoved) {
       firstDivergencePath = "breakpointPaths";
     }
   }

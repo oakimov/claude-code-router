@@ -144,8 +144,10 @@ export function buildRequestBody(
       continue;
     }
 
+    // Claude rejects empty text blocks ("text content blocks must be
+    // non-empty"); a turn left without content is omitted below.
     if (typeof message.content === "string") {
-      content.push({
+      if (message.content) content.push({
         type: "text",
         text: message.content,
         ...(message.cache_control
@@ -155,10 +157,10 @@ export function buildRequestBody(
     } else if (Array.isArray(message.content)) {
       // Text parts
       message.content.forEach((item) => {
-        if (item.type === "text") {
+        if (item.type === "text" && item.text) {
           content.push({
             type: "text",
-            text: item.text || "",
+            text: item.text,
             ...((item as any).cache_control
               ? { cache_control: (item as any).cache_control }
               : {}),

@@ -132,16 +132,20 @@ Beta token 只会通过 `anthropic-beta` HTTP 请求头发送。CCR 不会在 Me
 
 ### 账单与身份 system 块
 
-对于**其他客户端**路由到范围内的 Anthropic 配置时，CCR 会在 Anthropic `system` 数组最前面（调用方自带的 system 文本之前）插入两个条目，与 Claude Code 自身发送的内容一致：
+对于**路由到范围内 Anthropic 提供商的其他客户端**，CCR 会把 Anthropic `system` 数组精简为 Claude Code 2.1.280 配置的形态：
 
-1. 账单标记文本块：对于一方 Anthropic 配置为 `x-anthropic-billing-header: cc_version=${CC_VERSION}.${suffix}; cc_entrypoint=unknown; cch=00000;` —— 尽管名字里带 "header"，它实际是以 `system[0]` 文本形式传输，**不是** HTTP 请求头。`suffix` 是依据第一条用户消息文本与 CLI 版本推导出的 3 位十六进制摘要。当前 `2.1.280` 配置不再使用旧版随机 `cch` 行为。二者均不带 `cache_control`。
+1. 账单标记文本块：对于一方 Anthropic 配置为 `x-anthropic-billing-header: cc_version=${CC_VERSION}.${suffix}; cc_entrypoint=unknown; cch=00000;` —— 尽管名字里带 "header"，它实际是以 `system[0]` 文本形式传输，**不是** HTTP 请求头。`suffix` 是依据实际发送的第一条用户消息文本与 CLI 版本推导出的 3 位十六进制摘要（经过下文的迁移后，该文本就是调用方被迁移的 system 提示词，因此客户端丢弃或摘要早期轮次时它保持不变）。当前 `2.1.280` 配置不再使用旧版随机 `cch` 行为。二者均不带 `cache_control`。
 2. 身份文本块：`You are Claude Code, Anthropic's official CLI for Claude.`（`system[1]`）。模拟路径会将选定的缓存配置应用到这个可缓存块；调用方自带的 `cache_control` 不会覆盖固定的版本配置。
 
-对于**真实的 Claude Code 客户端**，其自身的 system 块 —— 包括自带的账单标记和身份字符串 —— 会被原样转发；`claude-auth` 不会触碰、移除或重新排列它们。
+Anthropic 的 OAuth 计费校验会检查身份块之后的 `system[]` 内容，若其中带有外部 harness 的提示词，就以 "out of extra usage" 400 拒绝请求 —— 即使请求头正确，调用方自己的 system 提示词也会让流量明显不是 Claude Code。CCR 的第三方 Anthropic 模拟沿用 Claude Code OAuth 客户端（如 `opencode-claude-auth`）的做法：调用方在 `system[1]` 之后提供的全部内容会被迁移到第一条用户消息中（按原顺序，作为独立的文本块放在最前面），而不是留在 `system[]` 里。内容仍原样送达模型，只是成为第一条用户轮次的一部分。如果没有可附加的用户消息，则不做迁移 —— 调用方的 system 内容保留在 `system[]` 中，而不会被丢弃。
+
+对于**其他客户端**，工具名也会在构建请求体之前改写为 Claude Code 的 OAuth 拼写：`bash` 变为 `mcp_Bash`，`read` 变为 `mcp_Read`，已是 `mcp_...` 的名称保持不变。工具定义、历史 assistant `tool_calls` 以及强制的 `tool_choice` 会保持一致。响应路径会通过请求级的名称映射，在 JSON 与流式响应中恢复调用方原始的工具名。
+
+对于**原生 Desktop 与 CLI**，其自身的 system 块 —— 包括账单、身份及不透明字段 —— 会被原样转发，不做任何 system 提示词改写；唯一的缓存变化是下文“Prompt 缓存”一节所述的 OAuth TTL 延长。
 
 ### 模型能力目录
 
-`claude-model-catalog.ts` 维护一份按模型划分的能力表（上下文窗口、是否原生支持 1M、最大输出 token、默认 effort，以及 `capabilities` 列表，如 `effort`、`context_management`、`mid_conv_system`、`fast_mode`、`adaptive_thinking`），驱动上文的 beta 合成逻辑，同时驱动构建后的调整流程（`applyClaudeModelCapabilityAdjustments`）：从 `thinking`/`output_config` 中剥离该模型不支持的 `effort` 字段、调整 `thinking` 块形态（`adaptive` 还是 `enabled`），以及将 `max_tokens` 限制在该模型已知的上限内。这套目录用一次表查询取代了原先分散的按模型条件判断，查询前会先归一化模型 id（剥离 CCR 的 `provider,` 前缀、`[1m]` 标记，以及 Anthropic 的 `-YYYYMMDD` 日期后缀）。
+`claude-model-catalog.ts` 维护一份按模型划分的能力表（上下文窗口、是否原生支持 1M、最大输出 token、默认 effort，以及 `capabilities` 列表，如 `effort`、`context_management`、`mid_conv_system`、`fast_mode`、`adaptive_thinking`），驱动上文的 beta 合成逻辑，同时驱动构建后的调整流程（`applyClaudeModelCapabilityAdjustments`）：从 `thinking`/`output_config` 中剥离该模型不支持的 `effort` 字段、调整 `thinking` 块形态（`adaptive` 还是 `enabled`；`enabled` 总会带上 `budget_tokens`，取自客户端，或按请求的 effort 取 `max_tokens` 的一定比例，不低于 Anthropic 的最小值 1024 且小于 `max_tokens`，两者无法同时满足时省略 thinking），以及将 `max_tokens` 限制在该模型已知的上限内。这套目录用一次表查询取代了原先分散的按模型条件判断，查询前会先归一化模型 id（剥离 CCR 的 `provider,` 前缀、`[1m]` 标记，以及 Anthropic 的 `-YYYYMMDD` 日期后缀）。
 
 ### 1M 上下文
 
@@ -149,7 +153,11 @@ Claude Code 只有在请求的模型 id 携带 `[1m]` 标记时，才会从 wire
 
 ### Prompt 缓存：原生透传 vs 模拟
 
-原生 Claude Desktop 和 Claude Code CLI 请求会完整保留客户端自己的缓存标记；CCR 不会添加、删除或重排它们。当前 Desktop 3P 对话通过 Desktop 内置的 Agent SDK 运行，因此可以像 Claude Code 一样在 system 和 message 内容上生成缓存断点；实测请求使用 5 分钟 ephemeral 缓存。没有标记的原生请求仍不会由 CCR 自动添加标记。只有“其他客户端”在目标为范围内的 Anthropic 配置时才会生成缓存字段：账单块不加缓存标记，可缓存的 system 块使用固定的 2.1.280 配置，并在消息尾部设置最终断点。其他目标以及其他客户端协议都不会套用 Claude Code 的 system 或缓存改写。
+原生 Claude Desktop 和 Claude Code CLI 请求的缓存标记位置会完整保留，包括按功能开关决定的 scope。CCR 不会为没有标记的原生请求添加标记，也不会移动已有标记。只有一处变化，且仅在 `claude-auth` OAuth 路由上：当请求中没有任何标记设置 TTL 时，每个 ephemeral 标记都会加上 `ttl: "1h"`。Claude Code 依据它向 CCR 认证的方式选择 TTL；使用 API Key（例如网关密钥）时，它对每个请求都使用默认的 5 分钟，因此超过五分钟的空闲就会重写整个对话缓存。任一标记已设置 TTL 的请求会原样转发。只检查真正可放置标记的位置（顶层、tools、system 块、消息内容块以及 `tool_result` 内容）；工具输入中的值属于用户数据，不会被改动。1 小时缓存写入的计费高于 5 分钟写入，见 [Claude Code prompt caching](https://code.claude.com/docs/en/prompt-caching#cache-lifetime)。如需保留客户端自己的 TTL，在 `config.json` 中设置 `"CLAUDE_AUTH_NATIVE_CACHE_TTL": "client"`（默认 `"1h"`）。直连的 `Anthropic` API Key 路由保持客户端标记不变。当前 Desktop 3P 对话通过 Desktop 内置的 Agent SDK 运行，因此可以像 Claude Code 一样在 system 和 message 内容上生成缓存断点。
+
+只有“其他客户端”路径会生成缓存字段，使用 2.1.280 配置：账单块不加缓存标记，可缓存的 system 块使用该配置的缓存控制，被迁移的调用方 system 提示词获得 Claude Code 在其自身 system 提示词上设置的断点（这样客户端改写或截取历史时，工具和指令仍保持缓存），并在一个消息尾部设置最终断点。没有可迁移的用户消息时，只标记第一个和最后一个可缓存的 system 块，使请求不超过 Anthropic 的四个断点上限；请求体构建器不会发送的部分（空文本、没有 URL 的图片、没有数据的文件）不会承载尾部断点；若最后一个轮次完全没有可发送内容（构建器会省略它），尾部断点移到前一个符合条件的消息。尾部是工具结果时，断点位于 `tool_result` 块上，与 Claude Code 一致。CCR 没有通用的缓存归一化器；其他目标以及其他客户端协议都不会套用 Claude Code 的 system 或缓存改写。
+
+早期版本把被迁移的提示词拼接到第一条用户消息的文本前面，而不是作为独立的块；账单后缀也取自迁移前的第一条用户消息。因此，升级 CCR 时正在进行的对话会有一次 prompt 缓存未命中，之后的轮次会重新命中缓存。
 
 ### 认证恢复
 

@@ -10,8 +10,9 @@ import {
 } from "../utils/claude-auth";
 import { HeaderRecord } from "../utils/headers";
 import {
-  applyClaudeBillingSystemBlock,
   applyClaudeSystemIdentity,
+  fillClaudeBillingSystemBlock,
+  reserveClaudeBillingSystemBlock,
   prefixClaudeToolNames,
   relocateForeignSystemContent,
   unprefixClaudeToolNames,
@@ -180,6 +181,10 @@ export function applyClaudeModelCapabilityAdjustments(
 ): void {
   const cap = (capability: string) => catalogEntryHasCapability(entry, capability);
   const constraints = entry?.apiConstraints;
+  // Read before stripEffort: a model without the effort capability still needs
+  // the requested effort to size a manual thinking budget below.
+  const requestedEffort =
+    anthropicBody.output_config?.effort ?? anthropicBody.thinking?.effort;
 
   const stripEffort = (container: Record<string, any> | undefined) => {
     if (container && typeof container === "object" && !cap("effort")) {
@@ -247,6 +252,10 @@ export function applyClaudeModelCapabilityAdjustments(
     };
   }
 
+  if (entry && typeof anthropicBody.max_tokens === "number") {
+    anthropicBody.max_tokens = Math.min(anthropicBody.max_tokens, entry.maxOutputTokens.upper);
+  }
+
   if (
     anthropicBody.thinking &&
     typeof anthropicBody.thinking === "object" &&
@@ -256,20 +265,61 @@ export function applyClaudeModelCapabilityAdjustments(
     // empty thinking blocks — Chat Completions / OpenAI-compatible clients then
     // see no reasoning_content. Keep summarized so OAuth-proxied third parties
     // receive visible thinking text.
-    anthropicBody.thinking = cap("adaptive_thinking")
-      ? { type: "adaptive", display: "summarized" }
-      : {
+    if (cap("adaptive_thinking")) {
+      anthropicBody.thinking = { type: "adaptive", display: "summarized" };
+    } else {
+      // Manual thinking requires budget_tokens (400 "thinking.enabled.
+      // budget_tokens: Field required"). Effort-only clients (Responses/Chat
+      // reasoning.effort) arrive as adaptive with no budget, so derive one.
+      const budget = manualThinkingBudget(
+        anthropicBody.thinking.budget_tokens,
+        requestedEffort,
+        anthropicBody.max_tokens
+      );
+      if (budget === undefined) {
+        delete anthropicBody.thinking;
+      } else {
+        anthropicBody.thinking = {
           type: "enabled",
-          ...(anthropicBody.thinking.budget_tokens !== undefined
-            ? { budget_tokens: anthropicBody.thinking.budget_tokens }
-            : {}),
+          budget_tokens: budget,
           display: "summarized",
         };
+      }
+    }
   }
+}
 
-  if (entry && typeof anthropicBody.max_tokens === "number") {
-    anthropicBody.max_tokens = Math.min(anthropicBody.max_tokens, entry.maxOutputTokens.upper);
+/** Anthropic's minimum manual thinking budget. */
+const MIN_THINKING_BUDGET = 1024;
+
+/**
+ * Budget for manual (`enabled`) thinking: the client's own budget when sent,
+ * else an effort share of max_tokens (as in gemini-thinking's budget dialect).
+ * It must stay below max_tokens and at or above the 1024 floor; when both
+ * cannot hold, thinking is dropped rather than sent invalid.
+ */
+function manualThinkingBudget(
+  clientBudget: unknown,
+  effort: unknown,
+  maxTokens: unknown
+): number | undefined {
+  const max = typeof maxTokens === "number" ? maxTokens : undefined;
+  let budget: number;
+  if (typeof clientBudget === "number") {
+    budget = clientBudget;
+  } else {
+    if (max === undefined) return undefined;
+    const share =
+      effort === "minimal" ? 0.1 : effort === "low" ? 0.25 : effort === "medium" ? 0.5 : 1;
+    budget = Math.round((max - 1) * share);
   }
+  if (max !== undefined && budget >= max) budget = max - 1;
+  if (budget < MIN_THINKING_BUDGET) {
+    return max !== undefined && max - 1 >= MIN_THINKING_BUDGET
+      ? MIN_THINKING_BUDGET
+      : undefined;
+  }
+  return budget;
 }
 
 const STAINLESS_PACKAGE_VERSION = "0.94.0";
@@ -445,12 +495,19 @@ export class ClaudeAuthTransformer implements Transformer {
       // following it (see plan Step 3's [billing, identity, ...caller]
       // invariant).
       const system = normalizeSystemToArray(request);
-      applyClaudeBillingSystemBlock(system, request.messages);
+      const billingBlock = reserveClaudeBillingSystemBlock(system);
       applyClaudeSystemIdentity(system);
       // Anthropic's OAuth billing validator rejects requests whose system[]
       // carries a foreign harness prompt past the identity block; relocate
       // it into the first user message so it still reaches the model.
+      // Unlike applyThirdPartyAnthropicPolicy, this legacy path (direct
+      // transformer callers without route policy) authors no cache profile,
+      // so a string first user message is prefixed in place and the relocated
+      // prompt gets no breakpoint of its own.
       relocateForeignSystemContent(system, request.messages);
+      // Compute the billing suffix from the relocated first user text (the
+      // body actually sent), which stays stable when early turns are dropped.
+      fillClaudeBillingSystemBlock(system, billingBlock, request.messages);
       // Claude Code's OAuth validator also expects tool names in its
       // mcp_PascalCase spelling. Keep a request-local reverse map for the
       // response transformer so the caller receives its original names.

@@ -78,6 +78,104 @@ function testHealthyAppendKeepsPrefix() {
   assert.ok((second?.unchangedPrefixCount || 0) >= 3);
 }
 
+/**
+ * Real clients (Claude Code, CCR's third-party emulation) move the tail
+ * breakpoint forward every turn. The marker leaving the previous tail is not a
+ * prefix change — Anthropic still reads the whole previous prefix.
+ */
+function testMovingTailBreakpointKeepsPrefix() {
+  __resetCachePrefixSnapshotsForTests();
+  const turn = (tail: number) => {
+    const messages: any[] = [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      { role: "user", content: [{ type: "text", text: "next" }] },
+    ].slice(0, tail + 1);
+    messages[tail] = {
+      ...messages[tail],
+      content: [
+        { ...messages[tail].content[0], cache_control: { type: "ephemeral" } },
+      ],
+    };
+    return { model: "claude-haiku-4-5", system: "stable system", messages };
+  };
+
+  // Anonymous client: the fingerprint hashes messages[0], whose marker moves.
+  assert.equal(rememberAndDiffOutboundCachePrefix(undefined, turn(0))?.firstTurn, true);
+  const diff = rememberAndDiffOutboundCachePrefix(undefined, turn(2));
+  assert.equal(diff?.firstTurn, false, "same conversation despite moved marker");
+  assert.equal(diff?.prefixIntact, true);
+  assert.equal(diff?.change, "appended");
+  assert.equal(diff?.approxPrefixTokensLost, 0);
+  assert.equal(diff?.breakpointsMoved, true);
+  assert.equal(diff?.lastAssistantBlockOrderChanged, true);
+  assert.equal(
+    diff?.firstDivergencePath,
+    undefined,
+    "informational flags must not read as a divergence on a healthy append"
+  );
+
+  // Same content, marker moved backwards: the move is the only change and
+  // must still be named.
+  const moved = turn(2);
+  moved.messages[2] = { ...moved.messages[2], content: [{ type: "text", text: "next" }] };
+  moved.messages[1] = {
+    ...moved.messages[1],
+    content: [{ type: "text", text: "ok", cache_control: { type: "ephemeral" } }],
+  };
+  const onlyMoved = rememberAndDiffOutboundCachePrefix(undefined, moved);
+  assert.equal(onlyMoved?.change, "modified");
+  assert.equal(onlyMoved?.firstDivergencePath, "breakpointPaths");
+}
+
+/**
+ * Claude Code sends its tail message as a marked text block, then the same
+ * message as a plain string once it is no longer last (observed live on
+ * mid-conversation `role:"system"` messages). Same prompt, so an append.
+ */
+function testTailStringBlockFlipKeepsPrefix() {
+  __resetCachePrefixSnapshotsForTests();
+  const reminder = "<system-reminder>stable</system-reminder>";
+  const history: any[] = [
+    { role: "user", content: [{ type: "text", text: "hi" }] },
+    { role: "assistant", content: [{ type: "text", text: "ok" }] },
+  ];
+  const first = {
+    model: "claude-opus-5-5",
+    system: "stable system",
+    messages: [
+      ...history,
+      {
+        role: "system",
+        content: [
+          { type: "text", text: reminder, cache_control: { type: "ephemeral" } },
+        ],
+      },
+    ],
+  };
+  const next = {
+    model: "claude-opus-5-5",
+    system: "stable system",
+    messages: [
+      ...history,
+      { role: "system", content: reminder },
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "more", cache_control: { type: "ephemeral" } },
+        ],
+      },
+    ],
+  };
+  rememberAndDiffOutboundCachePrefix("flip-sess", first);
+  const diff = rememberAndDiffOutboundCachePrefix("flip-sess", next);
+  assert.equal(diff?.change, "appended");
+  assert.equal(diff?.prefixIntact, true);
+  assert.equal(diff?.approxPrefixTokensLost, 0);
+  assert.equal(diff?.firstDivergencePath, undefined);
+}
+
 function testRewrittenHistoryReportsFirstDivergence() {
   __resetCachePrefixSnapshotsForTests();
   rememberAndDiffOutboundCachePrefix("sess-2", anthropicBody());
@@ -636,6 +734,8 @@ async function testOutcomeStaysBehindDebug() {
 
 async function main() {
   testHealthyAppendKeepsPrefix();
+  testMovingTailBreakpointKeepsPrefix();
+  testTailStringBlockFlipKeepsPrefix();
   testRewrittenHistoryReportsFirstDivergence();
   testReasoningIdChangeIsACacheBreak();
   testPromptCacheKeyAndAffinity();
