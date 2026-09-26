@@ -18,7 +18,9 @@
  *   CCR_URL         default http://localhost:3456
  *   CCR_API_KEY     required: the CCR server's API key
  *   CCR_LIVE_MODEL  default "claude,claude-haiku-4-5-20251001"
- *   CCR_LOG_DIR     default packages/server/ccr-config/logs (the Docker mount)
+ *   CCR_LOG_DIR     default packages/server/ccr-config/logs (the Docker mount);
+ *                   "off" skips check 2 when the CCR serving the requests
+ *                   runs elsewhere (e.g. behind a gateway on another host)
  *   CCR_LIVE_TURNS  default 4
  */
 import assert from "node:assert/strict";
@@ -40,8 +42,9 @@ function requireApiKey(): string {
 }
 const MODEL = process.env.CCR_LIVE_MODEL || "claude,claude-haiku-4-5-20251001";
 const UPSTREAM_MODEL = MODEL.includes(",") ? MODEL.slice(MODEL.indexOf(",") + 1) : MODEL;
+const LOG_CHECK = process.env.CCR_LOG_DIR !== "off";
 const LOG_DIR =
-  process.env.CCR_LOG_DIR ||
+  (LOG_CHECK && process.env.CCR_LOG_DIR) ||
   resolve(dirname(fileURLToPath(import.meta.url)), "../../../server/ccr-config/logs");
 const TURNS = Math.max(2, Number(process.env.CCR_LIVE_TURNS) || 4);
 
@@ -274,7 +277,11 @@ function report(turns: Turn[]): void {
 }
 
 async function main(): Promise<void> {
-  console.log(`ccr-live.caching: ${MODEL} via ${CCR_URL}, ${TURNS} turns, logs ${LOG_DIR}`);
+  console.log(
+    `ccr-live.caching: ${MODEL} via ${CCR_URL}, ${TURNS} turns, logs ${
+      LOG_CHECK ? LOG_DIR : "off"
+    }`
+  );
   const since = Date.now() - CLOCK_SLACK_MS;
   const turns = [
     ...(await anthropicConversation()),
@@ -283,15 +290,19 @@ async function main(): Promise<void> {
   ];
   report(turns);
 
-  // pino writes asynchronously; give the last records time to land.
-  await new Promise((done) => setTimeout(done, 2_000));
-  const records = readCacheOutcomes(since);
-  assert.ok(
-    records.length > 0,
-    `no "cache outcome" records in ${LOG_DIR} since the run started; is LOG_LEVEL=debug?`
-  );
-
-  const problems = [...checkClientUsage(turns), ...checkLog(turns, records)];
+  const problems = checkClientUsage(turns);
+  if (LOG_CHECK) {
+    // pino writes asynchronously; give the last records time to land.
+    await new Promise((done) => setTimeout(done, 2_000));
+    const records = readCacheOutcomes(since);
+    assert.ok(
+      records.length > 0,
+      `no "cache outcome" records in ${LOG_DIR} since the run started; is LOG_LEVEL=debug?`
+    );
+    problems.push(...checkLog(turns, records));
+  } else {
+    console.log("  CCR log cross-check skipped (CCR_LOG_DIR=off)");
+  }
   if (problems.length) {
     throw new Error(`caching problems:\n  ${problems.join("\n  ")}`);
   }

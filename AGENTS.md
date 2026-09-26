@@ -138,6 +138,28 @@ All three live tests require `CCR_API_KEY` (the CCR server's API key; no default
 `packages/server/ccr-config/logs` (the Docker mount) unless `CCR_LOG_DIR` is set,
 and runs `CCR_LIVE_TURNS` turns (default 4). They spend real tokens.
 
+The live tests also run through a gateway in front of CCR. For example, with
+LiteLLM, whose Anthropic provider points at CCR:
+
+```bash
+NODE_TLS_REJECT_UNAUTHORIZED=0 CCR_URL=https://<litellm-host>:4000 \
+  CCR_API_KEY=<litellm key> CCR_LIVE_MODEL=<litellm model> CCR_LOG_DIR=off \
+  pnpm test:live
+```
+
+- `CCR_LOG_DIR=off` skips only the caching test's log cross-check, for a CCR
+  whose logs are not on this host. Client-visible cache hits are still
+  asserted.
+- A LiteLLM hop is detected by its `x-litellm-call-id` response header.
+  LiteLLM reaches CCR over Anthropic Messages and re-encodes Responses and
+  Chat replies itself:
+  - reasoning comes back as reasoning `content`;
+  - Anthropic's server search comes back as a completed `web_search`
+    function/tool call with an `srvtoolu_` id;
+  - Chat citations come back under `provider_specific_fields`.
+
+  The tests assert those shapes in that case and CCR's own shapes otherwise.
+
 ### Publish
 ```bash
 pnpm release        # Build and publish all packages

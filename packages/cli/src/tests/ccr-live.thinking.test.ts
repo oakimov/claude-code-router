@@ -127,8 +127,13 @@ async function responses(): Promise<void> {
   assert.equal(t1.status, 200, `responses T1: ${describe(t1)}`);
   const output: any[] = t1.json.output || [];
   const reasoning = output.find((item) => item.type === "reasoning");
-  const summary = (reasoning?.summary || []).map((part: any) => part.text).join("");
-  assert.ok(summary, `responses T1 reasoning summary: ${describe(t1)}`);
+  // CCR emits readable reasoning as `summary`; gateways in front of CCR may
+  // carry it as reasoning `content` instead (LiteLLM's Responses bridge
+  // emits output_text parts there and leaves `summary` empty).
+  const summary = [...(reasoning?.summary || []), ...(reasoning?.content || [])]
+    .map((part: any) => part?.text || "")
+    .join("");
+  assert.ok(summary, `responses T1 reasoning text: ${describe(t1)}`);
   const call = output.find((item) => item.type === "function_call");
   assert.ok(call, `responses T1 function_call: ${describe(t1)}`);
 

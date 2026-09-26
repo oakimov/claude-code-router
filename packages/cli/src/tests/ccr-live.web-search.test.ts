@@ -207,6 +207,25 @@ function assertUrlCitations(annotations: any[], label: string, nested: boolean):
   }
 }
 
+/**
+ * A LiteLLM proxy in front of CCR (it tags responses with x-litellm-call-id)
+ * reaches CCR over Anthropic Messages and re-encodes the reply itself: the
+ * server search surfaces as a completed function/tool call carrying
+ * Anthropic's `srvtoolu_` id (LiteLLM maps every server_tool_use to a tool
+ * call), and Chat citations as `provider_specific_fields`. The facts checked
+ * stay the same: Anthropic ran the search server-side, and the answer uses it.
+ */
+function viaLiteLLM(response: Response): boolean {
+  return response.headers.has("x-litellm-call-id");
+}
+
+function assertServerSearchCall(id: unknown, args: unknown, label: string): string {
+  assert.match(String(id || ""), /^srvtoolu_/, `${label}: not a server-side search call id: ${id}`);
+  const query = JSON.parse(String(args || "{}")).query;
+  assert.ok(query, `${label}: search call without query: ${args}`);
+  return query;
+}
+
 async function responsesSearch(stream: boolean): Promise<void> {
   const label = `responses${stream ? " (stream)" : ""}`;
   const response = await post(
@@ -221,18 +240,36 @@ async function responsesSearch(stream: boolean): Promise<void> {
   );
   const text = await response.text();
   assert.equal(response.status, 200, `${label}: ${response.status} ${text.slice(0, 600)}`);
+  const events = stream ? sseEvents(text) : [];
   let output: any[];
   if (stream) {
-    const events = sseEvents(text);
-    const annotationEvents = events.filter(
-      (event) => event.type === "response.output_text.annotation.added"
-    );
-    assertUrlCitations(annotationEvents.map((event) => event.annotation), label, false);
     const completed = events.find((event) => event.type === "response.completed");
     assert.ok(completed, `${label}: no response.completed`);
     output = completed.response.output;
   } else {
     output = JSON.parse(text).output;
+  }
+  const answer = output
+    .filter((item) => item.type === "message")
+    .flatMap((item) => item.content ?? [])
+    .map((part: any) => part.text ?? "")
+    .join("");
+  assert.ok(answer.trim(), `${label}: no answer: ${JSON.stringify(output).slice(0, 400)}`);
+
+  if (viaLiteLLM(response)) {
+    const call = output.find((item) => item.type === "function_call" && item.name === "web_search");
+    assert.ok(call, `${label}: no web_search call: ${JSON.stringify(output).slice(0, 400)}`);
+    assert.equal(call.status, "completed", `${label}: ${JSON.stringify(call)}`);
+    const query = assertServerSearchCall(call.call_id, call.arguments, label);
+    console.log(`  ${label} [litellm]: server search "${query}"; answer: ${answer.trim().slice(0, 80)}`);
+    return;
+  }
+
+  if (stream) {
+    const annotationEvents = events.filter(
+      (event) => event.type === "response.output_text.annotation.added"
+    );
+    assertUrlCitations(annotationEvents.map((event) => event.annotation), label, false);
   }
   const call = output.find((item) => item.type === "web_search_call");
   assert.ok(call, `${label}: no web_search_call: ${JSON.stringify(output).slice(0, 400)}`);
@@ -251,6 +288,7 @@ async function chatSearch(stream: boolean): Promise<void> {
     {
       model: MODEL,
       stream,
+      ...(stream ? { stream_options: { include_usage: true } } : {}),
       max_tokens: 1024,
       messages: [{ role: "user", content: PROMPT }],
       web_search_options: {},
@@ -259,21 +297,44 @@ async function chatSearch(stream: boolean): Promise<void> {
   );
   const text = await response.text();
   assert.equal(response.status, 200, `${label}: ${response.status} ${text.slice(0, 600)}`);
-  let annotations: any[];
-  let answer: string;
-  if (stream) {
-    const deltas = sseEvents(text).map((chunk) => chunk.choices?.[0]?.delta ?? {});
-    assert.equal(deltas.some((delta) => delta.tool_calls), false, `${label}: search leaked as tool_calls`);
-    annotations = deltas.flatMap((delta) => delta.annotations ?? []);
-    answer = deltas.map((delta) => delta.content ?? "").join("");
-  } else {
-    const message = JSON.parse(text).choices?.[0]?.message ?? {};
-    assert.equal(message.tool_calls, undefined, `${label}: search leaked as tool_calls`);
-    annotations = message.annotations ?? [];
-    answer = message.content ?? "";
-  }
-  assertUrlCitations(annotations, label, true);
+  const chunks = stream ? sseEvents(text) : [JSON.parse(text)];
+  const parts = chunks.map((chunk) => (stream ? chunk.choices?.[0]?.delta : chunk.choices?.[0]?.message) ?? {});
+  const answer = parts.map((part) => part.content ?? "").join("");
   assert.ok(answer.trim(), `${label}: no answer`);
+
+  if (viaLiteLLM(response)) {
+    // Tool call deltas: the first carries id + name, later ones append args.
+    const calls = parts.flatMap((part) => part.tool_calls ?? []);
+    const first = calls.find((call: any) => call.function?.name === "web_search");
+    assert.ok(first, `${label}: no web_search call: ${text.slice(0, 400)}`);
+    const args = stream
+      ? calls
+          .filter((call: any) => (call.index ?? 0) === (first.index ?? 0))
+          .map((call: any) => call.function?.arguments ?? "")
+          .join("")
+      : first.function.arguments;
+    const query = assertServerSearchCall(first.id, args, label);
+    const requests = chunks
+      .map((chunk) => chunk.usage?.server_tool_use?.web_search_requests ?? 0)
+      .reduce((max, value) => Math.max(max, value), 0);
+    assert.ok(requests >= 1, `${label}: usage.server_tool_use not counted`);
+    const citations = parts.flatMap((part) => {
+      const fields = part.provider_specific_fields ?? {};
+      return [fields.citation, ...(fields.citations ?? []).flat()].filter(Boolean);
+    });
+    assert.ok(
+      citations.some((citation: any) => /^https?:\/\//.test(citation.url || "")),
+      `${label}: no web search citation: ${JSON.stringify(citations).slice(0, 300)}`
+    );
+    console.log(
+      `  ${label} [litellm]: server search "${query}", ${requests} counted, ${citations.length} citations`
+    );
+    return;
+  }
+
+  assert.equal(parts.some((part) => part.tool_calls), false, `${label}: search leaked as tool_calls`);
+  const annotations = parts.flatMap((part) => part.annotations ?? []);
+  assertUrlCitations(annotations, label, true);
   console.log(`  ${label}: ${annotations.length} citations; answer: ${answer.trim().slice(0, 100)}`);
 }
 
