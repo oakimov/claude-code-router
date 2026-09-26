@@ -1,5 +1,6 @@
 import { Transformer, TransformerContext } from "@/types/transformer";
-import { UnifiedChatRequest } from "@/types/llm";
+import { UnifiedChatRequest, UnifiedTool } from "@/types/llm";
+import { hostedUserLocation } from "../utils/openai.responses.util";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
 import { extractToolMediaForStringToolApis } from "../utils/tool-content";
 import { createApiError } from "@/api/middleware";
@@ -56,7 +57,14 @@ export class OpenAITransformer implements Transformer {
     request: any,
     _context?: TransformerContext
   ): Promise<UnifiedChatRequest> {
-    return validateAndNormalizeChatRequest(request);
+    const unified = validateAndNormalizeChatRequest(request);
+    const protocolContext = _context?.protocolContext;
+    if (protocolContext && request?.web_search_options != null) {
+      protocolContext.hostedWebSearch = hostedUserLocation(
+        request.web_search_options.user_location?.approximate
+      );
+    }
+    return unified;
   }
 
   /**
@@ -239,7 +247,6 @@ function validateAndNormalizeChatRequest(body: any): UnifiedChatRequest {
   }
   for (const field of [
     "prediction",
-    "web_search_options",
     "moderation",
     "service_tier",
     "frequency_penalty",
@@ -386,6 +393,31 @@ function validateAndNormalizeChatRequest(body: any): UnifiedChatRequest {
   if (body.top_p !== undefined) unified.top_p = body.top_p;
   if (body.stop !== undefined) (unified as any).stop = body.stop;
   if (body.tools !== undefined) unified.tools = body.tools;
+  if (body.web_search_options != null) {
+    if (typeof body.web_search_options !== "object") {
+      throw createApiError(
+        "web_search_options must be an object",
+        400,
+        "invalid_web_search_options",
+        "invalid_request_error"
+      );
+    }
+    // Hosted search rides Unified as the `web_search` function projection that
+    // Responses inbound also uses, so routing and every destination's hosted
+    // search mapping see one shape.
+    if (!unified.tools?.some((tool: any) => tool?.function?.name === "web_search")) {
+      unified.tools = [
+        ...(unified.tools ?? []),
+        {
+          type: "function",
+          function: {
+            name: "web_search",
+            parameters: { type: "object", properties: {} },
+          },
+        } as UnifiedTool,
+      ];
+    }
+  }
   if (body.tool_choice !== undefined) unified.tool_choice = body.tool_choice;
   if (body.parallel_tool_calls !== undefined) {
     unified.parallel_tool_calls = body.parallel_tool_calls;
@@ -657,8 +689,14 @@ function applyChatThinkingToCompletion(payload: any): any | null {
   if (!payload || typeof payload !== "object") return payload;
   const choice = payload.choices?.[0];
   if (!choice) return payload;
-  if (choice.message) projectChatClientAssistantThinking(choice.message);
+  // Chat clients get provider search results as native `annotations`;
+  // Unified `web_search_calls` is internal (Responses `web_search_call`).
+  if (choice.message) {
+    delete choice.message.web_search_calls;
+    projectChatClientAssistantThinking(choice.message);
+  }
   if (choice.delta) {
+    delete choice.delta.web_search_calls;
     projectChatClientAssistantThinking(choice.delta);
     // Signature-only or empty thinking_delta chunks leave `{}` — drop them so
     // OpenAI-compatible clients never see Unified `thinking`.

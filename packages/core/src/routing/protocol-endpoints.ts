@@ -19,6 +19,31 @@ export interface AnthropicSourceRequestFields {
   thinking?: Record<string, unknown>;
   outputConfig?: Record<string, unknown>;
   stopSequences?: string[];
+  /**
+   * Anthropic-defined (typed) tools such as `web_search_20250305` or
+   * `bash_20250124`, exactly as the client sent them. Unified `tools[]` keeps
+   * their function projection (by name) for routing and other providers.
+   */
+  tools?: Record<string, any>[];
+  /**
+   * Server tool blocks (`server_tool_use`, `web_search_tool_result`) of each
+   * assistant turn, indexed by assistant-turn ordinal, with that turn's
+   * joined text so the builder only re-attaches them to the same turn.
+   */
+  assistantServerBlocks?: Array<{ text: string; blocks: any[] } | undefined>;
+}
+
+/** Client asked for provider-hosted web search (any inbound protocol). */
+export interface HostedWebSearchRequest {
+  allowedDomains?: string[];
+  /** Per-request search cap from `WEB_SEARCH_MAX_USES` (none by default). */
+  maxUses?: number;
+  userLocation?: {
+    city?: string;
+    region?: string;
+    country?: string;
+    timezone?: string;
+  };
 }
 
 export interface ClientProtocolContext {
@@ -35,6 +60,12 @@ export interface ClientProtocolContext {
   scenarioType?: RouterScenarioType;
   /** Source-only Anthropic semantics retained before destination routing. */
   anthropicSource?: AnthropicSourceRequestFields;
+  /**
+   * Hosted web search requested by an Anthropic `web_search_*` tool, a
+   * Responses `web_search` tool or Chat `web_search_options`; Unified carries
+   * the `web_search` function projection.
+   */
+  hostedWebSearch?: HostedWebSearchRequest;
   /** Client fingerprint captured before Anthropic normalization. */
   anthropicClientKind?: AnthropicClientKind;
   /** In-scope Anthropic destination/auth variant selected after routing. */

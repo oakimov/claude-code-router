@@ -118,7 +118,21 @@ protocols (`/v1/messages`, `/v1/chat/completions`, `/v1/responses`):
   must match the client-visible token counts with verdict `cold`/`warm-start`
   on turn 1 and `hit` afterwards. Needs `LOG_LEVEL=debug`.
 
-Both require `CCR_API_KEY` (the CCR server's API key; no default) and default to
+`ccr-live.web-search.test.ts` (also `--live`) drives Anthropic's server-side
+web search through all three protocols as third-party clients:
+- `/v1/messages` sends the Anthropic-defined `web_search_20250305` tool next to
+  a custom tool (JSON with `stream` omitted, SSE, and a follow-up turn that
+  replays the searched turn including its server blocks). `server_tool_use` /
+  `web_search_tool_result` must come back and custom tool names must be unrenamed.
+- `/v1/responses` (`tools: [{type: "web_search"}]`) must return a completed
+  `web_search_call` with its query and `url_citation` annotations.
+- `/v1/chat/completions` (`web_search_options`) must return `url_citation`
+  annotations and no tool calls.
+
+Each run performs six or more billed searches (Responses and Chat have no
+per-request cap), so web search must be enabled for the Anthropic account.
+
+All three live tests require `CCR_API_KEY` (the CCR server's API key; no default) and default to
 `http://localhost:3456` and `claude,claude-haiku-4-5-20251001`; override with
 `CCR_URL` and `CCR_LIVE_MODEL`. The caching test reads logs from
 `packages/server/ccr-config/logs` (the Docker mount) unless `CCR_LOG_DIR` is set,

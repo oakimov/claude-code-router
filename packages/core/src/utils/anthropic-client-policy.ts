@@ -9,6 +9,10 @@ import {
   reserveClaudeBillingSystemBlock,
 } from "./claude-billing";
 import { unifiedUserPartToAnthropic } from "./tool-content";
+import type {
+  AnthropicSourceRequestFields,
+  HostedWebSearchRequest,
+} from "@/routing/protocol-endpoints";
 
 export type AnthropicClientKind = "claude_desktop" | "claude_code" | "other";
 export type AnthropicProviderMode = "api_key" | "claude_oauth" | "out_of_scope";
@@ -33,6 +37,8 @@ export interface AnthropicClientPolicyContext {
   anthropicPolicyApplied?: boolean;
   anthropicSystemTransformed?: boolean;
   claudeAuthToolNameMap?: Map<string, string>;
+  anthropicSource?: AnthropicSourceRequestFields;
+  hostedWebSearch?: HostedWebSearchRequest;
 }
 
 export function readHeaderValue(
@@ -308,7 +314,7 @@ export async function applyThirdPartyAnthropicPolicy(
   // prompt, and system[0] survives clients dropping or summarizing early turns.
   fillClaudeBillingSystemBlock(system, billingBlock, request.messages);
   const toolNameMap = new Map<string, string>();
-  prefixClaudeToolNames(request, toolNameMap);
+  prefixClaudeToolNames(request, toolNameMap, anthropicFixedToolNames(context));
   applyClaudeCodeCacheProfile(
     request,
     context.anthropicProviderMode,
@@ -317,6 +323,20 @@ export async function applyThirdPartyAnthropicPolicy(
   context.claudeAuthToolNameMap = toolNameMap;
   context.anthropicPolicyApplied = true;
   context.anthropicSystemTransformed = true;
+}
+
+/**
+ * Names of Anthropic-defined tools in this request: typed tools sent by an
+ * Anthropic client, and hosted web search requested over another protocol.
+ */
+export function anthropicFixedToolNames(
+  context: AnthropicClientPolicyContext
+): string[] {
+  const names = (context.anthropicSource?.tools ?? [])
+    .map((tool) => tool?.name)
+    .filter((name): name is string => typeof name === "string");
+  if (context.hostedWebSearch) names.push("web_search");
+  return names;
 }
 
 function applyClaudeCodeCacheProfile(

@@ -53,6 +53,11 @@ const OPT_IN_ONLY = {
     reason: 'needs a running CCR routed to a live Anthropic provider',
     timeoutMs: 300_000,
   },
+  'cli/ccr-live.web-search.test.ts': {
+    flag: '--live',
+    reason: 'needs a running CCR routed to a live Anthropic provider with web search enabled',
+    timeoutMs: 300_000,
+  },
 };
 
 const PER_TEST_TIMEOUT_MS = 120_000;

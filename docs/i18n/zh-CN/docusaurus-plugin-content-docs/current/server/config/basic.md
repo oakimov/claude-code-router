@@ -164,6 +164,7 @@ ccr restart
 - **LOG_LEVEL**: 日志级别（fatal/error/warn/info/debug/trace）
 - **API_TIMEOUT_MS**: API 请求超时时间（毫秒）
 - **NON_INTERACTIVE_MODE**: 非交互模式（用于 CI/CD 环境）
+- **WEB_SEARCH_MAX_USES**: 路由到 Anthropic 的 Responses（`{type: "web_search"}`）与 Chat Completions（`web_search_options`）托管搜索每个请求的搜索次数上限（以 `max_uses` 发送）。未设置时不限制，与 OpenAI、Anthropic 官方 API 一致；每次搜索均计费。Anthropic Messages 客户端沿用其 `web_search_*` 工具自带的 `max_uses`。无法执行托管搜索的目标（普通 Chat Completions 提供方）不会收到搜索工具，请求在无搜索的情况下继续。
 
 ## 下一步
 

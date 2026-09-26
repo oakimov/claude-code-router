@@ -128,6 +128,57 @@ function isManualExactProtocolPassthrough(
   );
 }
 
+/**
+ * Owners whose egress turns the Unified `web_search` function into the
+ * provider's own hosted search (Anthropic server tool, Responses
+ * `web_search`, Gemini `googleSearch`).
+ */
+const HOSTED_WEB_SEARCH_OWNERS = [
+  "Anthropic",
+  "openai-responses",
+  "gemini",
+  "vertex-gemini",
+];
+
+/**
+ * Hosted web search rides Unified as a `web_search` function. A destination
+ * that cannot run the search would receive it as an ordinary client function
+ * and could call a tool the client never defined, so it is dropped there
+ * (with a forced choice of it) and the request proceeds without search.
+ */
+function dropUnhostableWebSearch(
+  body: any,
+  plan: any,
+  protocolContext: any,
+  log?: any
+): void {
+  if (!protocolContext?.hostedWebSearch || !Array.isArray(body?.tools)) return;
+  if (
+    plan &&
+    HOSTED_WEB_SEARCH_OWNERS.some((name) => planContains(plan, name))
+  ) {
+    return;
+  }
+  const tools = body.tools.filter(
+    (tool: any) => tool?.function?.name !== "web_search"
+  );
+  if (tools.length === body.tools.length) return;
+  const choice = body.tool_choice;
+  if (tools.length) {
+    body.tools = tools;
+    if (choice === "web_search" || choice?.function?.name === "web_search") {
+      delete body.tool_choice;
+    }
+  } else {
+    delete body.tools;
+    delete body.tool_choice;
+  }
+  log?.debug?.(
+    { protocol: protocolContext.protocol },
+    "hosted web search dropped: destination cannot run it"
+  );
+}
+
 function isThirdPartyInScopeAnthropic(protocolContext: any): boolean {
   return Boolean(
     protocolContext?.anthropicDestinationInScope === true &&
@@ -938,6 +989,10 @@ async function processRequestTransformers(
         );
       }
     }
+  }
+
+  if (!bypass && !effectiveWireKeep) {
+    dropUnhostableWebSearch(requestBody, plan, context?.protocolContext, context?.req?.log);
   }
 
   // Wire-keep filtered loop: skip body rebuild for Anthropic/Responses owners,

@@ -135,6 +135,25 @@ This applies after Unified normalization for every client protocol
 (Chat Completions, Responses, Anthropic Messages) and every destination
 (Responses, Codex, Anthropic, Gemini, …).
 
+### Hosted web search cap
+
+Responses (`{type: "web_search"}`) and Chat Completions (`web_search_options`)
+clients have no per-request limit on hosted searches, and every search routed
+to Anthropic is billed. Cap the searches per request on the tool CCR builds
+for them:
+
+```json
+{
+  "WEB_SEARCH_MAX_USES": 3
+}
+```
+
+- Unset (default): no cap, as on OpenAI's and Anthropic's own APIs.
+- Applies to Anthropic destinations. Anthropic Messages clients keep the
+  `max_uses` on their own `web_search_*` tool.
+- Destinations that cannot run a hosted search (plain Chat Completions
+  providers) never receive the search tool; the request proceeds without it.
+
 ## Complete Example
 
 ```json

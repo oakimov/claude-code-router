@@ -12,6 +12,7 @@ import {
   TransformerOptions,
 } from "@/types/transformer";
 import { v4 as uuidv4 } from "uuid";
+import type { HostedWebSearchRequest } from "@/routing/protocol-endpoints";
 import { createApiError } from "@/api/middleware";
 import { formatBase64 } from "@/utils/image";
 import { sanitizeToolCallId } from "@/utils/toolCallId";
@@ -30,7 +31,10 @@ import {
   applyClaudeModelCapabilityAdjustments,
   buildSynthesizedIdentityHeaders,
   buildSynthesizedUserMetadata,
+  clientComputerUseBetas,
+  mergeAnthropicBetaValues,
   modelIdForRequestedOneMillionBeta,
+  readHeaderValue,
   resolveClaudeAuthBetas,
 } from "./claude-auth.transformer";
 import { buildAnthropicMessagesUrl } from "@/utils/anthropic-url";
@@ -51,6 +55,42 @@ import {
 } from "../utils/openai.responses.util";
 
 import { estimateRequestPromptTokens } from "../cursor-sdk/usage";
+
+/**
+ * Anthropic-defined tools (server tools such as `web_search_20250305`, and
+ * schema-less client tools such as `bash_20250124`) declare a versioned
+ * `type`; custom tools omit it or use `custom`.
+ */
+function isAnthropicTypedTool(tool: any): boolean {
+  return typeof tool?.type === "string" && tool.type !== "custom";
+}
+
+/** Assistant content blocks produced by Anthropic-executed (server) tools. */
+function isAnthropicServerToolBlock(block: any): boolean {
+  return (
+    block?.type === "server_tool_use" ||
+    (typeof block?.type === "string" && block.type.endsWith("_tool_result") &&
+      block.type !== "tool_result")
+  );
+}
+
+/** Anthropic definition of the hosted web search tool for non-Anthropic clients. */
+function hostedWebSearchTool(
+  hosted: HostedWebSearchRequest
+): Record<string, any> {
+  const location = hosted.userLocation;
+  return {
+    type: "web_search_20250305",
+    name: "web_search",
+    ...(hosted.maxUses ? { max_uses: hosted.maxUses } : {}),
+    ...(hosted.allowedDomains?.length
+      ? { allowed_domains: hosted.allowedDomains }
+      : {}),
+    ...(location && Object.values(location).some(Boolean)
+      ? { user_location: { type: "approximate", ...location } }
+      : {}),
+  };
+}
 
 function toAnthropicCacheUsage(usage: any): Record<string, number> {
   const cached = usage?.prompt_tokens_details?.cached_tokens || 0;
@@ -232,14 +272,20 @@ export class AnthropicTransformer implements Transformer {
 
     if (isApiKeyAnthropic) {
       Object.assign(headers, buildSynthesizedIdentityHeaders(), {
-        "anthropic-beta": resolveClaudeAuthBetas(
-          modelIdForRequestedOneMillionBeta(
-            anthropicBody.model,
-            protocolContext?.requestedOneMillion
+        "anthropic-beta": mergeAnthropicBetaValues(
+          resolveClaudeAuthBetas(
+            modelIdForRequestedOneMillionBeta(
+              anthropicBody.model,
+              protocolContext?.requestedOneMillion
+            ),
+            {
+              includeOAuthBeta: false,
+            }
           ),
-          {
-            includeOAuthBeta: false,
-          }
+          clientComputerUseBetas(
+            readHeaderValue(_context?.req?.headers, "anthropic-beta"),
+            protocolContext?.anthropicSource?.tools
+          )
         ),
       });
     }
@@ -315,8 +361,13 @@ export class AnthropicTransformer implements Transformer {
     }
 
     const requestMessages = JSON.parse(JSON.stringify(request.messages || []));
+    const assistantServerBlocks: Array<
+      { text: string; blocks: any[] } | undefined
+    > = [];
+    let assistantOrdinal = 0;
 
     requestMessages?.forEach((msg: any) => {
+      if (msg.role === "assistant") assistantOrdinal += 1;
       if (msg.role === "user" || msg.role === "assistant") {
         if (typeof msg.content === "string") {
           messages.push({
@@ -420,6 +471,17 @@ export class AnthropicTransformer implements Transformer {
               };
             }
 
+            // Server-executed tool blocks have no Unified shape. Retain them
+            // request-locally so an Anthropic destination can replay the
+            // searched turn (encrypted_content included) instead of losing it.
+            const serverBlocks = msg.content.filter(isAnthropicServerToolBlock);
+            if (serverBlocks.length) {
+              assistantServerBlocks[assistantOrdinal - 1] = {
+                text: textParts.map((text: any) => text.text).join("\n"),
+                blocks: serverBlocks,
+              };
+            }
+
             messages.push(assistantMessage);
           }
           return;
@@ -432,7 +494,10 @@ export class AnthropicTransformer implements Transformer {
       model: request.model,
       max_tokens: request.max_tokens,
       temperature: request.temperature,
-      stream: request.stream,
+      // Messages API default is non-streaming. Record the intent explicitly
+      // like the Chat and Responses owners do, so the Anthropic body builder's
+      // streaming default never applies to a client that asked for JSON.
+      stream: request.stream === true,
       tools: request.tools?.length
         ? this.convertAnthropicToolsToUnified(request.tools)
         : undefined,
@@ -480,8 +545,23 @@ export class AnthropicTransformer implements Transformer {
     // live in request-local protocol context so unrelated providers never
     // serialize implementation fields from the Unified request.
     const protocolContext = context?.protocolContext;
+    const typedTools = (request.tools ?? []).filter(isAnthropicTypedTool);
+    if (
+      protocolContext &&
+      typedTools.some((tool: any) => String(tool.type).startsWith("web_search_"))
+    ) {
+      // Options live on the typed definition, which the Anthropic builder
+      // prefers; other destinations only need to know search was requested.
+      protocolContext.hostedWebSearch = {};
+    }
     if (protocolContext?.protocol === "anthropic_messages") {
       protocolContext.anthropicSource = {
+        ...(typedTools.length
+          ? { tools: JSON.parse(JSON.stringify(typedTools)) }
+          : {}),
+        ...(assistantServerBlocks.length
+          ? { assistantServerBlocks }
+          : {}),
         ...(request.metadata
           ? { metadata: JSON.parse(JSON.stringify(request.metadata)) }
           : {}),
@@ -502,6 +582,7 @@ export class AnthropicTransformer implements Transformer {
         (t: any) => t?.name === "claude-auth"
       );
     if (usesClaudeAuth) {
+      if (typedTools.length) result.anthropic_tools = typedTools;
       if (request.thinking) result.anthropic_thinking = request.thinking;
       if (request.output_config) result.anthropic_output_config = request.output_config;
       if (request.metadata) result.anthropic_metadata = request.metadata;
@@ -627,6 +708,8 @@ export class AnthropicTransformer implements Transformer {
 
     // Messages: convert Unified format back to Anthropic format
     const messages: any[] = [];
+    const source = context?.protocolContext?.anthropicSource;
+    let assistantOrdinal = 0;
     for (const msg of request.messages) {
       if (msg.role === "system" || (msg.role as string) === "developer") {
         appendSystemBlocks(msg.content);
@@ -654,8 +737,9 @@ export class AnthropicTransformer implements Transformer {
       }
 
       if (msg.role === "assistant") {
+        assistantOrdinal += 1;
         const content: any[] = [];
-        // Fixed order: thinking → text → images → tool_use.
+        // Fixed order: thinking → server tool blocks → text → images → tool_use.
         const turn = canonicalAssistantTurn(msg);
         // Anthropic rejects a thinking block without its signature
         // ("thinking.signature: Field required") but accepts history with the
@@ -671,6 +755,16 @@ export class AnthropicTransformer implements Transformer {
             thinking: turn.thinking.content,
             signature,
           });
+        }
+        // Replay server tool blocks recorded for this turn on Anthropic
+        // inbound, but only while the turn's text still matches, so a
+        // rewritten history never pairs a turn with another turn's search.
+        const server = source?.assistantServerBlocks?.[assistantOrdinal - 1];
+        if (
+          server &&
+          server.text === turn.texts.map((text) => text.text).join("\n")
+        ) {
+          content.push(...server.blocks);
         }
         for (const text of turn.texts) {
           content.push({
@@ -748,12 +842,34 @@ export class AnthropicTransformer implements Transformer {
           "invalid_request_error"
         );
       }
-      tools = request.tools.map((tool) => ({
-        name: tool.function.name,
-        description: tool.function.description || "",
-        input_schema: tool.function.parameters,
-        ...(tool.cache_control ? { cache_control: tool.cache_control } : {}),
-      }));
+      const typedSource: Record<string, any>[] =
+        source?.tools ?? request.anthropic_tools ?? [];
+      const typedTools = new Map<string, Record<string, any>>(
+        typedSource.map((tool) => [tool.name, tool])
+      );
+      const hosted = context?.protocolContext?.hostedWebSearch;
+      if (hosted && !typedTools.has("web_search")) {
+        typedTools.set("web_search", hostedWebSearchTool(hosted));
+      }
+      tools = request.tools.map((tool) => {
+        const cacheControl = tool.cache_control
+          ? { cache_control: tool.cache_control }
+          : {};
+        const typed = typedTools.get(tool.function.name);
+        if (typed) {
+          // Anthropic-defined tools carry no input_schema and must keep their
+          // type and options. Breakpoints come from the Unified tool, which
+          // cache policy owns, never from the client's original definition.
+          const { cache_control: _clientMarker, ...definition } = typed;
+          return { ...definition, ...cacheControl };
+        }
+        return {
+          name: tool.function.name,
+          description: tool.function.description || "",
+          input_schema: tool.function.parameters,
+          ...cacheControl,
+        };
+      });
     }
 
     // Tool choice: convert Unified format back to Anthropic format
@@ -807,7 +923,6 @@ export class AnthropicTransformer implements Transformer {
     if (request.tool_choice !== "none" && tools?.length) body.tools = tools;
     if (request.tool_choice !== "none" && tool_choice) body.tool_choice = tool_choice;
 
-    const source = context?.protocolContext?.anthropicSource;
     const reasoningDisabled = isReasoningDisabled(
       request.reasoning,
       request.thinking

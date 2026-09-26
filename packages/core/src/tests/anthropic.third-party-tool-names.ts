@@ -235,6 +235,59 @@ async function main() {
         );
       }
 
+      // The Messages API defaults to non-streaming. A client that omits
+      // `stream` must get a non-streaming upstream call and a JSON reply, not
+      // the provider's SSE passed off as JSON.
+      {
+        const payload: Record<string, unknown> = anthropicPayload(`${provider},claude`, false);
+        delete payload.stream;
+        const result = await app.inject({
+          method: "POST",
+          url: "/v1/messages",
+          headers: GATEWAY_HEADERS,
+          payload,
+        });
+        assert.equal(result.statusCode, 200, `${provider}: ${result.body}`);
+        assert.equal(upstreamBodies.at(-1).stream, false, `${provider}: upstream stream`);
+        assert.equal(result.json().content[1].name, "Bash", `${provider}: omitted stream`);
+      }
+
+      // Anthropic-defined tools keep their type, options and fixed name, as
+      // Claude Code sends them; only custom tools are renamed. Client cache
+      // markers on tools yield to the emulation's cache profile either way.
+      {
+        const webSearch = { type: "web_search_20250305", name: "web_search", max_uses: 8 };
+        const result = await app.inject({
+          method: "POST",
+          url: "/v1/messages",
+          headers: GATEWAY_HEADERS,
+          payload: {
+            ...anthropicPayload(`${provider},claude`, false),
+            tools: [
+              { name: "Bash", input_schema: { type: "object", properties: {} } },
+              { ...webSearch, cache_control: { type: "ephemeral" } },
+            ],
+            tool_choice: { type: "tool", name: "web_search" },
+          },
+        });
+        assert.equal(result.statusCode, 200, `${provider}: ${result.body}`);
+        const wire = upstreamBodies.at(-1);
+        assert.deepEqual(
+          wire.tools,
+          [
+            {
+              name: "mcp_Bash",
+              description: "",
+              input_schema: { type: "object", properties: {} },
+            },
+            webSearch,
+          ],
+          `${provider}: typed tool wire`
+        );
+        assert.deepEqual(wire.tool_choice, { type: "tool", name: "web_search" });
+        assert.equal(wire.messages[1].content[0].name, "mcp_Bash");
+      }
+
       // Chat Completions clients take the Unified conversion path. An MCP-style
       // name must be restored exactly once, never stripped a second time.
       {

@@ -27,6 +27,7 @@ import {
   responsesFailedEvent,
   responsesReasoningItemFromThinking,
   responsesRequestToUnified,
+  hostedWebSearchFromResponsesTools,
   responsesTextFormatFromResponseFormat,
   thinkingForLateReasoningItem,
   thinkingFromResponsesReasoningItem,
@@ -265,6 +266,10 @@ export class OpenAIResponsesTransformer implements Transformer {
       if ((context as any).protocolContext) {
         (context as any).protocolContext.responsesCallIdMap = callIdMap;
         (context as any).protocolContext.responsesCustomToolNames = customToolNames;
+        const hostedWebSearch = hostedWebSearchFromResponsesTools(request?.tools);
+        if (hostedWebSearch) {
+          (context as any).protocolContext.hostedWebSearch = hostedWebSearch;
+        }
       }
     }
     return responsesRequestToUnified(request, callIdMap, customToolNames);

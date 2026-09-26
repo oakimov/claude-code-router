@@ -149,7 +149,19 @@ For **other clients routed to an in-scope Anthropic provider**, CCR builds the A
 
 Anthropic's OAuth billing validator inspects `system[]` content past the identity block and rejects requests carrying a foreign harness prompt there with an "out of extra usage" 400 — the calling client's own system prompt makes the traffic self-evidently non-Claude-Code even with correct headers. CCR's third-party Anthropic emulation mirrors the technique used by Claude Code OAuth clients (e.g. `opencode-claude-auth`): whatever the caller supplied beyond `system[1]` is relocated into the first user message (prepended, in order, as its own text block) rather than left in `system[]`. The content still reaches the model unchanged, just as part of the first user turn. If there is no user message to attach it to, nothing is relocated — the caller's system content stays in `system[]` rather than being dropped.
 
-For **other clients**, tool names are also rewritten to Claude Code's OAuth spelling before the body is built: `bash` becomes `mcp_Bash`, `read` becomes `mcp_Read`, `mcp__server__tool` becomes `mcp_Mcp__server__tool`, and names already in the `mcp_PascalCase` spelling are left unchanged. Tool definitions, historical assistant `tool_calls`, and a forced `tool_choice` are kept consistent. The response path restores exactly the names CCR renamed, via a request-local name map, in both JSON and streaming responses. This includes Anthropic Messages clients that fail the native fingerprint (for example Claude Code behind a gateway that replaces its `user-agent` and drops `x-stainless-*` headers): their response stays the provider's Anthropic wire, byte-identical apart from the restored `tool_use` names.
+For **other clients**, tool names are also rewritten to Claude Code's OAuth spelling before the body is built: `bash` becomes `mcp_Bash`, `read` becomes `mcp_Read`, `mcp__server__tool` becomes `mcp_Mcp__server__tool`, and names already in the `mcp_PascalCase` spelling are left unchanged. Anthropic-defined tools (a versioned `type` such as `web_search_20250305` or `bash_20250124`) keep their fixed names and are sent exactly as the client defined them, as in Claude Code's own requests. For a `computer_*` tool, the client's own `computer-use-*` beta is added to the emulated `anthropic-beta` profile; other client betas are not. Tool definitions, historical assistant `tool_calls`, and a forced `tool_choice` are kept consistent. The response path restores exactly the names CCR renamed, via a request-local name map, in both JSON and streaming responses. This includes Anthropic Messages clients that fail the native fingerprint (for example Claude Code behind a gateway that replaces its `user-agent` and drops `x-stainless-*` headers): their response stays the provider's Anthropic wire, byte-identical apart from the restored `tool_use` names.
+
+**Web search** runs on Anthropic's servers for every inbound protocol:
+- **Anthropic clients:** send the `web_search_20250305` tool.
+- **Responses clients:** send `{type: "web_search"}`. `filters.allowed_domains` and `user_location` map to `allowed_domains` / `user_location`.
+- **Chat Completions clients:** send `web_search_options`. `user_location.approximate` maps to `user_location`.
+
+How results come back:
+- **Anthropic clients:** `server_tool_use` / `web_search_tool_result` blocks.
+- **Responses clients:** a `web_search_call` output item (with its query) and `url_citation` annotations on the cited text.
+- **Chat Completions clients:** `url_citation` annotations on the message.
+
+When an Anthropic client replays a searched assistant turn, its `server_tool_use` / `web_search_tool_result` blocks, including `encrypted_content`, are sent back upstream after the turn's thinking and before its text.
 
 For **native Desktop and CLI**, their own system blocks — including billing, identity and opaque fields — are forwarded exactly as sent. No system prompt transformation occurs; the only cache change is the OAuth TTL extension described in [Prompt caching](#prompt-caching-native-vs-emulated).
 

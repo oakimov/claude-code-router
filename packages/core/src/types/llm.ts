@@ -21,6 +21,17 @@ export interface Annotation {
   url_citation?: UrlCitation;
 }
 
+/**
+ * A provider-executed web search (e.g. Anthropic's server `web_search`),
+ * surfaced so clients can render the call itself (Responses `web_search_call`).
+ * Internal: Chat Completions clients never receive it.
+ */
+export interface WebSearchCall {
+  id: string;
+  query: string;
+  status: "completed" | "failed";
+}
+
 // Content type definitions
 export interface TextContent {
   type: "text";
@@ -168,6 +179,12 @@ export interface UnifiedChatRequest {
   anthropic_output_config?: Record<string, any>;
   anthropic_metadata?: Record<string, any>;
   anthropic_stop_sequences?: string[];
+  /**
+   * Anthropic-defined (typed) tools for legacy direct claude-auth callers,
+   * like the other anthropic_* fields. Routed requests carry them in
+   * `protocolContext.anthropicSource.tools` so no other provider sees them.
+   */
+  anthropic_tools?: Record<string, any>[];
   reasoning_effort?: string;
 
   /**
@@ -202,6 +219,7 @@ export interface UnifiedChatResponse {
     };
   }>;
   annotations?: Annotation[];
+  web_search_calls?: WebSearchCall[];
 }
 
 // Streaming response related types
@@ -231,6 +249,7 @@ export interface StreamChunk {
         thought_signature?: string;
       }>;
       annotations?: Annotation[];
+      web_search_calls?: WebSearchCall[];
     };
     finish_reason?: string | null;
   }>;

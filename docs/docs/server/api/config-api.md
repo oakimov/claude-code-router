@@ -78,6 +78,7 @@ curl -X POST http://localhost:3456/api/config \
 | `LOG` | boolean | No | Enable logging (default true) |
 | `LOG_LEVEL` | string | No | Log level (debug/info/warn/error) |
 | `REASONING_AUTO_SUMMARY` | boolean \| string | No | When true (or `"auto"` / `"detailed"` / `"concise"`), inject `reasoning.summary` on Unified requests that enable reasoning effort but omit a summary. Applies to every client protocol and every destination (Responses, Codex, Anthropic, Gemini, …). Per-provider override: `Providers[].reasoningSummary`. Explicit client `reasoning.summary` (including `"none"`) wins. |
+| `WEB_SEARCH_MAX_USES` | integer | No | Cap on hosted web searches per request for Responses `web_search` tools and Chat `web_search_options` routed to Anthropic (sent as `max_uses`). Unset: no cap. Anthropic Messages clients keep the `max_uses` of their own `web_search_*` tool. |
 
 #### Providers Configuration
 

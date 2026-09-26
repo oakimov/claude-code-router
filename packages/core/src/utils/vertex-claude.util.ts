@@ -1,4 +1,10 @@
-import { UnifiedChatRequest, UnifiedMessage, UnifiedTool } from "../types/llm";
+import {
+  Annotation,
+  UnifiedChatRequest,
+  UnifiedMessage,
+  UnifiedTool,
+  WebSearchCall,
+} from "../types/llm";
 import { createSSEStreamReader } from "./stream";
 import {
   mapRole,
@@ -306,6 +312,70 @@ export function transformRequestOut(
   return result;
 }
 
+function webSearchQuery(input: any): string {
+  return typeof input?.query === "string" ? input.query : "";
+}
+
+/** Unified web search call for an Anthropic `web_search_tool_result` block. */
+function webSearchCallFromResult(
+  block: any,
+  queries: Map<string, string>
+): WebSearchCall {
+  return {
+    id: block.tool_use_id,
+    query: queries.get(block.tool_use_id) ?? "",
+    // A failed search carries a web_search_tool_result_error object instead
+    // of the results array.
+    status: Array.isArray(block.content) ? "completed" : "failed",
+  };
+}
+
+/**
+ * url_citation annotations for the web search citations of one text block,
+ * spanning that block's text in the concatenated message content.
+ */
+function citationAnnotations(
+  citations: any[] | undefined,
+  start: number,
+  end: number
+): Annotation[] {
+  return (citations ?? [])
+    .filter((citation) => citation?.type === "web_search_result_location")
+    .map((citation) => ({
+      type: "url_citation" as const,
+      url_citation: {
+        url: citation.url,
+        title: citation.title ?? "",
+        content: citation.cited_text ?? "",
+        start_index: start,
+        end_index: end,
+      },
+    }));
+}
+
+/** Web search calls and citations carried by an Anthropic message's content. */
+function anthropicWebSearchFromContent(contentBlocks: any[]): {
+  annotations: Annotation[];
+  calls: WebSearchCall[];
+} {
+  const queries = new Map<string, string>();
+  const annotations: Annotation[] = [];
+  const calls: WebSearchCall[] = [];
+  let offset = 0;
+  for (const block of contentBlocks) {
+    if (block?.type === "server_tool_use") {
+      queries.set(block.id, webSearchQuery(block.input));
+    } else if (block?.type === "web_search_tool_result") {
+      calls.push(webSearchCallFromResult(block, queries));
+    } else if (block?.type === "text" && typeof block.text === "string") {
+      const start = offset;
+      offset += block.text.length;
+      annotations.push(...citationAnnotations(block.citations, start, offset));
+    }
+  }
+  return { annotations, calls };
+}
+
 export async function transformResponseOut(
   response: Response,
   providerName: string,
@@ -355,10 +425,15 @@ export async function transformResponseOut(
       jsonResponse.stop_reason
     );
 
+    const webSearch = anthropicWebSearchFromContent(contentBlocks);
     const message: Record<string, any> = {
       role: "assistant",
       content: textParts.length > 0 ? textParts.join("") : null,
       ...(tool_calls && { tool_calls }),
+      ...(webSearch.annotations.length
+        ? { annotations: webSearch.annotations }
+        : {}),
+      ...(webSearch.calls.length ? { web_search_calls: webSearch.calls } : {}),
     };
     if (thinkingBlock) {
       message.thinking = {
@@ -397,6 +472,14 @@ export async function transformResponseOut(
     let streamId = "";
     let streamModel = "";
     const toolBlockIndexes = new Map<number, number>();
+    // Server tool blocks (Anthropic-executed web search) never become Unified
+    // tool calls: their query deltas are collected per block, and the search
+    // surfaces as `web_search_calls` once its result block arrives. Text
+    // citations become url_citation annotations spanning their text block.
+    const serverToolQueries = new Map<number, { id: string; json: string }>();
+    const serverToolQueryById = new Map<string, string>();
+    const textBlocks = new Map<number, { start: number; citations: any[] }>();
+    let streamTextLength = 0;
     const processLine = (
       line: string,
       ctx: { controller: ReadableStreamDefaultController, encoder: TextEncoder }
@@ -408,6 +491,83 @@ export async function transformResponseOut(
           logger?.debug({ chunkStr }, `${providerName} chunk:`);
           try {
             const chunk = JSON.parse(chunkStr);
+
+            const blockIndex = Number(chunk.index || 0);
+            const emitDelta = (delta: Record<string, any>) => {
+              const res = {
+                choices: [
+                  { delta, finish_reason: null, index: 0, logprobs: null },
+                ],
+                created: parseInt(new Date().getTime() / 1000 + "", 10),
+                id: streamId,
+                model: streamModel,
+                object: "chat.completion.chunk",
+              };
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify(res)}\n\n`)
+              );
+            };
+
+            if (chunk.type === "content_block_start") {
+              const block = chunk.content_block;
+              if (block?.type === "server_tool_use") {
+                serverToolQueries.set(blockIndex, {
+                  id: block.id,
+                  json: "",
+                });
+                serverToolQueryById.set(block.id, webSearchQuery(block.input));
+                return;
+              }
+              if (block?.type === "web_search_tool_result") {
+                emitDelta({
+                  web_search_calls: [
+                    webSearchCallFromResult(block, serverToolQueryById),
+                  ],
+                });
+                return;
+              }
+              if (block?.type === "text") {
+                textBlocks.set(blockIndex, {
+                  start: streamTextLength,
+                  citations: Array.isArray(block.citations)
+                    ? [...block.citations]
+                    : [],
+                });
+                streamTextLength += (block.text || "").length;
+              }
+            } else if (chunk.type === "content_block_delta") {
+              const server = serverToolQueries.get(blockIndex);
+              if (server && chunk.delta?.type === "input_json_delta") {
+                server.json += chunk.delta.partial_json || "";
+                try {
+                  serverToolQueryById.set(
+                    server.id,
+                    webSearchQuery(JSON.parse(server.json))
+                  );
+                } catch {
+                  // Partial JSON; the complete query arrives with a later delta.
+                }
+                return;
+              }
+              if (chunk.delta?.type === "citations_delta") {
+                textBlocks.get(blockIndex)?.citations.push(chunk.delta.citation);
+                return;
+              }
+              if (chunk.delta?.type === "text_delta") {
+                streamTextLength += (chunk.delta.text || "").length;
+              }
+            } else if (chunk.type === "content_block_stop") {
+              const text = textBlocks.get(blockIndex);
+              textBlocks.delete(blockIndex);
+              serverToolQueries.delete(blockIndex);
+              const annotations = text
+                ? citationAnnotations(text.citations, text.start, streamTextLength)
+                : [];
+              if (annotations.length) {
+                emitDelta({ annotations });
+                return;
+              }
+            }
 
             // Handle Anthropic native format streaming response
             if (chunk.type === "message_start") {

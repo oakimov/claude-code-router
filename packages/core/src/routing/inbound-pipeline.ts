@@ -174,6 +174,19 @@ export async function prepareInboundRequest(
     fastify.configService.get("REASONING_AUTO_SUMMARY")
   );
 
+  // Hosted search from Responses/Chat has no per-request cap of its own;
+  // operators can bound billed searches for the tools CCR synthesizes.
+  const webSearchMaxUses = Number(
+    fastify.configService.get("WEB_SEARCH_MAX_USES")
+  );
+  if (
+    context.hostedWebSearch &&
+    Number.isInteger(webSearchMaxUses) &&
+    webSearchMaxUses > 0
+  ) {
+    context.hostedWebSearch.maxUses = webSearchMaxUses;
+  }
+
   unifiedBody.model = resolveConfiguredClaudeModelAlias(
     unifiedBody.model,
     (canonicalId) =>

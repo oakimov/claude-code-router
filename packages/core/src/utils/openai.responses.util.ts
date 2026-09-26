@@ -1,8 +1,9 @@
-import { UnifiedChatRequest } from "@/types/llm";
+import { UnifiedChatRequest, WebSearchCall } from "@/types/llm";
 import { createHash } from "crypto";
 import { createApiError } from "@/api/middleware";
 import { sanitizeResponsesCallId } from "@/utils/toolCallId";
 import { canonicalReasoning } from "@/utils/reasoning-effort";
+import type { HostedWebSearchRequest } from "@/routing/protocol-endpoints";
 
 function shouldLogResponsesPassthrough(): boolean {
   const env =
@@ -1361,6 +1362,42 @@ export function normalizeClientCustomToolInput(
   return normalizeCodexPatchMarkers(text);
 }
 
+/**
+ * Hosted web search options from a Responses `web_search` tool. Unified keeps
+ * only the `web_search` function projection, so destinations that run the
+ * search themselves (Anthropic server tools) read these request-locally.
+ */
+export function hostedWebSearchFromResponsesTools(
+  tools: unknown
+): HostedWebSearchRequest | undefined {
+  if (!Array.isArray(tools)) return undefined;
+  const tool = tools.find(
+    (t: any) => t?.type === "web_search" || t?.type === "web_search_preview"
+  );
+  if (!tool) return undefined;
+  const allowedDomains = Array.isArray(tool.filters?.allowed_domains)
+    ? tool.filters.allowed_domains.filter((d: unknown) => typeof d === "string")
+    : undefined;
+  return {
+    ...(allowedDomains?.length ? { allowedDomains } : {}),
+    ...hostedUserLocation(tool.user_location),
+  };
+}
+
+/** Approximate location fields shared by Responses and Chat search options. */
+export function hostedUserLocation(
+  location: any
+): Pick<HostedWebSearchRequest, "userLocation"> {
+  if (!location || typeof location !== "object") return {};
+  const userLocation: NonNullable<HostedWebSearchRequest["userLocation"]> = {};
+  for (const key of ["city", "region", "country", "timezone"] as const) {
+    if (typeof location[key] === "string" && location[key]) {
+      userLocation[key] = location[key];
+    }
+  }
+  return Object.keys(userLocation).length ? { userLocation } : {};
+}
+
 function normalizeResponsesTools(
   tools: any,
   customToolNames?: Set<string>
@@ -1503,6 +1540,35 @@ function normalizeResponsesToolChoice(toolChoice: any): any {
   );
 }
 
+/** Responses `url_citation` annotation from a Unified annotation. */
+function responsesUrlCitation(annotation: any, base = 0, length?: number): any {
+  const citation = annotation?.url_citation;
+  if (annotation?.type !== "url_citation" || typeof citation?.url !== "string") {
+    return undefined;
+  }
+  const clamp = (value: unknown) => {
+    const index = Math.max(0, (typeof value === "number" ? value : 0) - base);
+    return length === undefined ? index : Math.min(index, length);
+  };
+  return {
+    type: "url_citation",
+    url: citation.url,
+    title: citation.title ?? "",
+    start_index: clamp(citation.start_index),
+    end_index: clamp(citation.end_index),
+  };
+}
+
+/** Responses `web_search_call` output item from a Unified web search call. */
+function responsesWebSearchCallItem(call: WebSearchCall, status?: string): any {
+  return {
+    type: "web_search_call",
+    id: `ws_${call.id}`,
+    status: status ?? call.status,
+    action: { type: "search", query: call.query },
+  };
+}
+
 /** Unified Chat JSON → Responses API non-stream response. */
 export function unifiedResponseToResponses(
   chat: any,
@@ -1527,6 +1593,11 @@ export function unifiedResponseToResponses(
   );
   if (reasoningItem) output.push(reasoningItem);
 
+  // Provider-executed searches precede the answer that cites them.
+  for (const call of (message.web_search_calls ?? []) as WebSearchCall[]) {
+    output.push(responsesWebSearchCallItem(call));
+  }
+
   const text =
     typeof message.content === "string"
       ? message.content
@@ -1548,7 +1619,9 @@ export function unifiedResponseToResponses(
         {
           type: "output_text",
           text: text || "",
-          annotations: [],
+          annotations: (message.annotations ?? [])
+            .map((annotation: any) => responsesUrlCitation(annotation))
+            .filter(Boolean),
           logprobs: message?.logprobs?.content || [],
         },
       ],
@@ -1612,11 +1685,18 @@ export interface ResponsesStreamState {
   textClosed: boolean;
   textOutputIndex?: number;
   textContent: string;
+  /** Unified text length before the current text item (annotation offsets). */
+  textBase: number;
+  /** Unified text length emitted so far across all text items. */
+  totalTextLength: number;
+  textAnnotations: any[];
   closedTextItems: Array<{
     id: string;
     outputIndex: number;
     content: string;
+    annotations: any[];
   }>;
+  webSearchCalls: Array<{ item: any; outputIndex: number }>;
   toolCalls: Map<
     number,
     {
@@ -1662,7 +1742,11 @@ export function createResponsesStreamState(
     textStarted: false,
     textClosed: false,
     textContent: "",
+    textBase: 0,
+    totalTextLength: 0,
+    textAnnotations: [],
     closedTextItems: [],
+    webSearchCalls: [],
     toolCalls: new Map(),
     nextOutputIndex: 0,
     finished: false,
@@ -1804,7 +1888,7 @@ function closeTextItem(state: ResponsesStreamState, events: any[]): void {
     part: {
       type: "output_text",
       text: state.textContent,
-      annotations: [],
+      annotations: state.textAnnotations,
       logprobs: [],
     },
   });
@@ -1820,7 +1904,7 @@ function closeTextItem(state: ResponsesStreamState, events: any[]): void {
         {
           type: "output_text",
           text: state.textContent,
-          annotations: [],
+          annotations: state.textAnnotations,
           logprobs: [],
         },
       ],
@@ -1830,6 +1914,7 @@ function closeTextItem(state: ResponsesStreamState, events: any[]): void {
     id: state.textItemId,
     outputIndex: state.textOutputIndex ?? 0,
     content: state.textContent,
+    annotations: state.textAnnotations,
   });
 }
 
@@ -1872,6 +1957,7 @@ export function unifiedChunkToResponsesEvents(
     (delta.role === "assistant" ||
       typeof delta.content === "string" ||
       Array.isArray(delta.tool_calls) ||
+      Array.isArray(delta.web_search_calls) ||
       thinking?.content ||
       thinking?.encrypted_content ||
       thinking?.id ||
@@ -1933,11 +2019,13 @@ export function unifiedChunkToResponsesEvents(
       state.textStarted = false;
       state.textClosed = false;
       state.textContent = "";
+      state.textAnnotations = [];
       state.textItemId = `msg_${state.responseId}_${state.nextOutputIndex}`;
       state.textOutputIndex = undefined;
     }
     if (!state.textStarted) {
       state.textStarted = true;
+      state.textBase = state.totalTextLength;
       state.textOutputIndex = state.nextOutputIndex++;
       events.push({
         type: "response.output_item.added",
@@ -1959,6 +2047,7 @@ export function unifiedChunkToResponsesEvents(
       });
     }
     state.textContent += delta.content;
+    state.totalTextLength += delta.content.length;
     events.push({
       type: "response.output_text.delta",
       item_id: state.textItemId,
@@ -1967,6 +2056,63 @@ export function unifiedChunkToResponsesEvents(
       delta: delta.content,
       logprobs: [],
     });
+  }
+
+  // Citations arrive after the text they cover. Unified offsets span the
+  // whole message; rebase them onto the text item that is still open.
+  if (Array.isArray(delta.annotations) && state.textStarted && !state.textClosed) {
+    for (const annotation of delta.annotations) {
+      const citation = responsesUrlCitation(
+        annotation,
+        state.textBase,
+        state.textContent.length
+      );
+      if (!citation) continue;
+      events.push({
+        type: "response.output_text.annotation.added",
+        item_id: state.textItemId,
+        output_index: state.textOutputIndex,
+        content_index: 0,
+        annotation_index: state.textAnnotations.length,
+        annotation: citation,
+      });
+      state.textAnnotations.push(citation);
+    }
+  }
+
+  if (Array.isArray(delta.web_search_calls) && delta.web_search_calls.length) {
+    // A provider-executed search is its own output item; earlier items close
+    // first, in index order, exactly as before a function call.
+    closeThinkingItem(state, events);
+    closeTextItem(state, events);
+    for (const call of delta.web_search_calls as WebSearchCall[]) {
+      const outputIndex = state.nextOutputIndex++;
+      const item = responsesWebSearchCallItem(call);
+      state.webSearchCalls.push({ item, outputIndex });
+      events.push({
+        type: "response.output_item.added",
+        output_index: outputIndex,
+        item: { ...item, status: "in_progress" },
+      });
+      // The provider already ran the search; replay OpenAI's progress
+      // lifecycle so clients that track it see the call start and finish.
+      const progress =
+        item.status === "completed"
+          ? ["in_progress", "searching", "completed"]
+          : ["in_progress", "searching"];
+      for (const phase of progress) {
+        events.push({
+          type: `response.web_search_call.${phase}`,
+          item_id: item.id,
+          output_index: outputIndex,
+        });
+      }
+      events.push({
+        type: "response.output_item.done",
+        output_index: outputIndex,
+        item,
+      });
+    }
   }
 
   if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
@@ -2165,7 +2311,7 @@ function skeletonResponse(
           {
             type: "output_text",
             text: closed.content,
-            annotations: [],
+            annotations: closed.annotations,
             logprobs: [],
           },
         ],
@@ -2187,12 +2333,15 @@ function skeletonResponse(
           {
             type: "output_text",
             text: state.textContent,
-            annotations: [],
+            annotations: state.textAnnotations,
             logprobs: [],
           },
         ],
       },
     });
+  }
+  for (const { item, outputIndex } of state.webSearchCalls) {
+    indexedOutput.push({ index: outputIndex, item });
   }
   for (const entry of state.toolCalls.values()) {
     const isolate: CodexIsolateConventionsOptions = {

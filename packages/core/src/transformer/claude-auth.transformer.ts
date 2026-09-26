@@ -55,6 +55,30 @@ export function mergeAnthropicBetaValues(
   return merged.join(",");
 }
 
+/**
+ * Beta tokens a third-party client sent for its Anthropic-defined computer use
+ * tool (e.g. `computer-use-2025-11-24` for `computer_20251124`). The emulated
+ * profile otherwise ignores client betas; the client already chose the one
+ * matching its tool version, so only that family is carried over, and only
+ * when the request actually declares a `computer_*` tool.
+ */
+export function clientComputerUseBetas(
+  clientBeta: string | undefined,
+  typedTools: Array<Record<string, any>> | undefined
+): string | undefined {
+  if (
+    !clientBeta ||
+    !typedTools?.some((tool) => String(tool?.type).startsWith("computer_"))
+  ) {
+    return undefined;
+  }
+  const tokens = clientBeta
+    .split(",")
+    .map((part) => part.trim())
+    .filter((token) => token.toLowerCase().startsWith("computer-use-"));
+  return tokens.length ? tokens.join(",") : undefined;
+}
+
 /** Read a named header value from a Fastify/Node headers object (case-insensitive). */
 export function readHeaderValue(
   headers: Record<string, unknown> | undefined,
@@ -511,7 +535,11 @@ export class ClaudeAuthTransformer implements Transformer {
       // mcp_PascalCase spelling. Keep a request-local reverse map for the
       // response transformer so the caller receives its original names.
       const toolNameMap = new Map<string, string>();
-      prefixClaudeToolNames(request, toolNameMap);
+      prefixClaudeToolNames(
+        request,
+        toolNameMap,
+        (request.anthropic_tools ?? []).map((tool) => tool?.name)
+      );
       if (context) {
         context.claudeAuthToolNameMap = toolNameMap;
         if (context.protocolContext) {
@@ -533,10 +561,17 @@ export class ClaudeAuthTransformer implements Transformer {
     const anthropicBeta = isClaudeCode
       ? resolveClaudeAuthAnthropicBeta({ clientBeta })
       : resolveClaudeAuthAnthropicBeta({
-          clientBeta: resolveClaudeAuthBetas(
-            modelIdForRequestedOneMillionBeta(
-              request.model,
-              context?.protocolContext?.requestedOneMillion
+          clientBeta: mergeAnthropicBetaValues(
+            resolveClaudeAuthBetas(
+              modelIdForRequestedOneMillionBeta(
+                request.model,
+                context?.protocolContext?.requestedOneMillion
+              )
+            ),
+            clientComputerUseBetas(
+              readHeaderValue(clientHeaders, "anthropic-beta"),
+              context?.protocolContext?.anthropicSource?.tools ??
+                request.anthropic_tools
             )
           ),
         });

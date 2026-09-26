@@ -221,6 +221,7 @@ export function buildRequestBody(
   delete (req as any).anthropic_output_config;
   delete (req as any).anthropic_metadata;
   delete (req as any).anthropic_stop_sequences;
+  delete (req as any).anthropic_tools;
 
   return req;
 }

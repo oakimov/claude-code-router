@@ -289,9 +289,14 @@ export function unprefixClaudeToolName(name: string): string {
 /** Rewrite tool names in a Unified request in place for the OAuth wire path. */
 export function prefixClaudeToolNames(
   request: UnifiedChatRequest,
-  nameMap?: Map<string, string>
+  nameMap?: Map<string, string>,
+  fixedNames: Iterable<string> = []
 ): void {
+  // Anthropic-defined tools (e.g. `web_search`) keep their fixed names, as in
+  // Claude Code's own requests; only custom tool names are rewritten.
+  const keep = new Set(fixedNames);
   const prefix = (name: string): string => {
+    if (keep.has(name)) return name;
     const wireName = prefixClaudeToolName(name);
     nameMap?.set(wireName, name);
     return wireName;
