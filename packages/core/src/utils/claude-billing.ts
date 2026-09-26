@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { TextContent, UnifiedChatRequest, UnifiedMessage } from "@/types/llm";
 import { CLAUDE_CODE_BILLING_SYSTEM_HEADER_PREFIX } from "./router";
+import { createSSEStreamReader, emitSSEEvent, forwardSSEEvent } from "./stream";
 
 /** Salt used in Claude Code's `cc_version` suffix hash (`RYn()`). */
 export const BILLING_SALT = "59cf53e54c78";
@@ -324,27 +325,98 @@ export function prefixClaudeToolNames(
   }
 }
 
-/** Rewrite tool names in a Unified/OpenAI-shaped response in place. */
+/**
+ * Rewrite tool names in a response payload in place and report whether any
+ * name changed. Accepts both shapes a response takes after the provider leg:
+ * Unified/OpenAI (`choices[].message|delta.tool_calls`) and Anthropic
+ * Messages wire (`content[]` tool_use blocks of a message, or the
+ * `content_block_start` stream event that carries a tool_use block's name).
+ *
+ * With a request-local `nameMap`, only names CCR itself prefixed are restored,
+ * which keeps the operation idempotent: a caller's own `mcp__server__tool`
+ * name is never stripped a second time. Without one, fall back to the
+ * spelling heuristic.
+ */
 export function unprefixClaudeToolNames(
   value: any,
   nameMap?: Map<string, string>
-): void {
+): boolean {
+  let changed = false;
+  const restore = (name: unknown): string | undefined => {
+    if (typeof name !== "string") return undefined;
+    const original = nameMap ? nameMap.get(name) : unprefixClaudeToolName(name);
+    if (original === undefined || original === name) return undefined;
+    changed = true;
+    return original;
+  };
   const rewriteToolCall = (toolCall: any) => {
-    const name = toolCall?.function?.name;
-    if (typeof name !== "string") return;
-    toolCall.function.name = nameMap?.get(name) ?? unprefixClaudeToolName(name);
+    const original = restore(toolCall?.function?.name);
+    if (original !== undefined) toolCall.function.name = original;
+  };
+  const rewriteToolUse = (block: any) => {
+    if (block?.type !== "tool_use") return;
+    const original = restore(block.name);
+    if (original !== undefined) block.name = original;
   };
 
   for (const choice of value?.choices ?? []) {
     for (const toolCall of choice?.message?.tool_calls ?? []) rewriteToolCall(toolCall);
     for (const toolCall of choice?.delta?.tool_calls ?? []) rewriteToolCall(toolCall);
   }
+  if (value?.type === "message" && Array.isArray(value.content)) {
+    for (const block of value.content) rewriteToolUse(block);
+  }
+  if (value?.type === "content_block_start") {
+    rewriteToolUse(value.content_block);
+  }
+  return changed;
 }
 
-/** Rewrite one OpenAI SSE data payload's tool names. */
-export function unprefixClaudeToolNamesInSseData(
-  value: any,
-  nameMap?: Map<string, string>
-): void {
-  unprefixClaudeToolNames(value, nameMap);
+/**
+ * Restore CCR-prefixed tool names in a JSON or SSE response. SSE events and
+ * JSON bodies without a renamed tool are forwarded byte-identical, so
+ * exact-protocol responses keep the provider's usage and framing untouched.
+ */
+export async function restoreClaudeToolNamesInResponse(
+  response: Response,
+  nameMap: Map<string, string>,
+  logger?: any
+): Promise<Response> {
+  if (!nameMap.size || !response.ok) return response;
+  const contentType = response.headers.get("Content-Type") || "";
+  if (contentType.includes("application/json")) {
+    const text = await response.text();
+    let body: any;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = undefined;
+    }
+    const changed = body !== undefined && unprefixClaudeToolNames(body, nameMap);
+    return new Response(changed ? JSON.stringify(body) : text, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+  if (contentType.includes("text/event-stream") && response.body) {
+    return createSSEStreamReader(response, {
+      logger,
+      processEvent: (event, streamContext) => {
+        if (
+          event.data &&
+          typeof event.data === "object" &&
+          unprefixClaudeToolNames(event.data, nameMap)
+        ) {
+          emitSSEEvent(
+            { event: event.event, id: event.id, retry: event.retry, data: event.data },
+            streamContext
+          );
+          return;
+        }
+        forwardSSEEvent(event, streamContext);
+      },
+    });
+  }
+  return response;
 }

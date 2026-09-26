@@ -21,10 +21,6 @@ import {
   unifiedUserPartToAnthropic,
 } from "@/utils/tool-content";
 import { buildAnthropicRequestRuntime } from "@/types/turn-intent";
-import {
-  unprefixClaudeToolNames,
-} from "@/utils/claude-billing";
-import { createSSEStreamReader } from "@/utils/stream";
 import { transformResponseOut as anthropicWireToUnifiedResponse } from "../utils/vertex-claude.util";
 import {
   lookupClaudeModelCatalogEntry,
@@ -281,52 +277,10 @@ export class AnthropicTransformer implements Transformer {
     response: Response,
     _context?: TransformerContext
   ): Promise<Response> {
-    const converted = await anthropicWireToUnifiedResponse(
-      response,
-      this.name,
-      this.logger
-    );
-    const nameMap = _context?.protocolContext?.claudeAuthToolNameMap as
-      | Map<string, string>
-      | undefined;
-    if (!nameMap?.size || !converted.ok) return converted;
-
-    const contentType = converted.headers.get("Content-Type") || "";
-    if (contentType.includes("application/json")) {
-      const body = await converted.json();
-      unprefixClaudeToolNames(body, nameMap);
-      return new Response(JSON.stringify(body), {
-        status: converted.status,
-        statusText: converted.statusText,
-        headers: converted.headers,
-      });
-    }
-    if (contentType.includes("text/event-stream") && converted.body) {
-      return createSSEStreamReader(
-        converted,
-        (line, streamContext) => {
-          if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") {
-            streamContext.controller.enqueue(
-              streamContext.encoder.encode(line + "\n")
-            );
-            return;
-          }
-          try {
-            const payload = JSON.parse(line.slice(6));
-            unprefixClaudeToolNames(payload, nameMap);
-            streamContext.controller.enqueue(
-              streamContext.encoder.encode(`data: ${JSON.stringify(payload)}\n\n`)
-            );
-          } catch {
-            streamContext.controller.enqueue(
-              streamContext.encoder.encode(line + "\n")
-            );
-          }
-        },
-        { logger: this.logger }
-      );
-    }
-    return converted;
+    // Tool names renamed by the third-party route policy are restored by the
+    // route after the provider chain, on both this converted path and the
+    // exact-protocol path that skips this stage.
+    return anthropicWireToUnifiedResponse(response, this.name, this.logger);
   }
 
   async transformRequestOut(

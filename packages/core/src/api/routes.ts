@@ -111,6 +111,7 @@ import {
   isNativeAnthropicClient,
   resolveNativeClaudeOAuthCacheTtlMode,
 } from "@/utils/anthropic-client-policy";
+import { restoreClaudeToolNamesInResponse } from "@/utils/claude-billing";
 
 function isManualExactProtocolPassthrough(
   provider: any,
@@ -1481,6 +1482,23 @@ async function processResponseTransformers(
         responseContext
       );
     }
+  }
+
+  // Third-party Anthropic emulation renamed the caller's tools upstream
+  // (applyThirdPartyAnthropicPolicy). Restore them here: the response is now
+  // Unified, or on the exact-protocol path the provider's Anthropic wire,
+  // which stays byte-identical apart from the renamed tool_use blocks.
+  const toolNameMap = context?.protocolContext?.anthropicPolicyApplied
+    ? (context.protocolContext.claudeAuthToolNameMap as
+        | Map<string, string>
+        | undefined)
+    : undefined;
+  if (toolNameMap?.size) {
+    finalResponse = await restoreClaudeToolNamesInResponse(
+      finalResponse,
+      toolNameMap,
+      context?.req?.log
+    );
   }
 
   // Execute transformer's transformResponseIn method

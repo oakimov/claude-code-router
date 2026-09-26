@@ -139,7 +139,7 @@ Beta token 只会通过 `anthropic-beta` HTTP 请求头发送。CCR 不会在 Me
 
 Anthropic 的 OAuth 计费校验会检查身份块之后的 `system[]` 内容，若其中带有外部 harness 的提示词，就以 "out of extra usage" 400 拒绝请求 —— 即使请求头正确，调用方自己的 system 提示词也会让流量明显不是 Claude Code。CCR 的第三方 Anthropic 模拟沿用 Claude Code OAuth 客户端（如 `opencode-claude-auth`）的做法：调用方在 `system[1]` 之后提供的全部内容会被迁移到第一条用户消息中（按原顺序，作为独立的文本块放在最前面），而不是留在 `system[]` 里。内容仍原样送达模型，只是成为第一条用户轮次的一部分。如果没有可附加的用户消息，则不做迁移 —— 调用方的 system 内容保留在 `system[]` 中，而不会被丢弃。
 
-对于**其他客户端**，工具名也会在构建请求体之前改写为 Claude Code 的 OAuth 拼写：`bash` 变为 `mcp_Bash`，`read` 变为 `mcp_Read`，已是 `mcp_...` 的名称保持不变。工具定义、历史 assistant `tool_calls` 以及强制的 `tool_choice` 会保持一致。响应路径会通过请求级的名称映射，在 JSON 与流式响应中恢复调用方原始的工具名。
+对于**其他客户端**，工具名也会在构建请求体之前改写为 Claude Code 的 OAuth 拼写：`bash` 变为 `mcp_Bash`，`read` 变为 `mcp_Read`，`mcp__server__tool` 变为 `mcp_Mcp__server__tool`，已是 `mcp_PascalCase` 拼写的名称保持不变。工具定义、历史 assistant `tool_calls` 以及强制的 `tool_choice` 会保持一致。响应路径会通过请求级的名称映射，在 JSON 与流式响应中准确恢复 CCR 改写过的工具名。这也包括未通过原生指纹识别的 Anthropic Messages 客户端（例如位于网关之后、`user-agent` 被替换且 `x-stainless-*` 请求头被丢弃的 Claude Code）：其响应仍是提供方的 Anthropic 原始报文，除恢复的 `tool_use` 名称外逐字节保持不变。
 
 对于**原生 Desktop 与 CLI**，其自身的 system 块 —— 包括账单、身份及不透明字段 —— 会被原样转发，不做任何 system 提示词改写；唯一的缓存变化是下文“Prompt 缓存”一节所述的 OAuth TTL 延长。
 

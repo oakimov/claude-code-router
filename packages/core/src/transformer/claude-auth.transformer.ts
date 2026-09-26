@@ -15,12 +15,11 @@ import {
   reserveClaudeBillingSystemBlock,
   prefixClaudeToolNames,
   relocateForeignSystemContent,
-  unprefixClaudeToolNames,
+  restoreClaudeToolNamesInResponse,
   CC_USER_AGENT_ENTRYPOINT,
   CC_VERSION,
   normalizeSystemToArray,
 } from "../utils/claude-billing";
-import { createSSEStreamReader, StreamContext } from "../utils/stream";
 import { buildAnthropicMessagesUrl } from "@/utils/anthropic-url";
 import {
   AnthropicClientKind,
@@ -630,54 +629,25 @@ export class ClaudeAuthTransformer implements Transformer {
   /**
    * Body/URL/wire-format conversion belong to AnthropicTransformer's
    * provider pair, which already ran (response-side order is reversed, so
-   * it runs before this stage). This stage only inspects the resulting
-   * response for subscription-specific overage observability.
+   * it runs before this stage). This stage inspects the resulting response
+   * for subscription-specific overage observability and restores tool names
+   * its own legacy branch renamed.
    */
   async transformResponseOut(
     response: Response,
     context?: TransformerContext
   ): Promise<Response> {
-    // Response processing receives a fresh context object, while the request
-    // context's protocolContext is deliberately carried forward. Read the
-    // request-local map from both locations for direct transformer callers and
-    // the normal route pipeline respectively.
-    const nameMap = (context?.claudeAuthToolNameMap ??
-      context?.protocolContext?.claudeAuthToolNameMap) as
-      | Map<string, string>
-      | undefined;
-    if (nameMap?.size && response.ok) {
-      const contentType = response.headers.get("Content-Type") || "";
-      if (contentType.includes("application/json")) {
-        const body = await response.json();
-        unprefixClaudeToolNames(body, nameMap);
-        return new Response(JSON.stringify(body), {
-          status: response.status,
-          statusText: response.statusText,
-          headers: response.headers,
-        });
-      }
-      if (contentType.includes("text/event-stream") && response.body) {
-        return createSSEStreamReader(
-          response,
-          (line: string, streamContext: StreamContext) => {
-            if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") {
-              streamContext.controller.enqueue(streamContext.encoder.encode(line + "\n"));
-              return;
-            }
-            try {
-              const payload = JSON.parse(line.slice(6));
-              unprefixClaudeToolNames(payload, nameMap);
-              streamContext.controller.enqueue(
-                streamContext.encoder.encode(`data: ${JSON.stringify(payload)}\n\n`)
-              );
-            } catch {
-              streamContext.controller.enqueue(streamContext.encoder.encode(line + "\n"));
-            }
-          },
-          { logger: this.logger }
-        );
-      }
-    }
+    // Names renamed by the route's third-party policy are restored by the
+    // route itself (it alone knows whether this response is Unified or exact
+    // Anthropic wire). Only the legacy branch's own renames are undone here.
+    // Response processing receives a fresh context object, so read the map
+    // from both locations for direct callers and protocol-context callers.
+    const nameMap = context?.protocolContext?.anthropicPolicyApplied
+      ? undefined
+      : ((context?.claudeAuthToolNameMap ??
+          context?.protocolContext?.claudeAuthToolNameMap) as
+          | Map<string, string>
+          | undefined);
 
     const overageInUse = response.headers.get(
       "anthropic-ratelimit-unified-overage-in-use"
@@ -693,7 +663,9 @@ export class ClaudeAuthTransformer implements Transformer {
         "claude-auth: subscription overage in use for this request"
       );
     }
-    return response;
+    return nameMap
+      ? restoreClaudeToolNamesInResponse(response, nameMap, this.logger)
+      : response;
   }
 
   /**
