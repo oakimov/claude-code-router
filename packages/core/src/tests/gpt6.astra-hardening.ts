@@ -25,10 +25,13 @@ function mockCodexAuth(transformer: CodexTransformer) {
 function testModelDetection() {
   assert.equal(isGpt6FamilyModel("gpt-6-astra"), true);
   assert.equal(isGpt6FamilyModel("gpt-6-sol"), true);
+  assert.equal(isGpt6FamilyModel("gpt-6.1-sol"), true);
   assert.equal(isGpt6FamilyModel("gpt-6-luna"), true);
   assert.equal(isGpt6FamilyModel("gpt-6"), true);
   assert.equal(isGpt6FamilyModel("openai/gpt-6-astra"), true);
+  assert.equal(isGpt6FamilyModel("openai/gpt-6.1-sol"), true);
   assert.equal(isGpt6FamilyModel("codex,gpt-6-astra"), true);
+  assert.equal(isGpt6FamilyModel("codex,gpt-6.1-sol"), true);
   assert.equal(isGpt6FamilyModel("gpt-6.0-astra"), true);
   assert.equal(isGpt6FamilyModel("gpt-5.6-sol"), false);
   assert.equal(isGpt6FamilyModel("gpt-5.6-astra"), false);
@@ -40,6 +43,8 @@ function testEffortHelpers() {
   assert.equal(coerceGpt6ReasoningEffort("gpt-6-astra", "none"), "low");
   assert.equal(coerceGpt6ReasoningEffort("gpt-6-astra", "minimal"), "low");
   assert.equal(coerceGpt6ReasoningEffort("gpt-6-astra", "medium"), "medium");
+  assert.equal(coerceGpt6ReasoningEffort("gpt-6.1-sol", "none"), "low");
+  assert.equal(coerceGpt6ReasoningEffort("gpt-6.1-sol", "ultra"), "ultra");
   assert.equal(coerceGpt6ReasoningEffort("gpt-5.6-sol", "none"), "none");
 
   const req = {
@@ -61,17 +66,23 @@ function testEffortHelpers() {
 
 function testLunaUltraClamp() {
   assert.equal(isGpt6LunaModel("gpt-6-luna"), true);
+  assert.equal(isGpt6LunaModel("gpt-6.1-luna"), true);
   assert.equal(isGpt6LunaModel("openai/gpt-6-luna"), true);
+  assert.equal(isGpt6LunaModel("openai/gpt-6.1-luna"), true);
   assert.equal(isGpt6LunaModel("codex,gpt-6-luna"), true);
+  assert.equal(isGpt6LunaModel("codex,gpt-6.1-luna"), true);
+  assert.equal(isGpt6FamilyModel("gpt-6.1-luna"), true);
   assert.equal(isGpt6LunaModel("gpt-6-sol"), false);
   assert.equal(isGpt6LunaModel("gpt-6-astra"), false);
   assert.equal(isGpt6LunaModel("gpt-5.6-luna"), false);
   assert.equal(isGpt6LunaModel(undefined), false);
 
-  // Luna tops out at max (no ultra); Astra/Sol keep ultra.
+  // Luna tops out at max (no ultra); Astra/Sol/6.1 Sol keep ultra.
   assert.equal(coerceGpt6ReasoningEffort("gpt-6-luna", "ultra"), "max");
+  assert.equal(coerceGpt6ReasoningEffort("gpt-6.1-luna", "ultra"), "max");
   assert.equal(coerceGpt6ReasoningEffort("gpt-6-astra", "ultra"), "ultra");
   assert.equal(coerceGpt6ReasoningEffort("gpt-6-sol", "ultra"), "ultra");
+  assert.equal(coerceGpt6ReasoningEffort("gpt-6.1-sol", "ultra"), "ultra");
   assert.equal(coerceGpt6ReasoningEffort("gpt-6-luna", "high"), "high");
 
   const req = {
@@ -161,24 +172,26 @@ async function responsesLeavesNonGpt6NoneAlone() {
 async function codexWireKeepCoercesAndStripsTopP() {
   const transformer = new CodexTransformer();
   mockCodexAuth(transformer);
-  const result = await transformer.transformRequestIn(
-    {
-      model: "gpt-6-astra",
-      input: [{ role: "user", content: "hi" }],
-      reasoning: { effort: "none" },
-      temperature: 0.3,
-      top_p: 0.8,
-      stream: false,
-    },
-    { baseUrl: "https://chatgpt.com/backend-api/codex" },
-    { req: { id: "gpt6-codex-keep" } }
-  );
-  const body = result.body as any;
-  assert.equal(body.reasoning?.effort, "low");
-  assert.equal(body.temperature, undefined);
-  assert.equal(body.top_p, undefined);
-  assert.equal(body.store, false);
-  assert.equal(body.stream, true);
+  for (const model of ["gpt-6-astra", "gpt-6.1-sol"] as const) {
+    const result = await transformer.transformRequestIn(
+      {
+        model,
+        input: [{ role: "user", content: "hi" }],
+        reasoning: { effort: "none" },
+        temperature: 0.3,
+        top_p: 0.8,
+        stream: false,
+      },
+      { baseUrl: "https://chatgpt.com/backend-api/codex" },
+      { req: { id: `gpt6-codex-keep-${model}` } }
+    );
+    const body = result.body as any;
+    assert.equal(body.reasoning?.effort, "low", model);
+    assert.equal(body.temperature, undefined, model);
+    assert.equal(body.top_p, undefined, model);
+    assert.equal(body.store, false, model);
+    assert.equal(body.stream, true, model);
+  }
 }
 
 async function codexAlwaysStripsTopP() {

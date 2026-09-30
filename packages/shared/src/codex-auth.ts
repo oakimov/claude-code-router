@@ -1,9 +1,11 @@
 /**
  * Codex CLI version CCR identifies as (`User-Agent`, `client_version`).
- * Keep at/above upstream's per-model `minimal_client_version` (GPT-6 Sol/Luna
- * require >= 0.155.0). `CODEX_CLI_VERSION` overrides it without a release.
+ * Keep at/above upstream's per-model `minimal_client_version` and track the
+ * latest stable `@openai/codex` release so discovery surfaces new slugs
+ * (GPT-6.1 Sol needs a current client_version; GPT-6 Sol/Luna require
+ * >= 0.155.0). `CODEX_CLI_VERSION` overrides it without a release.
  */
-export const CODEX_CLI_VERSION = process.env.CODEX_CLI_VERSION || "0.156.1";
+export const CODEX_CLI_VERSION = process.env.CODEX_CLI_VERSION || "0.159.1";
 
 const ENV_REFERENCE_PATTERN = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;

@@ -42,6 +42,10 @@
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
+        "gpt-6-astra",
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-5.4-mini",
         "codex-auto-review"
       ],
@@ -83,7 +87,7 @@
   ],
   "Router": {
     "default": "claude,claude-sonnet-5",
-    "think": "codex,gpt-5.6-sol",
+    "think": "codex,gpt-6.1-sol",
     "background": "cursor,claude-haiku-4-5",
     "webSearch": "claude,claude-opus-5",
     "longContext": "cursor,composer-2.5",

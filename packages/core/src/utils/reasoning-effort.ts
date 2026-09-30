@@ -158,8 +158,9 @@ export function toAnthropicReasoningEffort(
 }
 
 /**
- * GPT-6 family slugs (`gpt-6`, `gpt-6-astra`, `openai/gpt-6-astra`,
- * `codex,gpt-6-astra`). Anchored so `gpt-60` / `gpt-5.6` do not match.
+ * GPT-6 family slugs (`gpt-6`, `gpt-6-astra`, `gpt-6.1-sol`,
+ * `openai/gpt-6-astra`, `codex,gpt-6.1-sol`). Anchored so `gpt-60` /
+ * `gpt-5.6` do not match.
  */
 export function isGpt6FamilyModel(model: unknown): boolean {
   if (typeof model !== "string" || !model) return false;
@@ -173,18 +174,19 @@ export function coerceGpt6ReasoningEffort(
 ): ThinkLevel | undefined {
   if (!effort || !isGpt6FamilyModel(model)) return effort;
   if (effort === "none" || effort === "minimal") return "low";
-  // Luna's level set tops out at `max` (no `ultra`, unlike Astra/Sol).
+  // Luna's level set tops out at `max` (no `ultra`, unlike Astra/Sol/6.1 Sol).
   if (effort === "ultra" && isGpt6LunaModel(model)) return "max";
   return effort;
 }
 
 /**
- * GPT-6 Luna slugs (`gpt-6-luna`, `openai/gpt-6-luna`, `codex,gpt-6-luna`).
- * Anchored so `gpt-6-sol` / `gpt-6-astra` do not match.
+ * GPT-6 Luna slugs (`gpt-6-luna`, `gpt-6.1-luna`, `openai/gpt-6-luna`,
+ * `codex,gpt-6.1-luna`). Anchored so `gpt-6-sol` / `gpt-6-astra` /
+ * `gpt-5.6-luna` do not match.
  */
 export function isGpt6LunaModel(model: unknown): boolean {
   if (typeof model !== "string" || !model) return false;
-  return /(?:^|[/,:])gpt-6-luna(?:$|[.-])/i.test(model);
+  return /(?:^|[/,:])gpt-6(?:\.\d+)?-luna(?:$|[.-])/i.test(model);
 }
 
 /**

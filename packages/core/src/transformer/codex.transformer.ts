@@ -217,8 +217,10 @@ function getCodexUserAgent(): string {
   // The real CLI appends a detected terminal token
   // (`Apple_Terminal/x`, `vscode/x`, …; `unknown` headless). CCR is a
   // server-side proxy with no terminal of its own, so it sends `unknown`
-  // rather than misattributing the server host's terminal. Upstream needs
-  // >= 0.155.0 for GPT-6 Sol/Luna (minimal_client_version).
+  // rather than misattributing the server host's terminal. Keep
+  // CODEX_CLI_VERSION at the latest stable `@openai/codex` so discovery
+  // returns new slugs (e.g. gpt-6.1-sol); GPT-6 Sol/Luna also need
+  // >= 0.155.0 (minimal_client_version).
   return `${CODEX_ORIGINATOR}/${CODEX_CLI_VERSION} (${getCodexOsType()} ${getCodexOsVersion()}; ${getCodexArchitecture()}) unknown`;
 }
 
