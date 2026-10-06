@@ -9,6 +9,9 @@
 ## Git & Workflow
 - **Cherry-picking for Integration**: When merging a feature branch from a divergent fork into a base repo with critical fixes, cherry-picking specific commits is preferred over `git merge` to avoid regression and maintain a linear history.
 
+## Tests
+- **Do not substring-scan files that persist timestamps**: `ccr-sessions.json` stores `updatedAt: Date.now()`. Asserting the raw file lacks a short digit run (`4711`) flakes when that run appears in a millisecond timestamp (or a hex hash). Walk parsed JSON **string** fields (and keys) instead; numbers are allowed to contain those digits. Guarded by `cursor-sdk.inbound-session.ts`.
+
 ## LLM Provider Integration (Antigravity)
 - **Auth transformer only**: Wire format is Gemini `generateContent` inside `{ project, model, request, userAgent, requestId }`. Chain `[["gemini", { cachedContent: false, thoughtSignatureFallback: "skip" }], "antigravity-auth"]`.
 - **SSE re-frame must use blank-line delimiters**: Antigravity streams content in an early `data:` event, then a final event with `thoughtSignature` + empty `text`. Unwrapping via `encodeSSELine` (single `\n`) makes the next `SSEParserTransform` overwrite `currentEvent.data` and drop the content event — Claude Code sees only `(no content)`. Use `encodeSSEData` (`data: …\n\n`).

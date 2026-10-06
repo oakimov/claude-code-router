@@ -36,7 +36,7 @@
   "author": "caeliq",
   "license": "MIT",
   "dependencies": {
-    "@cursor/sdk": "^1.0.32"
+    "@cursor/sdk": "^1.0.36"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
