@@ -171,6 +171,34 @@ The `codex` transformer:
 - adds `X-OpenAI-Fedramp: true` when required by the authenticated account
 - converts streaming Responses-style events back into the **inbound** client protocol
 
+## Model Handling
+
+CCR sends each OpenAI model what Codex CLI sends it. The per-model data is
+imported from Codex's bundled catalog (`codex-rs/models-manager/models.json`)
+into `packages/core/src/utils/codex-model-catalog.ts`; refresh it when Codex
+adds or retires models.
+
+- **Reasoning effort** is limited to the model's supported levels. `none` /
+  `minimal` move up to the lowest level and anything above the top level
+  moves down to it. `ultra` is a Codex picker alias and is never sent: it
+  becomes the model's multi-agent effort (`xhigh` for `gpt-6-astra` /
+  `gpt-6.1-sol`), else `max`, else the highest level below `ultra`. Applies to
+  every Responses destination (`openai-responses`) and to same-protocol
+  Codex wire-keep. Models outside the catalog pass through unchanged; GPT-6
+  slugs newer than the table use the GPT-6 family's levels.
+- **Responses Lite** (Codex provider only; models with `use_responses_lite`):
+  the request carries `x-openai-internal-codex-responses-lite: true`, tools
+  move from `tools` into a leading `{type: "additional_tools", role:
+  "developer"}` input item (function and custom tools grouped in the
+  `functions` namespace), `parallel_tool_calls` is `false`, `reasoning.context`
+  is `all_turns`, and input images carry no `detail`.
+- **Verbosity** is sent as `text.verbosity`. The client's value wins, then the
+  provider's `verbosity`, then the value implied by `REASONING_AUTO_SUMMARY`
+  (`detailed` → `high`, `auto` → `medium`, `concise` → `low`) for catalog
+  models that support verbosity.
+- **Fast / priority tier** is never selected; Responses clients cannot send
+  `service_tier`.
+
 ## When to use `ccr codex-auth`
 
 Run `ccr codex-auth` when:
@@ -189,6 +217,77 @@ You do **not** need `ccr codex-auth` when `api_key` already contains a valid PAT
 - **Web search** — Built-in web search via `{ type: "web_search" }`
 - **Image handling** — Vision support for image inputs
 
+## Stream Bootstrap Buffering
+
+The ChatGPT backend can smuggle overload/quota rejections *inside* an
+HTTP 200 SSE stream (after the handshake frames) instead of returning a
+retryable status. Enable opt-in buffering so those fail over transparently:
+
+```json
+{
+  "name": "codex",
+  "api_base_url": "https://chatgpt.com/backend-api/codex",
+  "api_key": "oauth_dummy_key",
+  "models": ["gpt-5"],
+  "transformer": {
+    "use": ["openai-responses", ["codex", { "streamBootstrapBuffering": true }]]
+  }
+}
+```
+
+Held frames (handshake, `*.added`, heartbeats) stay uncommitted until
+output, a terminal event, or a configured budget releases the buffer.
+A capacity error in a `response.failed` / `error` event cancels the rejected
+upstream stream and throws a fallback-eligible error *before* downstream
+headers commit. Classification follows Codex CLI: the exact error `code`
+(plus `type` for plan and quota errors), never message text.
+
+| Upstream error | CCR error |
+| --- | --- |
+| `server_is_overloaded` | 503 `server_overloaded` |
+| `rate_limit_exceeded`, `slow_down`, `flex_unavailable` | 429 `rate_limit_exceeded`, with `Retry-After` from the event (`error.headers`, else "try again in Ns") |
+| `insufficient_quota`, `credit_balance_exhausted`, `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`, `organization_usage_limit_exceeded`, `usage_not_included`; type `usage_limit_reached` / `usage_not_included` / `insufficient_quota` | 429 `usage_limit_reached` |
+
+Every other failure (`context_length_exceeded`, `invalid_prompt`, policy
+codes, unknown codes) reaches the client unchanged, even when its message
+says "try again": another model would fail the same way. Error-like words in
+generated text or tool arguments are not signals either. A transport failure while buffering
+propagates to the normal error/fallback path instead of returning a successful
+truncated stream. See
+[Transformers → codex](/docs/server/config/transformers#codex) for budgets.
+Pair with a `continue-and-cooldown`
+[request-scoped-error](/docs/server/config/routing#request-scoped-errors)
+rule on `usage_limit_reached` so the exhausted model is skipped briefly.
+
+## Multi-Agent Compatibility
+
+Two opt-in top-level flags for Codex multi-agent (delegation) traffic:
+
+```json
+{
+  "orphanDelegationCompatibility": true,
+  "optimizeMultiAgentV2": true
+}
+```
+
+- `orphanDelegationCompatibility` — `function_call_output` /
+  `custom_tool_call_output` items without a non-empty string `call_id` become
+  user messages instead of a 400. Only applies when the request carries
+  `X-Openai-Subagent: collab_spawn`. Outputs with a non-empty string id are left
+  correlated as tool results; absence of a matching local call alone does
+  not enable this repair.
+- `optimizeMultiAgentV2` — role-less `agent_message` input items become user
+  messages instead of a 400. Text/image/file content parts and their
+  validation are preserved. Role-bearing items keep their existing message
+  projection regardless of the flag.
+
+Both repairs apply to Unified conversion and Responses wire keep, including
+fallback attempts, without rebuilding unrelated images, files, reasoning
+ciphertext, or cache fields. Compatibility user messages arriving inside a
+tool-call group are deferred until its pending tool results have been emitted.
+These top-level flags apply to the main CCR namespace; preset namespaces
+currently carry only their provider/router configuration and do not inherit them.
+
 ## Usage
 
 Use Codex as your default model or route specific scenarios:
@@ -206,11 +305,15 @@ Use Codex as your default model or route specific scenarios:
 
 ## Model Reference
 
-| Model | Description |
-|-------|-------------|
-| `gpt-5` | Standard GPT-5 model |
-| `gpt-5-high` | High-performance variant (reasoning tasks) |
-| `gpt-5-mini` | Lightweight variant (background tasks) |
+Codex catalog models (see [Model Handling](#model-handling)). Discover what
+your account can use with `ccr model get codex`.
+
+| Model | Reasoning levels | Responses Lite |
+|-------|------------------|----------------|
+| `gpt-6.1-sol`, `gpt-6-astra` | `low`–`max` (`ultra` → `xhigh`) | yes |
+| `gpt-6-sol`, `gpt-5.6-sol`, `gpt-5.6-terra` | `low`–`max` (`ultra` → `max`) | yes |
+| `gpt-6-luna`, `gpt-5.6-luna`, `codex-auto-review` | `low`–`max` | yes |
+| `gpt-5.5` | `low`–`xhigh` | no |
 
 ## Troubleshooting
 

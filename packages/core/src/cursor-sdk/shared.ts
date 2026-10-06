@@ -1,4 +1,13 @@
 import { createHash } from "crypto";
+import {
+  isCursorInvalidRegistryModelError,
+  type CursorReasoning,
+} from "./model-selection";
+import {
+  isReasoningActive,
+  isReasoningDisabled,
+  normalizeReasoningEffort,
+} from "@/utils/reasoning-effort";
 import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import type { UnifiedMessage } from "@/types/llm";
@@ -111,13 +120,43 @@ export function coerceThinkingText(value: unknown): string {
   return String(value);
 }
 
-export function extractEffort(request: any): string | undefined {
+function extractEffort(request: any): string | undefined {
   return (
     request?.output_config?.effort ||
     request?.reasoning?.effort ||
     request?.effort ||
     undefined
   );
+}
+
+/**
+ * The reasoning a Unified request asks Cursor for. Every inbound protocol
+ * maps its own field (`thinking` / `output_config.effort`,
+ * `reasoning_effort`, `reasoning`) onto Unified `reasoning` and `thinking`.
+ * No signal, effort `none`, or disabled thinking means no reasoning.
+ */
+export function extractCursorReasoning(request: any): CursorReasoning {
+  if (isReasoningDisabled(request?.reasoning, request?.thinking)) {
+    return undefined;
+  }
+  const effort = normalizeReasoningEffort(extractEffort(request));
+  if (effort === "none") return undefined;
+  if (effort) return { effort };
+  const thinking = request?.thinking?.type;
+  if (
+    isReasoningActive(request?.reasoning, request?.thinking) ||
+    thinking === "enabled" ||
+    thinking === "adaptive"
+  ) {
+    return {};
+  }
+  return undefined;
+}
+
+/** Stable label for a reasoning request, for compatibility stamps. */
+export function cursorReasoningKey(reasoning: CursorReasoning): string {
+  if (!reasoning) return "off";
+  return reasoning.effort ? `on:${reasoning.effort}` : "on";
 }
 
 const TRANSIENT_CURSOR_STATUS = new Set([429, 502, 503, 504]);
@@ -151,6 +190,11 @@ export function isCursorTransientProviderError(err: unknown): boolean {
   };
   const name = typeof e.name === "string" ? e.name : "";
   if (name === "AbortError") return false;
+  if (isCursorInvalidRegistryModelError(err)) return false;
+  const messageEarly = (
+    typeof e.message === "string" ? e.message : String(err ?? "")
+  ).toLowerCase();
+  if (messageEarly.includes("ai model not found")) return false;
   const status =
     typeof e.statusCode === "number"
       ? e.statusCode

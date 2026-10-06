@@ -32,6 +32,10 @@ import { ensureRequestLatency, markLatency } from "@/utils/request-latency";
 import { applyReasoningAutoSummary } from "@/utils/reasoning-effort";
 import { extractClientSessionId } from "@/utils/cacheControl";
 import { detectNestedAgent } from "@/utils/nested-agent";
+import {
+  repairResponsesWireMultiAgentCompat,
+  resolveResponsesInboundCompat,
+} from "@/utils/openai.responses.util";
 
 export interface PreparedInboundRequest {
   match: ProtocolRouteMatch;
@@ -150,11 +154,19 @@ export async function prepareInboundRequest(
     claudeCodeSubagent: context.claudeCodeSubagent,
   });
 
+  // Opt-in Codex multi-agent compatibility, resolved once so the Unified
+  // projection and the kept client wire below gate on the same flags.
+  const responsesCompat =
+    match.protocol === "openai_responses"
+      ? resolveResponsesInboundCompat(req.headers, fastify.configService)
+      : undefined;
+
   const transformerContext = {
     req,
     signal: undefined,
     clientProtocol: match.protocol,
     protocolContext: context,
+    responsesCompat,
   };
 
   const unifiedBody = await normalizeClientToUnified(
@@ -165,6 +177,13 @@ export async function prepareInboundRequest(
   );
   markLatency(ensureRequestLatency(req as any), "normalized");
 
+  // Same-protocol wire keep (primary and fallback) sends clientWireBody
+  // upstream, not the Unified projection, so the opt-in multi-agent
+  // compatibility must reach the wire too. Runs after normalization
+  // validated the items.
+  const clientWireBody = responsesCompat
+    ? repairResponsesWireMultiAgentCompat(normalizationInput, responsesCompat)
+    : normalizationInput;
 
   // Opt-in readable thinking for every client → provider direction: stamp
   // Unified reasoning.summary so Responses/Codex/Anthropic/Gemini outbound
@@ -290,7 +309,7 @@ export async function prepareInboundRequest(
     match,
     protocolContext: context,
     originalBody,
-    clientWireBody: normalizationInput,
+    clientWireBody,
     unifiedBody,
     prePolicyUnifiedBody,
     providerName: destination.providerName,

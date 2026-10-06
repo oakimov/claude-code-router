@@ -73,6 +73,19 @@ export function userMessageTextParts(content: unknown): string[] {
   return parts;
 }
 
+/** Substantive user turns, in order. Reminders and caveats are not identity. */
+export function substantiveUserTexts(request: unknown): string[] {
+  const out: string[] = [];
+  for (const msg of messagesOf(request)) {
+    if (msg.role !== "user") continue;
+    const texts = userMessageTextParts(msg.content).filter(
+      (text) => !isHarnessUserNoise(text)
+    );
+    if (texts.length) out.push(texts.join(""));
+  }
+  return out;
+}
+
 /**
  * First user text that distinguishes a worker transcript.
  * Shared reminder/caveat preambles are skipped so parallel Tasks do not collide.
@@ -108,6 +121,11 @@ export function isStatuslinePollTurn(request: unknown): boolean {
 
 const FORK_OPENING_RE =
   /<fork-boilerplate>|You are a worker fork/i;
+
+/** Explicit worker-fork boundary, including inside inherited history. */
+export function isForkOpeningText(text: string): boolean {
+  return FORK_OPENING_RE.test(text);
+}
 
 /** Parent-lineage headers. Never used as the conversation id. */
 const PARENT_SESSION_HEADERS = [
@@ -159,5 +177,5 @@ export function detectNestedAgent(input: {
     if (headerValue(input.headers, name)) return true;
   }
   const opening = firstSubstantiveUserText(input.body);
-  return FORK_OPENING_RE.test(opening);
+  return isForkOpeningText(opening);
 }

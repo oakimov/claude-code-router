@@ -6,6 +6,7 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import type { Tool as AnthropicTool } from "@anthropic-ai/sdk/resources/messages";
 import { Transformer } from "./transformer";
 import type { ProviderTokenizerConfig } from "./tokenizer";
+import type { RequestScopedErrorRule } from "@/utils/request-scoped-errors";
 
 export type TransformerConfigEntry = string | [string, Record<string, any>?];
 
@@ -300,6 +301,12 @@ export interface LLMProvider {
   models: string[];
   /** Optional GCP / Antigravity project id (provider-specific). */
   project_id?: string;
+  /**
+   * Request-scoped error rules for this provider (CLIProxyAPI port).
+   * Evaluated before global rules; first match decides stop vs continue.
+   * The provider service stores rules only under this canonical key.
+   */
+  request_scoped_errors?: RequestScopedErrorRule[];
   transformer?: {
     [key: string]: {
       use?: Transformer[];
@@ -310,7 +317,20 @@ export interface LLMProvider {
   };
 }
 
-export type RegisterProviderRequest = LLMProvider;
+/**
+ * Accepted input spellings of the request-scoped error rule list. The
+ * provider service folds them into `request_scoped_errors`.
+ */
+export interface RequestScopedErrorsCarrier {
+  request_scoped_errors?: RequestScopedErrorRule[];
+  requestScopedErrors?: RequestScopedErrorRule[];
+  "request-scoped-errors"?: RequestScopedErrorRule[];
+}
+
+export type RegisterProviderRequest = LLMProvider & RequestScopedErrorsCarrier;
+
+/** Provider update payload; any rule-list spelling replaces the stored rules. */
+export type ProviderUpdate = Partial<LLMProvider> & RequestScopedErrorsCarrier;
 
 export interface ModelRoute {
   provider: string;
@@ -324,7 +344,8 @@ export interface RequestRouteInfo {
   targetModel: string;
 }
 
-export interface ConfigProvider {
+/** Request-scoped error rules use any RequestScopedErrorsCarrier spelling. */
+export interface ConfigProvider extends RequestScopedErrorsCarrier {
   name: string;
   api_base_url: string;
   api_key: string;

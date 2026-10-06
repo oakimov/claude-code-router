@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { OpencodeHeadersTransformer } from "../transformer/opencode-headers.transformer";
 import { isFallbackEligibleError } from "../utils/retry";
+import {
+  decideScopedError,
+  normalizeRequestScopedErrorRules,
+} from "../utils/request-scoped-errors";
+import { sanitizeErrorForLog } from "../utils/redact";
+
+process.exitCode = 1;
 
 type Captured = {
   headers: Record<string, string>;
@@ -195,6 +202,30 @@ async function preserveTerminalErrors() {
     );
     assert.equal(calls.length, 1);
   }
+}
+
+async function preserveScopedErrorClassification() {
+  const marker = "server_is_overloaded";
+  const secret = "private-scoped-error-token";
+  const raw = `${"x".repeat(1000)} ${marker} token=${secret}`;
+  const calls = installFetch([() => new Response(raw, { status: 400 })]);
+  await assert.rejects(
+    () => new OpencodeHeadersTransformer().transformRequestIn(body, provider, makeContext()),
+    (error: any) => {
+      assert.equal(error.statusCode, 400);
+      assert.equal(error.message.includes(marker), false);
+      const rules = normalizeRequestScopedErrorRules([
+        { status: 400, match: [marker], action: "continue" },
+      ]);
+      assert.equal(decideScopedError(error, rules, []).kind, "continue");
+      for (const serialized of [JSON.stringify(error), JSON.stringify(sanitizeErrorForLog(error))]) {
+        assert.equal(serialized.includes(marker), false);
+        assert.equal(serialized.includes(secret), false);
+      }
+      return true;
+    }
+  );
+  assert.equal(calls.length, 1);
 }
 
 async function preserveFinalRetryHeaders() {
@@ -435,6 +466,7 @@ async function main() {
     await recoverWrappedRoutingFailure();
     await retryTransientStatusesWithAffinity();
     await preserveTerminalErrors();
+    await preserveScopedErrorClassification();
     await preserveFinalRetryHeaders();
     await abortsPendingBackoff();
     await retriesTransportFailureWithAffinity();
@@ -451,7 +483,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+main().then(() => { process.exitCode = 0; }).catch((error) => {
   console.error(error);
   process.exit(1);
 });

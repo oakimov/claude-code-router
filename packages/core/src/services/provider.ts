@@ -3,12 +3,34 @@ import {
   LLMProvider,
   RegisterProviderRequest,
   ModelRoute,
+  ProviderUpdate,
   RequestRouteInfo,
+  RequestScopedErrorsCarrier,
   ConfigProvider,
   TransformerConfigEntry,
 } from "../types/llm";
-import { ConfigService } from "./config"; 
+import {
+  compiledScopedErrorRules,
+  readScopedErrorRulesFromCarrier,
+  SCOPED_ERROR_RULE_KEYS,
+  type RequestScopedErrorRule,
+} from "@/utils/request-scoped-errors";
+import { ConfigService } from "./config";
 import { TransformerService } from "./transformer";
+
+/** True when the carrier sets a rule list under any accepted spelling. */
+function carriesScopedErrorRules(carrier: RequestScopedErrorsCarrier): boolean {
+  return readScopedErrorRulesFromCarrier(carrier) !== undefined;
+}
+
+/** Copy of `source` without any rule-list spelling. */
+function withoutScopedErrorRuleKeys<T extends object>(
+  source: T
+): Omit<T, keyof RequestScopedErrorsCarrier> {
+  const copy = { ...source } as Record<string, unknown>;
+  for (const key of SCOPED_ERROR_RULE_KEYS) delete copy[key];
+  return copy as Omit<T, keyof RequestScopedErrorsCarrier>;
+}
 
 export class ProviderService {
   private providers: Map<string, LLMProvider> = new Map();
@@ -96,6 +118,9 @@ export class ProviderService {
           apiKey: providerConfig.api_key,
           models: providerConfig.models || [],
           project_id: providerConfig.project_id,
+          request_scoped_errors: readScopedErrorRulesFromCarrier(
+            providerConfig
+          ) as RequestScopedErrorRule[] | undefined,
           transformer: providerConfig.transformer ? transformer : undefined,
         });
 
@@ -114,10 +139,37 @@ export class ProviderService {
     return instance;
   }
 
+  /**
+   * Store request-scoped error rules under the canonical key only, so an
+   * update under any spelling cannot be shadowed by a stale alias. Rules are
+   * validated here to surface config mistakes at registration time.
+   */
+  private withCanonicalScopedErrorRules<T extends object>(
+    base: T,
+    rules: unknown
+  ): Omit<T, keyof RequestScopedErrorsCarrier> & {
+    request_scoped_errors?: RequestScopedErrorRule[];
+  } {
+    const provider: Omit<T, keyof RequestScopedErrorsCarrier> & {
+      request_scoped_errors?: RequestScopedErrorRule[];
+    } = withoutScopedErrorRuleKeys(base);
+    if (rules === undefined || rules === null) return provider;
+    const name = (base as { name?: unknown }).name;
+    compiledScopedErrorRules(rules, (issue) => {
+      this.logger?.warn?.(
+        { provider: name, index: issue.index, reason: issue.reason },
+        `request_scoped_errors rule ignored for provider ${String(name)}: ${issue.reason}`
+      );
+    });
+    provider.request_scoped_errors = rules as RequestScopedErrorRule[];
+    return provider;
+  }
+
   registerProvider(request: RegisterProviderRequest): LLMProvider {
-    const provider: LLMProvider = {
-      ...request,
-    };
+    const provider: LLMProvider = this.withCanonicalScopedErrorRules(
+      request,
+      readScopedErrorRulesFromCarrier(request)
+    );
 
     this.providers.set(provider.name, provider);
 
@@ -147,18 +199,23 @@ export class ProviderService {
 
   updateProvider(
     id: string,
-    updates: Partial<LLMProvider>
+    updates: ProviderUpdate
   ): LLMProvider | null {
     const provider = this.providers.get(id);
     if (!provider) {
       return null;
     }
 
-    const updatedProvider = {
-      ...provider,
-      ...updates,
-      updatedAt: new Date(),
-    };
+    const updatedProvider = this.withCanonicalScopedErrorRules(
+      {
+        ...provider,
+        ...updates,
+        updatedAt: new Date(),
+      },
+      carriesScopedErrorRules(updates)
+        ? readScopedErrorRulesFromCarrier(updates)
+        : provider.request_scoped_errors
+    );
 
     this.providers.set(id, updatedProvider);
 

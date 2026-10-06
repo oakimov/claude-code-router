@@ -600,13 +600,25 @@ function customToolRequest() {
   };
 }
 
+/**
+ * Function and custom tools of a Codex body: `tools` for classic models, the
+ * `functions` namespace of the leading `additional_tools` item for
+ * Responses Lite models (gpt-5.6-sol).
+ */
+function codexFunctionTools(body: any): any[] {
+  if (Array.isArray(body.tools)) return body.tools;
+  const item = body.input.find((entry: any) => entry.type === "additional_tools");
+  const namespace = item?.tools.find((tool: any) => tool.type === "namespace");
+  return namespace?.tools ?? [];
+}
+
 async function codexOutboundCustomToolIsRestored() {
   const result = await toCodex(customToolRequest(), {
     responsesCustomToolNames: new Set(["apply_patch"]),
   });
   const body: any = result.body;
 
-  const tool = body.tools.find((t: any) => t.name === "apply_patch");
+  const tool = codexFunctionTools(body).find((t: any) => t.name === "apply_patch");
   assert.ok(tool);
   assert.equal(tool.type, "custom");
   assert.equal(tool.parameters, undefined);
@@ -637,7 +649,7 @@ async function codexOutboundRegressionWithoutCustomToolNames() {
   const result = await toCodex(customToolRequest());
   const body: any = result.body;
 
-  const tool = body.tools.find((t: any) => t.name === "apply_patch");
+  const tool = codexFunctionTools(body).find((t: any) => t.name === "apply_patch");
   assert.equal(tool.type, "function");
   assert.ok(tool.parameters);
   assert.ok(body.input.some((item: any) => item.type === "function_call"));

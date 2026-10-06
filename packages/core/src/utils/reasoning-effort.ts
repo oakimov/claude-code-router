@@ -167,46 +167,6 @@ export function isGpt6FamilyModel(model: unknown): boolean {
   return /(?:^|[/,:])gpt-6(?:$|[.-])/i.test(model);
 }
 
-/** Astra/Sol reject `none` / `minimal`; OpenAI's migration floor is `low`. */
-export function coerceGpt6ReasoningEffort(
-  model: unknown,
-  effort: ThinkLevel | undefined
-): ThinkLevel | undefined {
-  if (!effort || !isGpt6FamilyModel(model)) return effort;
-  if (effort === "none" || effort === "minimal") return "low";
-  // Luna's level set tops out at `max` (no `ultra`, unlike Astra/Sol/6.1 Sol).
-  if (effort === "ultra" && isGpt6LunaModel(model)) return "max";
-  return effort;
-}
-
-/**
- * GPT-6 Luna slugs (`gpt-6-luna`, `gpt-6.1-luna`, `openai/gpt-6-luna`,
- * `codex,gpt-6.1-luna`). Anchored so `gpt-6-sol` / `gpt-6-astra` /
- * `gpt-5.6-luna` do not match.
- */
-export function isGpt6LunaModel(model: unknown): boolean {
-  if (typeof model !== "string" || !model) return false;
-  return /(?:^|[/,:])gpt-6(?:\.\d+)?-luna(?:$|[.-])/i.test(model);
-}
-
-/**
- * Remap unsupported GPT-6 efforts on a Responses/Unified request in place.
- * Covers convert (`openai-responses`) and same-protocol wire-keep (`codex`).
- */
-export function applyGpt6ReasoningEffortCoercion(request: {
-  model?: unknown;
-  reasoning?: { effort?: unknown; enabled?: boolean } | null;
-}): void {
-  if (!request.reasoning || !isGpt6FamilyModel(request.model)) return;
-  const effort = normalizeReasoningEffort(request.reasoning.effort);
-  const coerced = coerceGpt6ReasoningEffort(request.model, effort);
-  if (!coerced || coerced === effort) return;
-  request.reasoning.effort = coerced;
-  if (request.reasoning.enabled === false) {
-    request.reasoning.enabled = true;
-  }
-}
-
 /**
  * GPT-6 Astra rejects temperature / top_p / logprobs on Responses. Strip in
  * place when the model is in the gpt-6 family.

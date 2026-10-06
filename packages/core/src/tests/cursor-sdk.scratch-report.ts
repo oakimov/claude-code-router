@@ -1,3 +1,4 @@
+import "./support/isolate-session-registry";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -177,7 +178,7 @@ async function main() {
         ],
       } as any,
       { apiKey: "crsr_test" },
-      { req: { headers: { "x-ccr-cursor-session": "scratch-report" } } },
+      { req: { sessionId: "scratch-report" } },
       { cursorMode: "bridge", logger }
     );
     const body = await response.text();

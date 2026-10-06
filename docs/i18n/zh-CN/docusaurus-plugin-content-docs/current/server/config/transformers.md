@@ -223,6 +223,32 @@ Responses `input` / tools ↔ Unified；作为提供商出站时重建 Responses
 }
 ```
 
+### codex
+
+适配 Codex（ChatGPT）后端 API 的请求与响应。
+
+**功能：**
+- 必须链接在 `openai-responses`（Responses 线格式所有者）之后
+- 同时支持 OAuth 认证（`ccr codex-auth`）与 `api_key` 以 `at-` 开头时的 PAT 认证
+- 自动解析必需的账户请求头
+- 应用 ChatGPT 后端约束（`store: false`、`stream: true`）
+- 流式事件按**入站**客户端协议转换回传（而非仅 Anthropic）
+
+**选项**（`["codex", { ... }]`）：
+
+- `streamBootstrapBuffering`（默认 `false`）——将生成前的 SSE 帧暂存在下游
+  头提交之前，使流内的 `server_is_overloaded` / 配额拒绝在下游头提交*之前*
+  抛出可 fallback 的错误，而不是以失败流的形式到达客户端。配额：
+  `streamBootstrapMaxFrames`（默认 `48`）、`streamBootstrapMaxBytes`
+  （默认 `1048576`）、`streamBootstrapTimeoutMs`（默认 `0` 表示不限；限制暂存
+  时长，每次读取之间检查）。
+  同时支持短别名 `maxFrames`、`maxBytes` 和 `timeoutMs`；若同时提供两种写法，
+  `streamBootstrap*` 选项优先。仅 `response.failed` / `error` 事件的错误
+  `code` / `type` 会触发检测，使用 Codex CLI 的容量类错误码（见
+  [Codex → 流式 Bootstrap 缓冲](/docs/server/guides/codex)）；消息文本、生成文本与工具参数从不触发。被拒绝的流会在
+  fallback 之前取消；bootstrap 阶段的传输失败会作为错误向上传播，而不是
+  返回成功但被截断的流。
+
 ### cursor-sdk
 
 通过 `@cursor/sdk` 在进程内运行 Cursor 模型（不会对 `api_base_url` 发起 HTTP fetch）。

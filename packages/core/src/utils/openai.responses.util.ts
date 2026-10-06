@@ -100,13 +100,276 @@ export function sanitizeResponsesWireCallIds(
 }
 
 /**
+ * Opt-in inbound compatibility for Codex multi-agent traffic (CLIProxyAPI
+ * `orphan-delegation-compatibility` / `optimize-multi-agent-v2` port).
+ *
+ * Both flags default to false and are read from top-level config
+ * (`orphanDelegationCompatibility` / `orphan_delegation_compatibility`,
+ * `optimizeMultiAgentV2` / `optimize_multi_agent_v2`). Orphan conversion
+ * additionally requires the `X-Openai-Subagent: collab_spawn` request header,
+ * so unrelated clients never silently change shape.
+ */
+export interface ResponsesInboundCompatOptions {
+  orphanDelegationCompatibility?: boolean;
+  optimizeMultiAgentV2?: boolean;
+  /** True when the collab_spawn subagent header is present on the request. */
+  subagentCollabSpawn?: boolean;
+}
+
+export function hasCollabSpawnSubagentHeader(headers: unknown): boolean {
+  if (!headers || typeof headers !== "object") return false;
+  for (const [key, value] of Object.entries(
+    headers as Record<string, unknown>
+  )) {
+    if (key.toLowerCase() !== "x-openai-subagent") continue;
+    const text = Array.isArray(value)
+      ? value.map(String).join(",")
+      : String(value ?? "");
+    if (text.toLowerCase().includes("collab_spawn")) return true;
+  }
+  return false;
+}
+
+export function resolveResponsesInboundCompat(
+  headers: unknown,
+  configService?: { get(key: string): any }
+): ResponsesInboundCompatOptions {
+  const readFlag = (camel: string, snake: string): boolean => {
+    try {
+      return (
+        configService?.get?.(camel) === true ||
+        configService?.get?.(snake) === true
+      );
+    } catch {
+      return false;
+    }
+  };
+  return {
+    orphanDelegationCompatibility: readFlag(
+      "orphanDelegationCompatibility",
+      "orphan_delegation_compatibility"
+    ),
+    optimizeMultiAgentV2: readFlag(
+      "optimizeMultiAgentV2",
+      "optimize_multi_agent_v2"
+    ),
+    subagentCollabSpawn: hasCollabSpawnSubagentHeader(headers),
+  };
+}
+
+/**
+ * Unified user content for a role-less `agent_message` delegation item. The
+ * exact Codex multi-agent shape is version-dependent, so accept content-part
+ * lists, string content, and common text fields rather than a fixed schema.
+ * Content-part lists keep their structure (text + images + files) and their
+ * validation errors (e.g. provider-bound `file_id`), exactly like a message.
+ */
+function agentMessageContentToUnified(item: any): string | any[] {
+  if (Array.isArray(item?.content)) {
+    const flattened = flattenResponsesContent(item.content);
+    if (Array.isArray(flattened) || flattened) return flattened;
+  }
+  for (const key of ["content", "text", "message", "body", "output"]) {
+    const value = item?.[key];
+    if (typeof value === "string" && value) return value;
+  }
+  try {
+    return JSON.stringify(item ?? "");
+  } catch {
+    return String(item ?? "");
+  }
+}
+
+function orphanDelegationEnabled(compat: ResponsesInboundCompatOptions): boolean {
+  return Boolean(
+    compat.orphanDelegationCompatibility && compat.subagentCollabSpawn
+  );
+}
+
+function isResponsesToolCallItem(item: any): boolean {
+  return item?.type === "function_call" || item?.type === "custom_tool_call";
+}
+
+function isResponsesToolOutputItem(item: any): boolean {
+  return (
+    item?.type === "function_call_output" ||
+    item?.type === "custom_tool_call_output"
+  );
+}
+
+/**
+ * Orphan delegation output: a tool output without a non-empty string
+ * `call_id`, so it cannot correlate with any call. Outputs with a non-empty
+ * string `call_id` are never orphans here, even when this request carries no
+ * matching call — that shape keeps its pre-existing `tool` projection.
+ */
+function isOrphanDelegationOutput(item: any): boolean {
+  return (
+    isResponsesToolOutputItem(item) &&
+    (typeof item.call_id !== "string" || !item.call_id)
+  );
+}
+
+/**
+ * Move compatibility user messages past any pending tool results. Reasoning
+ * and assistant content remain part of the pending assistant turn; a new
+ * ordinary user turn closes the group and releases deferred items before it.
+ */
+function orderMultiAgentCompatItems(
+  input: any[],
+  compat: ResponsesInboundCompatOptions
+): any[] {
+  const isCompatUserItem = (item: any): boolean =>
+    (orphanDelegationEnabled(compat) && isOrphanDelegationOutput(item)) ||
+    (compat.optimizeMultiAgentV2 === true && isRolelessAgentMessage(item));
+  if (!input.some(isCompatUserItem)) return input;
+  const ordered: any[] = [];
+  const deferred: any[] = [];
+  const pending = new Set<string>();
+  const flush = () => {
+    ordered.push(...deferred);
+    deferred.length = 0;
+  };
+  for (const item of input) {
+    if (isCompatUserItem(item)) {
+      (pending.size > 0 ? deferred : ordered).push(item);
+      continue;
+    }
+    if (isResponsesToolCallItem(item)) {
+      const callId = item.call_id || item.id;
+      if (typeof callId === "string" && callId) pending.add(callId);
+      ordered.push(item);
+      continue;
+    }
+    if (isResponsesToolOutputItem(item)) {
+      pending.delete(item.call_id);
+      ordered.push(item);
+      if (pending.size === 0) flush();
+      continue;
+    }
+    if (
+      item?.type === "reasoning" ||
+      item?.role === "assistant" ||
+      item?.type === "output_text" ||
+      (typeof item?.type === "string" && item.type.endsWith("_call"))
+    ) {
+      ordered.push(item);
+      continue;
+    }
+    pending.clear();
+    flush();
+    ordered.push(item);
+  }
+  flush();
+  return ordered;
+}
+
+function isRolelessAgentMessage(item: any): boolean {
+  return item?.type === "agent_message" && !item.role;
+}
+
+/**
+ * Responses user-message content parts for a content list that normalization
+ * already validated (flattenResponsesContent). Input parts pass through
+ * untouched; only output-side / Chat-style part names are mapped.
+ */
+function responsesPartsToWireInput(parts: any[]): any[] {
+  return parts.map((part: any) => {
+    if (typeof part === "string") return { type: "input_text", text: part };
+    if (part?.type === "output_text" || part?.type === "text") {
+      return { type: "input_text", text: String(part.text ?? "") };
+    }
+    if (part?.type === "image_url") {
+      const url = part.image_url?.url || part.image_url || part.url;
+      const detail = part.detail ?? part.image_url?.detail;
+      return {
+        type: "input_image",
+        image_url: url,
+        ...(detail ? { detail } : {}),
+      };
+    }
+    return part;
+  });
+}
+
+/** Wire content for an orphan output; mirrors functionCallOutputToUnified. */
+function orphanOutputToWireContent(output: unknown): string | any[] {
+  if (typeof output === "string") return output;
+  if (Array.isArray(output)) return responsesPartsToWireInput(output);
+  return JSON.stringify(output ?? "");
+}
+
+/** Wire content for a role-less agent_message; mirrors agentMessageContentToUnified. */
+function agentMessageToWireContent(item: any): string | any[] {
+  if (Array.isArray(item?.content)) {
+    const flattened = flattenResponsesContent(item.content);
+    if (Array.isArray(flattened) || flattened) {
+      return responsesPartsToWireInput(item.content);
+    }
+  }
+  return agentMessageContentToUnified(item);
+}
+
+/**
+ * Apply the opt-in multi-agent compatibility to the Responses client wire.
+ *
+ * Same-protocol wire keep (primary and fallback) sends `clientWireBody`
+ * upstream instead of the Unified projection, so the Unified-side conversion
+ * alone would still ship items the upstream cannot correlate or does not
+ * know. Under the same gates as responsesRequestToUnified:
+ * - orphan outputs (flag + `collab_spawn` header) become user message items,
+ *   ordered exactly like the Unified projection;
+ * - role-less `agent_message` items (`optimizeMultiAgentV2`) become user
+ *   message items with their content parts preserved.
+ * Role-bearing `agent_message` items and every other item stay byte-identical.
+ * Call only after normalization has validated the body. Returns the input
+ * body when nothing changes.
+ */
+export function repairResponsesWireMultiAgentCompat(
+  body: any,
+  compat: ResponsesInboundCompatOptions
+): any {
+  if (!body || typeof body !== "object" || !Array.isArray(body.input)) {
+    return body;
+  }
+  const orphans =
+    orphanDelegationEnabled(compat) &&
+    body.input.some(isOrphanDelegationOutput);
+  const agentMessages =
+    Boolean(compat.optimizeMultiAgentV2) &&
+    body.input.some(isRolelessAgentMessage);
+  if (!orphans && !agentMessages) return body;
+
+  const source = orderMultiAgentCompatItems(body.input, compat);
+  const input = source.map((item: any) => {
+    if (orphans && isOrphanDelegationOutput(item)) {
+      return {
+        type: "message",
+        role: "user",
+        content: orphanOutputToWireContent(item.output),
+      };
+    }
+    if (agentMessages && isRolelessAgentMessage(item)) {
+      return {
+        type: "message",
+        role: "user",
+        content: agentMessageToWireContent(item),
+      };
+    }
+    return item;
+  });
+  return { ...body, input };
+}
+
+/**
  * Client Responses wire → Unified (Chat Completions shape).
  * Supports the Responses MVP subset; rejects CCR-unsupported stateful fields.
  */
 export function responsesRequestToUnified(
   body: any,
   callIdMap: ResponsesCallIdMap = createCallIdMap(),
-  customToolNames: Set<string> = new Set()
+  customToolNames: Set<string> = new Set(),
+  compat: ResponsesInboundCompatOptions = {}
 ): UnifiedChatRequest {
   if (!body || typeof body !== "object") {
     throw createApiError("Invalid Responses body", 400, "invalid_body");
@@ -262,8 +525,9 @@ export function responsesRequestToUnified(
         "invalid_request_error"
       );
     }
-    for (const item of input) {
-      appendInputItem(messages, item, callIdMap);
+    const items = orderMultiAgentCompatItems(input, compat);
+    for (const item of items) {
+      appendInputItem(messages, item, callIdMap, compat);
     }
   } else {
     throw createApiError(
@@ -774,7 +1038,8 @@ function attachThinkingToAssistant(
 function appendInputItem(
   messages: any[],
   item: any,
-  callIdMap: ResponsesCallIdMap
+  callIdMap: ResponsesCallIdMap,
+  compat: ResponsesInboundCompatOptions = {}
 ): void {
   if (!item || typeof item !== "object") {
     throw createApiError(
@@ -791,8 +1056,38 @@ function appendInputItem(
     return;
   }
 
+  // Codex multi-agent delegation (codex_app/create_thread,
+  // codex_app/send_message_to_thread) replays `agent_message` items that have
+  // no Chat Completions equivalent. A role-bearing item keeps the generic
+  // message projection below regardless of flags. A role-less item becomes a
+  // user message with `optimizeMultiAgentV2` and stays a 400 otherwise.
+  if (item.type === "agent_message" && !item.role) {
+    if (!compat.optimizeMultiAgentV2) {
+      throw createApiError(
+        "Unsupported Responses input item type 'agent_message'",
+        400,
+        "unsupported_input_item",
+        "invalid_request_error"
+      );
+    }
+    messages.push({ role: "user", content: agentMessageContentToUnified(item) });
+    return;
+  }
+
   if (item.type === "function_call_output") {
     if (typeof item.call_id !== "string" || !item.call_id) {
+      // Orphan delegation output: missing or empty call_id, so it cannot
+      // correlate with any call. With `orphanDelegationCompatibility` (and
+      // the `X-Openai-Subagent: collab_spawn` header present) it becomes a
+      // user message instead of a 400; responsesRequestToUnified has already
+      // moved it past any pending tool results.
+      if (orphanDelegationEnabled(compat)) {
+        messages.push({
+          role: "user",
+          content: functionCallOutputToUnified(item.output),
+        });
+        return;
+      }
       throw createApiError(
         "function_call_output requires call_id",
         400,
@@ -844,6 +1139,13 @@ function appendInputItem(
 
   if (item.type === "custom_tool_call_output") {
     if (typeof item.call_id !== "string" || !item.call_id) {
+      if (orphanDelegationEnabled(compat)) {
+        messages.push({
+          role: "user",
+          content: functionCallOutputToUnified(item.output),
+        });
+        return;
+      }
       throw createApiError(
         "custom_tool_call_output requires call_id",
         400,

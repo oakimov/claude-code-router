@@ -73,7 +73,7 @@ curl -X POST http://localhost:3456/api/config \
 | `APIKEY` | string | 否 | API 密钥 |
 | `LOG` | boolean | 否 | 是否启用日志（默认 true） |
 | `LOG_LEVEL` | string | 否 | 日志级别（debug/info/warn/error） |
-| `REASONING_AUTO_SUMMARY` | boolean \| string | 否 | 为 true（或 `"auto"` / `"detailed"` / `"concise"`）时，在客户端开启 reasoning effort 但未带 `reasoning.summary` 时自动注入。对所有客户端协议与目标提供商生效。可用 `Providers[].reasoningSummary` 按提供商覆盖；客户端显式 `reasoning.summary`（含 `"none"`）优先。 |
+| `REASONING_AUTO_SUMMARY` | boolean \| string | 否 | 为 true（或 `"auto"` / `"detailed"` / `"concise"`）时，在客户端开启 reasoning effort 但未带 `reasoning.summary` 时自动注入。对所有客户端协议与目标提供商生效。可用 `Providers[].reasoningSummary` 按提供商覆盖；客户端显式 `reasoning.summary`（含 `"none"`）优先。Codex 提供商还会据此推出 `text.verbosity`（`detailed` → `high`、`auto` → `medium`、`concise` → `low`），除非客户端或 `Providers[].verbosity` 已设置。 |
 | `WEB_SEARCH_MAX_USES` | integer | 否 | 路由到 Anthropic 的 Responses `web_search` 工具与 Chat `web_search_options` 每个请求的托管搜索次数上限（以 `max_uses` 发送）。未设置则不限制。Anthropic Messages 客户端沿用其 `web_search_*` 工具自带的 `max_uses`。 |
 
 #### Providers 配置

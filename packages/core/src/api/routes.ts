@@ -4,7 +4,7 @@ import {
   FastifyReply,
 } from "fastify";
 import { Readable } from "stream";
-import { RegisterProviderRequest, LLMProvider } from "@/types/llm";
+import { RegisterProviderRequest, ProviderUpdate } from "@/types/llm";
 import { sendUnifiedRequest } from "@/utils/request";
 import { createApiError } from "./middleware";
 import { readHealthVitals } from "@/utils/health-reporter";
@@ -31,6 +31,16 @@ import {
   selectFallbackModels,
   toClientAbortError,
 } from "@/utils/retry";
+import {
+  attachScopedErrorClassificationText,
+  compiledScopedErrorRules,
+  decideScopedError,
+  readGlobalScopedErrorRules,
+  readScopedErrorRulesFromCarrier,
+  scopedErrorCooldownsFor,
+  type NormalizedScopedErrorRule,
+  type ScopedErrorRuleIssue,
+} from "@/utils/request-scoped-errors";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
 import { sanitizeResponsesWireCallIds } from "../utils/openai.responses.util";
 import { applyOpenAIChatReasoning } from "../utils/reasoning-effort";
@@ -112,6 +122,7 @@ import {
   resolveNativeClaudeOAuthCacheTtlMode,
 } from "@/utils/anthropic-client-policy";
 import { restoreClaudeToolNamesInResponse } from "@/utils/claude-billing";
+import { stripOneMillionContextMarker } from "@/utils/claude-model-catalog";
 
 function isManualExactProtocolPassthrough(
   provider: any,
@@ -521,7 +532,54 @@ async function handleTransformerEndpoint(
     if (clientSignal.aborted) {
       throw toClientAbortError(clientSignal.reason ?? error);
     }
-    if (isFallbackEligibleError(error)) {
+    // Request-scoped errors (body-pattern rules) override the status-only
+    // classifier: `stop` skips fallback entirely, `continue` forces it.
+    const { providerRules, globalRules } = scopedErrorRuleSets(
+      provider,
+      fastify.configService,
+      req.log
+    );
+    const cooldowns = scopedErrorCooldownsFor(fastify.providerService);
+    const scoped = decideScopedError(error, providerRules, globalRules);
+    if (scoped.kind === "stop") {
+      if (scoped.cooldown) {
+        cooldowns.put(
+          provider?.name,
+          prepared.modelName,
+          scoped.rule.cooldownSeconds
+        );
+      }
+      req.log.warn(
+        {
+          provider: provider?.name,
+          model: prepared.modelName,
+          scopedErrorAction: scoped.rule.action,
+          error: sanitizeErrorForLog(error),
+        },
+        "Request failed with a terminal request-scoped-error; skipping fallback"
+      );
+      throw error;
+    }
+    const fallbackEligible =
+      scoped.kind === "continue" ? true : isFallbackEligibleError(error);
+    if (scoped.kind === "continue") {
+      if (scoped.cooldown) {
+        cooldowns.put(
+          provider?.name,
+          prepared.modelName,
+          scoped.rule.cooldownSeconds
+        );
+      }
+      req.log.info(
+        {
+          provider: provider?.name,
+          model: prepared.modelName,
+          scopedErrorAction: scoped.rule.action,
+        },
+        "Request-scoped-error forces fallback despite status"
+      );
+    }
+    if (fallbackEligible) {
       const fallbackResult = await handleFallback(
         req,
         reply,
@@ -541,6 +599,45 @@ async function handleTransformerEndpoint(
     }
     throw error;
   }
+}
+
+/** Warn sink for rejected top-level request-scoped error rules. */
+function globalScopedErrorRuleWarner(log: any) {
+  return (issue: ScopedErrorRuleIssue) => {
+    log?.warn?.(
+      { index: issue.index, reason: issue.reason },
+      `request_scoped_errors global rule ignored: ${issue.reason}`
+    );
+  };
+}
+
+/**
+ * Request-scoped error rules for a provider attempt: provider rules first,
+ * then top-level global rules. Every key spelling is accepted; compiled
+ * rules are cached per config list, so invalid rules warn once.
+ */
+function scopedErrorRuleSets(
+  provider: any,
+  configService: ConfigService,
+  log: any
+): {
+  providerRules: NormalizedScopedErrorRule[];
+  globalRules: NormalizedScopedErrorRule[];
+} {
+  const providerRules = compiledScopedErrorRules(
+    readScopedErrorRulesFromCarrier(provider),
+    (issue) => {
+      log?.warn?.(
+        { provider: provider?.name, index: issue.index, reason: issue.reason },
+        `request_scoped_errors rule ignored for provider ${provider?.name}: ${issue.reason}`
+      );
+    }
+  );
+  const globalRules = compiledScopedErrorRules(
+    readGlobalScopedErrorRules(configService),
+    globalScopedErrorRuleWarner(log)
+  );
+  return { providerRules, globalRules };
 }
 
 /**
@@ -564,6 +661,29 @@ async function handleFallback(
   }
 
   if (clientSignal?.aborted || isClientAbortError(error)) {
+    return null;
+  }
+
+  // Candidates cooling down from a `*-and-cooldown` rule are skipped, so no
+  // Retry-After/backoff wait is spent on them either.
+  const cooldowns = scopedErrorCooldownsFor(fastify.providerService);
+  const isCooledDownCandidate = (entry: string): boolean => {
+    const [providerName, ...modelParts] = entry.split(",");
+    return cooldowns.isCooledDown(providerName, modelParts.join(","));
+  };
+  const hasAttemptableCandidate = (fromIndex: number): boolean =>
+    fallbackList
+      .slice(fromIndex)
+      .some((entry) => !isCooledDownCandidate(entry));
+  if (!hasAttemptableCandidate(0)) {
+    req.log.warn(
+      {
+        scenarioType,
+        fallbackCount: fallbackList.length,
+        error: sanitizeErrorForLog(error),
+      },
+      `Request failed for ${scenarioType}; all ${fallbackList.length} fallback models are cooling down`
+    );
     return null;
   }
 
@@ -601,6 +721,10 @@ async function handleFallback(
     }
 
     const fallbackModel = fallbackList[i];
+    if (isCooledDownCandidate(fallbackModel)) {
+      req.log.info(`Skipping cooled-down fallback model: ${fallbackModel}`);
+      continue;
+    }
     try {
       req.log.info(`Trying fallback model: ${fallbackModel}`);
 
@@ -609,7 +733,14 @@ async function handleFallback(
         | PreparedInboundRequest
         | undefined;
       const [fallbackProvider, ...fallbackModelName] = fallbackModel.split(",");
-      const fallbackModelOnly = fallbackModelName.join(",");
+      // Same destination normalization as the primary route
+      // (prepareInboundRequest): the `[1m]` picker marker is CCR metadata, so
+      // it becomes this attempt's `requestedOneMillion` flag and never part
+      // of the upstream model id.
+      const fallbackDestination = stripOneMillionContextMarker(
+        fallbackModelName.join(",")
+      );
+      const fallbackModelOnly = fallbackDestination.modelId;
 
       const provider = fastify.providerService.getProvider(fallbackProvider);
       if (!provider) {
@@ -623,6 +754,7 @@ async function handleFallback(
       const fallbackProtocolContext = prepared?.protocolContext
         ? {
             ...prepared.protocolContext,
+            requestedOneMillion: fallbackDestination.requestedOneMillion,
             anthropicProviderMode: fallbackAnthropicMode,
             anthropicDestinationInScope:
               fallbackAnthropicMode !== "out_of_scope",
@@ -660,8 +792,10 @@ async function handleFallback(
         );
       }
 
-      const newReq = {
-        ...req,
+      // Keep the Fastify request prototype: `headers`, `server`, `signal`,
+      // `url`, … are prototype getters that an object spread would drop, so
+      // fallback transformers would lose client headers and the config service.
+      const newReq = Object.assign(Object.create(Object.getPrototypeOf(req)), req, {
         provider: fallbackProvider,
         model: fallbackModelOnly,
         body: prepared?.originalBody ?? req.body,
@@ -669,7 +803,7 @@ async function handleFallback(
         protocolContext: fallbackProtocolContext,
         clientProtocol: fallbackProtocolContext?.protocol,
         scenarioType,
-      };
+      });
 
       const fallbackKeep = resolveClientWireKeep(
         provider,
@@ -806,8 +940,36 @@ async function handleFallback(
 
       // A terminal (non-retryable) failure — validation, auth, permissions,
       // model-not-found — goes straight back to the caller: no further
-      // fallback models, no Retry-After wait.
-      if (!isFallbackEligibleError(fallbackError)) {
+      // fallback models, no Retry-After wait. Request-scoped-error rules for
+      // the failed fallback provider override the status-only classifier.
+      const [failedProviderName, ...failedModelParts] = fallbackModel.split(",");
+      const failedModelOnly = failedModelParts.join(",");
+      const failedProvider =
+        fastify.providerService.getProvider(failedProviderName);
+      const fbRules = scopedErrorRuleSets(
+        failedProvider,
+        fastify.configService,
+        req.log
+      );
+      const fbScoped = decideScopedError(
+        fallbackError,
+        fbRules.providerRules,
+        fbRules.globalRules
+      );
+      if (fbScoped.kind !== "default" && fbScoped.cooldown) {
+        cooldowns.put(
+          failedProviderName,
+          failedModelOnly,
+          fbScoped.rule.cooldownSeconds
+        );
+      }
+      const fbEligible =
+        fbScoped.kind === "continue"
+          ? true
+          : fbScoped.kind === "stop"
+            ? false
+            : isFallbackEligibleError(fallbackError);
+      if (!fbEligible) {
         req.log.warn(
           {
             fallbackModel,
@@ -826,8 +988,7 @@ async function handleFallback(
         `Fallback model ${fallbackModel} failed`
       );
 
-      const hasMore = i < fallbackList.length - 1;
-      if (hasMore) {
+      if (hasAttemptableCandidate(i + 1)) {
         const waitMs = retryDelayAfterFailure(
           failedAttemptIndex,
           fallbackError?.headers?.["Retry-After"] ??
@@ -1446,6 +1607,9 @@ async function sendRequestToProvider(
       provider: provider.name,
       model: requestBody.model,
     };
+    // Rule matching needs the raw body: message and upstream.body above are
+    // sanitized and cut to 240 chars. Never serialized or logged.
+    attachScopedErrorClassificationText(error, errorText);
     throw error;
   }
 
@@ -1793,6 +1957,13 @@ export const registerApiRoutes = async (
     config: { rateLimit: { ...RATE_LIMIT_CONFIG } },
   };
 
+  // Validate global request-scoped error rules at startup so config mistakes
+  // are reported before the first failure needs them (compiled once, cached).
+  compiledScopedErrorRules(
+    readGlobalScopedErrorRules(fastify.configService),
+    globalScopedErrorRuleWarner(fastify.log)
+  );
+
   // Detect the wire protocol before body parsing and route validation so even
   // malformed JSON and other early failures receive the correct error shape.
   fastify.addHook("onRequest", async (req: FastifyRequest) => {
@@ -2000,7 +2171,7 @@ export const registerApiRoutes = async (
     async (
       request: FastifyRequest<{
         Params: { id: string };
-        Body: Partial<LLMProvider>;
+        Body: ProviderUpdate;
       }>,
       _reply
     ) => {

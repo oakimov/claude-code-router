@@ -171,6 +171,61 @@ When a request fails, you can configure a list of backup models. The system will
 - **Subagents**: `fallback.subagent` overrides fallback for subagent-routed requests. If omitted, subagents inherit `fallback.default` for backward compatibility.
 - **Abort-aware**: Closing the client mid-request cancels fallback waits and further attempts
 
+### Request-Scoped Errors
+
+By default CCR decides fallback eligibility from the HTTP status alone
+(408/409/425/429/5xx + network errors). `request_scoped_errors` refines that
+with body-pattern rules — per provider, plus a top-level global list.
+Provider rules are evaluated first; the first match wins.
+
+```json
+{
+  "request_scoped_errors": [
+    { "status": 400, "match": ["maximum_context_length"], "action": "stop" },
+    { "status": 400, "match": ["server_is_overloaded"], "action": "continue" }
+  ],
+  "Providers": [
+    {
+      "name": "codex",
+      "api_base_url": "https://chatgpt.com/backend-api/codex",
+      "api_key": "oauth_dummy_key",
+      "models": ["gpt-5"],
+      "transformer": { "use": ["openai-responses", "codex"] },
+      "request_scoped_errors": [
+        { "status": 429, "match": ["usage_limit_reached"], "action": "continue-and-cooldown" }
+      ]
+    }
+  ]
+}
+```
+
+- **Match**: `status` (optional) must equal the error status; `match`
+  substrings (case-insensitive) and `match_regex` patterns hit against the
+  raw upstream error text (first 16,384 characters) plus a specific error
+  code. When raw text is available, it replaces CCR's sanitized message and
+  `Error from provider(...)` prefix for matching. Otherwise the error message
+  and captured upstream body are used. CCR's generic `api_error` type and
+  catch-all `provider_response_error` code are not added to matching text.
+  A rule with no body patterns matches on status alone. Raw text is retained
+  for matching only; clients and logs still see sanitized error details.
+- **Actions**: `stop` (terminal — no fallback), `continue` (force fallback
+  even when the status alone would not qualify), plus `stop-and-cooldown` /
+  `continue-and-cooldown`, which additionally cool the `provider,model` down
+  (default 60 s, overridable per rule with `cooldown_seconds`, minimum 1).
+  The cooldown applies to fallback candidates only: the fallback loop skips
+  a cooled-down model and spends no Retry-After/backoff wait on it, while a
+  model routed as the primary is still attempted. A trailing `[1m]` marker
+  does not change the cooled-down identity.
+- **Validation**: a rule with an unknown key (for example `matches`), an
+  invalid `action`, a non-integer `status`, a pattern list that is not an
+  array of non-empty strings, an invalid regex or a `cooldown_seconds` below
+  1 is ignored, and CCR logs a warning naming the rule index and the reason.
+- **Key spellings**: `request_scoped_errors` / `requestScopedErrors` /
+  `request-scoped-errors` work on both providers and the top level;
+  provider updates through any spelling replace the stored canonical list.
+  `match_regex` / `matchRegex` /
+  `match-regex` and `cooldown_seconds` / `cooldownSeconds` are equivalent.
+
 ### Use Cases
 
 #### Scenario 1: Primary Model Quota Exhausted

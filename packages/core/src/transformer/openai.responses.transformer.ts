@@ -11,9 +11,9 @@ import {
   isReasoningDisabled,
   normalizeReasoningEffort,
   resolveOutboundReasoningSummary,
-  coerceGpt6ReasoningEffort,
   stripGpt6UnsupportedSampling,
 } from "@/utils/reasoning-effort";
+import { resolveCodexReasoningEffort } from "@/utils/codex-model-catalog";
 import { createSSEStreamReader, StreamContext, encodeSSEData, encodeSSELine } from "../utils/stream";
 import {
   CUSTOM_TOOL_INPUT_KEY,
@@ -27,6 +27,7 @@ import {
   responsesFailedEvent,
   responsesReasoningItemFromThinking,
   responsesRequestToUnified,
+  resolveResponsesInboundCompat,
   hostedWebSearchFromResponsesTools,
   responsesTextFormatFromResponseFormat,
   thinkingForLateReasoningItem,
@@ -272,7 +273,15 @@ export class OpenAIResponsesTransformer implements Transformer {
         }
       }
     }
-    return responsesRequestToUnified(request, callIdMap, customToolNames);
+    // The inbound pipeline resolves compat once (shared with the kept wire);
+    // direct callers without it resolve from their own request.
+    const compat =
+      (context as any)?.responsesCompat ??
+      resolveResponsesInboundCompat(
+        (context as any)?.req?.headers,
+        (context as any)?.req?.server?.configService
+      );
+    return responsesRequestToUnified(request, callIdMap, customToolNames, compat);
   }
 
   /**
@@ -505,8 +514,8 @@ export class OpenAIResponsesTransformer implements Transformer {
       const rawEffort = isReasoningDisabled(request.reasoning, request.thinking)
         ? "none"
         : normalizeReasoningEffort(request.reasoning.effort);
-      // GPT-6 Astra rejects none/minimal — migration floor is low.
-      const effort = coerceGpt6ReasoningEffort(request.model, rawEffort);
+      // Catalog models get only their supported levels; `ultra` never ships.
+      const effort = resolveCodexReasoningEffort(request.model, rawEffort);
       const coercedUnsupportedEffort = effort !== rawEffort;
       const summary =
         effort !== "none"

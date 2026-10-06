@@ -160,7 +160,15 @@ After syncing models into `config.json`, restart so the running server picks up 
 
 Cursor conversations are **stateful in-process**:
 
-- Session key from `x-ccr-cursor-session` header, inbound-captured client session id (`protocolContext.sessionId` / `req.sessionId` / Claude `metadata.user_id`), or anonymous `hash(model + first user text)` — never system / harness version
+- Session key is an opaque id CCR mints from the inbound protocol's own conversation id and stores under a hashed key in the session registry; conversation text is never persisted. Clients never send or receive `x-ccr-cursor-session`.
+  - Anthropic Messages: `metadata.user_id` (`session_id`, a `_session_` suffix, or the raw string), else `x-claude-code-session-id`.
+  - Chat Completions: the client's own session header (`x-opencode-session`, `x-kilocode-taskid`, `x-kilo-session`, `x-grok-session-id`, `x-grok-conv-id`, `x-conversation-id`, `session-id`, `x-session-id`, `x-session-affinity`), else `conversation` / `conversation_id`, else `prompt_cache_key`.
+  - Responses: those headers, else `prompt_cache_key`. The Responses `conversation` field is rejected, so it is not an identity.
+  - A native id is combined with the first substantive user text. Side calls sent under the conversation id (OpenCode's title request, parallel Claude Code Tasks) get their own agent instead of superseding the main turn.
+  - Worker forks with inherited history use their latest explicit fork marker (`<fork-boilerplate>` or `You are a worker fork`) as the identity boundary. The worker's own opening instructions and first assistant reply identify its agent, not the inherited parent turns. Shared boilerplate followed by different instructions separates sibling workers; the full inherited transcript still reaches the SDK. Nested contexts use a separate namespace from parent contexts.
+  - No native id: the substantive user-text list (as prefix hashes). A later turn that extends it keeps the session; a sibling that only shares an earlier prefix does not. System text is not part of the id.
+  - An opening (no assistant turn or tool result yet) that repeats a known one reuses its agent only as a retry: while its admitted turn is still running (including catalog lookup and agent creation) or within the 60-second replay window after it finished, and before any later turn. Otherwise it gets a fresh agent, so a stateless client never sees an earlier run's history.
+  - Later turns are also keyed by the conversation's first assistant turn (its tool-call ids, else its text). A repeated opening therefore never takes over an ongoing conversation. When an identical opening replaced one that had no later turn yet, the two cannot be told apart, so the next later turn gets a fresh agent with a full transcript replay.
 - LRU cap of **32** sessions; idle TTL **15 minutes**
 - In-flight sessions (live stream, running run, or parked tools) are not idle-evicted
 - If the stream dies mid-turn (disconnect / cancel), the next request uses a slim follow-up prompt when the agent session already has history
@@ -186,7 +194,11 @@ The `cursor-sdk` transformer:
 - returns a ready `Response` via `__providerResponse` (skips HTTP `fetch` to the provider URL)
 - emits OpenAI chat.completion / chat.completion.chunk SSE for AnthropicTransformer
 - supports streaming and non-streaming Claude Code requests
-- maps effort / reasoning fields onto SDK model selection when available
+- maps the request's reasoning onto SDK model selection. For parameterized models it always sends a full catalog preset variant, with the smallest context window and never fast mode (`fast=false`):
+  - **No reasoning requested** (no `thinking` / effort / `reasoning`, effort `none`, or thinking disabled): each parameter's first allowed value, which is what Cursor runs for an omitted parameter and the least reasoning the model offers. Claude models get `thinking=false`, GPT 5.4+ `reasoning=none`. Grok 4.7 has no off switch, so it gets `256k` / `low` / `fast=false`.
+  - **Reasoning with an effort**: `thinking=true` where the model has it, and the nearest allowed effort level (`xhigh` matches GPT's `extra-high`; on a tie the lower level wins).
+  - **Reasoning without an effort** (e.g. Anthropic adaptive thinking): the catalog default variant's effort (Grok 4.7: `256k` / `high` / `fast=false`).
+  - A failed catalog refresh keeps using the last catalog. A live agent keeps its bound selection while a run is in flight (a new reasoning choice applies to the next agent), and is never reminted just because the catalog could not be read.
 - keeps Cursor caching native to the SDK agent session, while exposing bounded cache-read usage back to Claude Code from SDK usage deltas
 - forwards Cursor thinking from both `run.stream()` `thinking` messages and `Agent.send({ onDelta })` `thinking-delta` updates, then emits the Anthropic-compatible signature delta Claude Code expects
 - requires Claude Code's `"showThinkingSummaries": true` client setting for interactive display on Claude Code 2.1.89+; without it, CCR still transports the thinking block and Claude Code persists it, but the interactive UI hides the summary

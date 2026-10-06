@@ -85,6 +85,8 @@ function hashCacheKey(value: string): string {
 
 function readHeaderSessionId(headers: unknown): string | undefined {
   if (!headers || typeof headers !== "object") return undefined;
+  // x-ccr-cursor-session is not a client header. Cursor mints its own id
+  // from these identities (cursor-sdk/inbound-session.ts).
   const expected = [
     "x-claude-code-session-id",
     "x-opencode-session",

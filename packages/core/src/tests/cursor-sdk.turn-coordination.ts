@@ -1,7 +1,9 @@
+import "./support/isolate-session-registry";
 import assert from "node:assert/strict";
 import { Cursor } from "@cursor/sdk";
 import { runCursor } from "../cursor-sdk/runner";
-import { globalSessionManager } from "../cursor-sdk/session";
+import { buildSessionKey, globalSessionManager } from "../cursor-sdk/session";
+import { resolveInternalCursorSession } from "../cursor-sdk/inbound-session";
 import {
   CursorTurnRegistry,
   globalCursorTurnRegistry,
@@ -89,7 +91,7 @@ function requestFor(session: string) {
       messages: [{ role: "user", content: "Return the shared result." }],
     } as any,
     context: {
-      req: { headers: { "x-ccr-cursor-session": session } },
+      req: { sessionId: session },
     },
   };
 }
@@ -579,9 +581,7 @@ async function testStrictExtensionReusesIdleAgent() {
 
   try {
     const context = {
-      req: {
-        headers: { "x-ccr-cursor-session": "turn-strict-extension" },
-      },
+      req: { sessionId: "turn-strict-extension" },
     };
     const firstRequest = {
       model: "composer-2.5",
@@ -940,7 +940,7 @@ async function testSupersededProducerCannotMutateNewerSession() {
 
   try {
     const context = {
-      req: { headers: { "x-ccr-cursor-session": "stale-producer" } },
+      req: { sessionId: "stale-producer" },
     };
     const provider = { apiKey: "crsr_stale_generation_test" };
     const stale = runCursor(
@@ -1140,10 +1140,110 @@ async function testStatuslineDoesNotSupersedeActiveTurn() {
   }
 }
 
+async function testOpeningRetryJoinsDuringSetup() {
+  for (const phase of ["catalog", "creation"]) {
+    globalCursorTurnRegistry.clear();
+    const gate = deferred();
+    const originalModelList = Cursor.models.list;
+    const originalGetOrCreate = globalSessionManager.getOrCreate;
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    let catalogCalls = 0;
+    let createCalls = 0;
+    let sendCalls = 0;
+    const responses: Array<Promise<Response>> = [];
+    (Cursor.models as any).list = async () => {
+      catalogCalls += 1;
+      if (phase === "catalog") await gate.promise;
+      return [];
+    };
+    (globalSessionManager as any).getOrCreate = async (options: any) => {
+      createCalls += 1;
+      if (phase === "creation") await gate.promise;
+      return fakeSession({
+        key: options.key,
+        agentId: `agent-setup-${phase}-${createCalls}`,
+        async send() {
+          sendCalls += 1;
+          return {
+            status: "running",
+            async *stream() {
+              yield { type: "assistant", message: { content: [{ type: "text", text: "setup result" }] } };
+            },
+            async cancel() {},
+          };
+        },
+      });
+    };
+    try {
+      const { request, context } = requestFor(`slow-setup-${phase}`);
+      const firstContext: any = structuredClone(context);
+      const retryContext: any = structuredClone(context);
+      const provider = { apiKey: `crsr_setup_${phase}` };
+      responses.push(runCursor(request, provider, firstContext));
+      await waitFor(() => phase === "catalog" ? catalogCalls === 1 : createCalls === 1, "setup gate");
+      now += 61_001;
+      responses.push(runCursor(structuredClone(request), provider, retryContext));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(retryContext.internalCursorSession, firstContext.internalCursorSession, `${phase}: retry must retain the admitted session`);
+      assert.equal(catalogCalls, 1, `${phase}: one catalog producer`);
+      assert.equal(createCalls, phase === "catalog" ? 0 : 1, `${phase}: one creation producer`);
+      gate.resolve();
+      const bodies = await Promise.all(responses.map(async (response) => (await response).text()));
+      assert.equal(bodies[0], bodies[1]);
+      assert.match(bodies[0], /setup result/);
+      assert.equal(sendCalls, 1);
+      assert.equal(createCalls, 1);
+    } finally {
+      gate.resolve();
+      await Promise.allSettled(responses);
+      Date.now = realNow;
+      (Cursor.models as any).list = originalModelList;
+      (globalSessionManager as any).getOrCreate = originalGetOrCreate;
+      globalCursorTurnRegistry.clear();
+    }
+  }
+}
+
+async function testInheritedWorkerDoesNotSupersedeParent() {
+  const registry = new CursorTurnRegistry();
+  const context = { protocolContext: { sessionId: "inherited-parent", protocol: "anthropic_messages" } };
+  const opening = [{ role: "user", content: "Inspect this project." }];
+  const resolve = (messages: any[], worker = false) => resolveInternalCursorSession({
+    protocol: "anthropic_messages",
+    model: "composer-2.5",
+    request: { messages },
+    context: { protocolContext: { ...context.protocolContext, nestedAgent: worker } },
+  });
+  resolve(opening);
+  const inherited = [...opening, { role: "assistant", content: "I will inspect it." }];
+  const parent = resolve([...inherited, { role: "user", content: "Continue the main task." }]);
+  const worker = resolve([...inherited, { role: "user", content: "You are a worker fork. Review tests." }], true);
+  const key = (id: string) => buildSessionKey({ headerSession: id });
+  const parentLease = await registry.admit({ sessionKey: key(parent.internalId), fingerprint: "parent-turn", responseKind: "stream" });
+  parentLease.producerSignal.addEventListener("abort", () => parentLease.fail(parentLease.producerSignal.reason));
+  try {
+    const workerLease = await registry.admit({ sessionKey: key(worker.internalId), fingerprint: "worker-turn", responseKind: "stream" });
+    try {
+      assert.equal(parentLease.producerSignal.aborted, false, "a worker must not cancel the parent");
+      const retry = await registry.admit({ sessionKey: key(parent.internalId), fingerprint: "parent-turn", responseKind: "stream" });
+      assert.equal(retry.kind, "join", "parent retry must still join, not return 409");
+    } finally {
+      workerLease.fail(new Error("test completed"));
+    }
+  } finally {
+    parentLease.fail(new Error("test completed"));
+    registry.clear();
+  }
+}
+
 async function main() {
   const originalModelList = Cursor.models.list;
   (Cursor.models as any).list = async () => [];
   try {
+    await testOpeningRetryJoinsDuringSetup();
+    await testInheritedWorkerDoesNotSupersedeParent();
     await testConcurrentJoinAndReplay();
     await testLeaderAbortBeforeResponseKeepsJoinerAlive();
     await testAbortedRetryStartsNewGeneration();

@@ -19,6 +19,7 @@ import {
 import { ensureDenyHooksWorkspace } from "./hooks-template";
 import { EMPTY_HOST_ENVIRONMENT, type HostEnvironment } from "./host-env";
 import { installCursorAuthExchangeCache } from "./auth-exchange-cache";
+import { cursorModelFingerprint } from "./model-selection";
 import {
   CURSOR_SDK_WORKSPACES_ROOT,
   ORPHAN_WORKSPACE_TTL_MS,
@@ -95,6 +96,11 @@ export type CursorSdkSession = {
   sendChain: Promise<void>;
   /** True after at least one successful `agent.send` on this session. */
   hasSentPrompt: boolean;
+  /**
+   * The agent was resumed (`Agent.resume`) rather than created for this
+   * session, so it carries server-side state from an earlier binding.
+   */
+  resumedAgent: boolean;
   /**
    * Exact host-visible transcript represented by this agent after the last
    * completed response. Unknown means tail-only reuse is forbidden.
@@ -503,14 +509,18 @@ function parentSessionIdentity(input: {
 }
 
 /**
- * Cursor SDK session directory key. Prefer explicit client conversation ids
- * over hashing prompt text — never include system / harness version.
+ * Cursor SDK session directory key. Prefer an explicit conversation id over
+ * hashing prompt text — never include system / harness version.
  *
- * Claude Code subagents share the parent session id. Mix first-user text so
- * parallel Task agents each get their own Cursor Agent instead of collapsing
- * onto one turn registry slot.
+ * The runner passes the opaque id from `inbound-session.ts` as
+ * `headerSession`. That id is already unique per protocol conversation,
+ * including parallel Tasks. Clients do not send it.
+ *
+ * Direct callers that still pass a shared parent id plus first-user text get
+ * the mix below, so parallel workers do not collapse onto one Agent.
  */
 export function buildSessionKey(input: {
+  /** Opaque Cursor session id, or a caller-supplied conversation id. */
   headerSession?: string;
   /** Inbound-captured Claude/OpenCode session id (protocolContext / req). */
   clientSessionId?: string;
@@ -602,6 +612,12 @@ export class SessionManager {
     }
     if (session) touchSession(session);
     return session;
+  }
+
+  /** Live session for `key`, without touching, retiring, or creating one. */
+  peek(key: string): CursorSdkSession | undefined {
+    const session = this.sessions.get(key);
+    return session && !session.poisoned ? session : undefined;
   }
 
   async retireSession(
@@ -728,12 +744,13 @@ export class SessionManager {
       const agentMode = options.mode === "plan" ? "plan" : "agent";
       const sandboxEnabled = shouldEnableCursorSandbox(options.sandboxEnabled);
 
+      const resumedAgent = await this.rehydratePersistedAgent(
+        options,
+        workspaceDir,
+        sandboxEnabled
+      );
       const agent =
-        (await this.rehydratePersistedAgent(
-          options,
-          workspaceDir,
-          sandboxEnabled
-        )) ||
+        resumedAgent ||
         (await Agent.create({
           apiKey: options.apiKey,
           model: options.model,
@@ -750,6 +767,7 @@ export class SessionManager {
         sessionId: agent.agentId,
         workspaceDir,
         model: options.model.id,
+        modelFingerprint: cursorModelFingerprint(options.model),
       });
 
       const session = this.createSessionRecord({
@@ -759,6 +777,7 @@ export class SessionManager {
         workspaceDir,
         hostEnv,
         guidanceFingerprint: hostEnv.fingerprint,
+        resumedAgent: Boolean(resumedAgent),
       });
 
       this.sessions.set(options.key, session);
@@ -812,6 +831,7 @@ export class SessionManager {
       workspaceDir: options.workspaceDir,
       hostEnv,
       guidanceFingerprint: hostEnv.fingerprint,
+      resumedAgent: true,
     });
     this.sessions.set(options.key, session);
     return session;
@@ -982,6 +1002,14 @@ export class SessionManager {
     const binding = getPersistedSession("cursor", options.key);
     if (!binding) return undefined;
     if (binding.model && binding.model !== options.model.id) return undefined;
+    const wantFingerprint = cursorModelFingerprint(options.model);
+    if (
+      binding.modelFingerprint
+        ? binding.modelFingerprint !== wantFingerprint
+        : Boolean(options.model.params?.length)
+    ) {
+      return undefined;
+    }
     if (
       binding.workspaceDir &&
       binding.workspaceDir !== workspaceDir &&
@@ -1023,6 +1051,7 @@ export class SessionManager {
     workspaceDir: string;
     hostEnv: HostEnvironment;
     guidanceFingerprint?: string;
+    resumedAgent?: boolean;
   }): CursorSdkSession {
     const session: CursorSdkSession = {
       key: input.key,
@@ -1039,6 +1068,7 @@ export class SessionManager {
       sdkMessageWaiters: [],
       sendChain: Promise.resolve(),
       hasSentPrompt: false,
+      resumedAgent: input.resumedAgent === true,
       guidanceFingerprint: input.guidanceFingerprint,
       lastActiveAt: Date.now(),
       metrics: {

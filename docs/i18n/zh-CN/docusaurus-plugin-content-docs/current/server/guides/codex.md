@@ -164,6 +164,27 @@ PAT 认证不需要浏览器流程，但仍使用容器内相同的提供商配�
 - 在认证账户要求时添加 `X-OpenAI-Fedramp: true`
 - 将流式 Responses 风格事件转换回 Claude Code 兼容输出
 
+## 模型处理
+
+CCR 发给每个 OpenAI 模型的请求与 Codex CLI 一致。逐模型数据从 Codex 内置目录
+（`codex-rs/models-manager/models.json`）导入到
+`packages/core/src/utils/codex-model-catalog.ts`；Codex 增删模型时需同步更新。
+
+- **推理强度** 限制在模型支持的级别内。`none` / `minimal` 提升到最低级别，超出最高
+  级别的值降到最高级别。`ultra` 是 Codex 选择器别名，从不发送：它会变为模型的
+  多智能体强度（`gpt-6-astra` / `gpt-6.1-sol` 为 `xhigh`），否则为 `max`，否则为
+  低于 `ultra` 的最高级别。适用于所有 Responses 目标（`openai-responses`）以及同协议
+  Codex 透传。目录之外的模型保持不变；比目录更新的 GPT-6 slug 使用 GPT-6 系列的级别。
+- **Responses Lite**（仅 Codex 提供商；`use_responses_lite` 模型）：请求携带
+  `x-openai-internal-codex-responses-lite: true`，工具从 `tools` 移到开头的
+  `{type: "additional_tools", role: "developer"}` 输入项（函数与自定义工具归入
+  `functions` 命名空间），`parallel_tool_calls` 为 `false`，`reasoning.context` 为
+  `all_turns`，输入图片不带 `detail`。
+- **Verbosity** 以 `text.verbosity` 发送。优先级：客户端的值，其次提供商的
+  `verbosity`，再次由 `REASONING_AUTO_SUMMARY` 推出的值（`detailed` → `high`、
+  `auto` → `medium`、`concise` → `low`），仅限支持 verbosity 的目录模型。
+- **Fast / priority 档位** 从不选择；Responses 客户端不能发送 `service_tier`。
+
 ## 何时使用 `ccr codex-auth`
 
 在以下情况运行 `ccr codex-auth`：
@@ -182,6 +203,66 @@ PAT 认证不需要浏览器流程，但仍使用容器内相同的提供商配�
 - **网页搜索** — 通过 `{ type: "web_search" }` 内置网页搜索
 - **图像处理** — 支持图像输入的视觉能力
 
+## 流式 Bootstrap 缓冲
+
+ChatGPT 后端可能把过载/配额拒绝*塞进* HTTP 200 的 SSE 流内（握手帧之后），
+而不是返回可重试的状态码。开启可选缓冲后，这些失败可以透明地 fallback：
+
+```json
+{
+  "name": "codex",
+  "api_base_url": "https://chatgpt.com/backend-api/codex",
+  "api_key": "oauth_dummy_key",
+  "models": ["gpt-5"],
+  "transformer": {
+    "use": ["openai-responses", ["codex", { "streamBootstrapBuffering": true }]]
+  }
+}
+```
+
+暂存帧（握手、`*.added`、心跳）保持未提交，直到生成输出、终止事件或配置的
+缓冲上限将其释放。`response.failed` / `error` 事件中的容量类错误会取消
+被拒绝的上游流，并在下游头提交*之前*抛出可 fallback 的错误。分类方式与
+Codex CLI 一致：只看确切的错误 `code`（计划与配额错误还看 `type`），从不看消息文本。
+
+| 上游错误 | CCR 错误 |
+| --- | --- |
+| `server_is_overloaded` | 503 `server_overloaded` |
+| `rate_limit_exceeded`、`slow_down`、`flex_unavailable` | 429 `rate_limit_exceeded`，`Retry-After` 取自事件（`error.headers`，否则取 "try again in Ns"） |
+| `insufficient_quota`、`credit_balance_exhausted`、`organization_spend_limit_exceeded`、`project_spend_limit_exceeded`、`organization_usage_limit_exceeded`、`usage_not_included`；type `usage_limit_reached` / `usage_not_included` / `insufficient_quota` | 429 `usage_limit_reached` |
+
+其他失败（`context_length_exceeded`、`invalid_prompt`、策略类 code、未知 code）
+即使消息中写着 "try again" 也会原样到达客户端：换模型也会以同样方式失败。
+生成文本或工具参数中类似错误的词语同样不是信号。缓冲期间的传输失败
+会进入正常的错误/fallback 流程，而不是返回成功但被截断的流。缓冲上限说明见
+[转换器 → codex](/docs/server/config/transformers)。配合一条针对
+`usage_limit_reached` 的 `continue-and-cooldown`
+[请求级错误规则](/docs/server/config/routing)，可让耗尽的模型短暂休眠。
+
+## 多智能体兼容
+
+两个面向 Codex 多智能体（委托）流量的可选顶层开关：
+
+```json
+{
+  "orphanDelegationCompatibility": true,
+  "optimizeMultiAgentV2": true
+}
+```
+
+- `orphanDelegationCompatibility` —— `call_id` 不是非空字符串的
+  `function_call_output` / `custom_tool_call_output` 不再返回 400，而是转为 user
+  消息。仅当请求携带 `X-Openai-Subagent: collab_spawn` 头时生效。具有非空字符串 id
+  的输出仍作为关联的工具结果；仅缺少本地对应调用不会触发此修复。
+- `optimizeMultiAgentV2` —— 没有 role 的 `agent_message` 输入项转为 user 消息，
+  而不再返回 400。文本/图像/文件内容部分及其校验保持不变。有 role 的输入项
+  不受开关影响，继续使用原有的消息转换。
+
+两项修复同时作用于 Unified 转换和 Responses 线格式保留路径（包括 fallback），
+而不会重建无关的图像、文件、推理密文或缓存字段。在工具调用组中到达的兼容
+user 消息会延后至待处理的工具结果输出之后。这些顶层开关仅作用于 CCR 主命名
+空间；预设命名空间当前只携带提供商/路由配置，不继承这些开关。
+
 ## 使用示例
 
 将 Codex 用作默认模型，或为特定场景路由：
@@ -199,11 +280,14 @@ PAT 认证不需要浏览器流程，但仍使用容器内相同的提供商配�
 
 ## 模型参考
 
-| 模型 | 说明 |
-|------|------|
-| `gpt-5` | 标准 GPT-5 模型 |
-| `gpt-5-high` | 高性能变体（推理任务） |
-| `gpt-5-mini` | 轻量变体（后台任务） |
+Codex 目录模型（见[模型处理](#模型处理)）。用 `ccr model get codex` 查看账户可用的模型。
+
+| 模型 | 推理级别 | Responses Lite |
+|------|----------|----------------|
+| `gpt-6.1-sol`、`gpt-6-astra` | `low`–`max`（`ultra` → `xhigh`） | 是 |
+| `gpt-6-sol`、`gpt-5.6-sol`、`gpt-5.6-terra` | `low`–`max`（`ultra` → `max`） | 是 |
+| `gpt-6-luna`、`gpt-5.6-luna`、`codex-auto-review` | `low`–`max` | 是 |
+| `gpt-5.5` | `low`–`xhigh` | 否 |
 
 ## 故障排除
 

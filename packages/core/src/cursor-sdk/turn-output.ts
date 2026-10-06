@@ -1,4 +1,5 @@
-const COMPLETED_TURN_TTL_MS = 60_000;
+/** How long an identical completed turn replays instead of re-running. */
+export const COMPLETED_TURN_TTL_MS = 60_000;
 const SUPERSEDED_TURN_TTL_MS = 15 * 60_000;
 const MAX_SUPERSEDED_FINGERPRINTS = 16;
 const MAX_REPLAY_BYTES = 8 * 1024 * 1024;

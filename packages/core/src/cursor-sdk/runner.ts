@@ -23,10 +23,12 @@ import {
   type TrailingCursorToolTurn,
 } from "./prompt";
 import { extractHostEnvironment } from "./host-env";
+import { resolveInternalCursorSession } from "./inbound-session";
 import {
   buildSessionKey,
   cancelActiveRun,
   globalSessionManager,
+  isSessionInFlight,
   markSessionPoisoned,
   refreshWorkspaceGuidance,
   resolveHostToolId,
@@ -44,17 +46,20 @@ import {
   DEFAULT_CURSOR_MODE,
   contentToText,
   coerceThinkingText,
-  extractEffort,
+  cursorReasoningKey,
+  extractCursorReasoning,
   hashSessionFingerprint,
   isCursorTransientProviderError,
   type CursorSdkMode,
 } from "./shared";
 import { createTurnToolMetrics, toCustomTools } from "./tools";
 import {
-  firstSubstantiveUserText,
-  firstUserText,
-  isStatuslinePollTurn,
-} from "@/utils/nested-agent";
+  cursorModelSelectionsEqual,
+  isCursorInvalidRegistryModelError,
+  selectCursorModelSelection,
+  type CursorReasoning,
+} from "./model-selection";
+import { isStatuslinePollTurn } from "@/utils/nested-agent";
 import {
   buildAccurateUsageFromSdk,
   estimateRequestPromptTokens,
@@ -72,6 +77,7 @@ import {
   planCursorLifecycle,
 } from "./lifecycle-planner";
 import {
+  COMPLETED_TURN_TTL_MS,
   globalCursorTurnRegistry,
   type CursorTurnLease,
 } from "./turn-output";
@@ -141,7 +147,18 @@ async function getModelCatalog(apiKey: string): Promise<ModelListItem[]> {
     return modelCatalog.models;
   }
 
-  const models = (await Cursor.models.list({ apiKey })) || [];
+  let models: ModelListItem[];
+  try {
+    models = (await Cursor.models.list({ apiKey })) || [];
+  } catch (err) {
+    // A failed refresh keeps serving the last catalog for this key. A
+    // missing catalog yields bare ids that differ from every bound
+    // parameterized selection, which would remint live sessions.
+    if (modelCatalog && modelCatalog.apiKeyFingerprint === fingerprint) {
+      return modelCatalog.models;
+    }
+    throw err;
+  }
   modelCatalog = {
     fetchedAt: Date.now(),
     apiKeyFingerprint: fingerprint,
@@ -151,55 +168,42 @@ async function getModelCatalog(apiKey: string): Promise<ModelListItem[]> {
 }
 
 /**
- * Map a configured CCR model id (+ optional effort) onto SDK ModelSelection.
+ * Map a configured CCR model id and the request's reasoning onto SDK ModelSelection.
  * Catalog fetch is best-effort for variant params only — never writes a side cache file.
  * Canonical model ids are discovered with `ccr model get <cursor-provider>`.
  */
 async function resolveModelSelection(
   apiKey: string,
   modelId: string,
-  effort?: string
-): Promise<ModelSelection> {
+  reasoning: CursorReasoning
+): Promise<{ selection: ModelSelection; catalogued: boolean }> {
   let models: ModelListItem[];
   try {
     models = await getModelCatalog(apiKey);
   } catch {
-    return { id: modelId };
+    return { selection: { id: modelId }, catalogued: false };
   }
+  return {
+    selection: selectCursorModelSelection(models, modelId, reasoning),
+    catalogued: true,
+  };
+}
 
-  const found = models.find(
-    (m) =>
-      m.id === modelId ||
-      m.displayName === modelId ||
-      (Array.isArray(m.aliases) && m.aliases.includes(modelId))
+/**
+ * Whether the agent behind an internal Cursor id is running a turn or
+ * finished one within the completed-turn replay window.
+ */
+function isInternalCursorSessionActive(internalId: string): boolean {
+  const sessionKey = buildSessionKey({ headerSession: internalId });
+  // Admission precedes catalog lookup and Agent.create. An opening retry
+  // must join that producer even before there is an SDK session to inspect.
+  if (globalCursorTurnRegistry.peekActive(sessionKey)) return true;
+  const session = globalSessionManager.peek(sessionKey);
+  if (!session) return false;
+  return (
+    isSessionInFlight(session) ||
+    Date.now() - session.lastActiveAt <= COMPLETED_TURN_TTL_MS
   );
-  if (!found) return { id: modelId };
-
-  if (effort && Array.isArray(found.variants) && found.variants.length) {
-    const match =
-      found.variants.find((v) =>
-        v.params?.some(
-          (p) =>
-            /effort|reasoning/i.test(p.id) &&
-            String(p.value).toLowerCase() === String(effort).toLowerCase()
-        )
-      ) ||
-      found.variants.find((v) =>
-        (v.displayName || "")
-          .toLowerCase()
-          .includes(String(effort).toLowerCase())
-      );
-    if (match) {
-      return { id: found.id, params: match.params };
-    }
-  }
-
-  const defaultVariant =
-    found.variants?.find((v) => v.isDefault) || found.variants?.[0];
-  if (defaultVariant?.params?.length) {
-    return { id: found.id, params: defaultVariant.params };
-  }
-  return { id: found.id };
 }
 
 function statuslineBusyResponse(stream: boolean): Response {
@@ -484,37 +488,32 @@ function resolveCursorRequest(
     });
   }
 
-  const headerSession =
-    context?.req?.headers?.["x-ccr-cursor-session"] ||
-    context?.req?.headers?.["X-Ccr-Cursor-Session"];
-  const clientSessionId =
-    context?.protocolContext?.sessionId ||
-    context?.req?.protocolContext?.sessionId ||
-    context?.req?.sessionId;
+  const protocolContext =
+    context?.protocolContext || context?.req?.protocolContext;
   const sourceSessionIdentity =
     options.sourceSessionIdentity ||
     context?.unifiedRequest?.sourceSessionIdentity ||
     (request as any)?.metadata?.user_id;
-  const protocolContext =
-    context?.protocolContext || context?.req?.protocolContext;
-  const isSubagent =
-    protocolContext?.claudeCodeSubagent === true ||
-    protocolContext?.nestedAgent === true;
-  const sessionKey = buildSessionKey({
-    headerSession:
-      typeof headerSession === "string" ? headerSession : undefined,
-    clientSessionId:
-      typeof clientSessionId === "string" && clientSessionId
-        ? clientSessionId
+  // Internal id only. Client `x-ccr-cursor-session` is stripped and ignored.
+  const inbound = resolveInternalCursorSession({
+    protocol:
+      typeof protocolContext?.protocol === "string"
+        ? protocolContext.protocol
         : undefined,
-    metadataUserId:
+    request,
+    context,
+    model: modelId,
+    sourceSessionIdentity:
       typeof sourceSessionIdentity === "string"
         ? sourceSessionIdentity
         : undefined,
-    model: modelId,
-    firstUserText: firstSubstantiveUserText(request) || firstUserText(request),
-    isSubagent,
+    isActive: isInternalCursorSessionActive,
   });
+  if (context && typeof context === "object") {
+    context.internalCursorSession = inbound.internalId;
+    context.cursorInboundKey = inbound.inboundKey;
+  }
+  const sessionKey = buildSessionKey({ headerSession: inbound.internalId });
 
   return {
     apiKey,
@@ -549,7 +548,7 @@ export async function runCursor(
     mode: resolved.mode,
     model: {
       id: resolved.modelId,
-      effort: extractEffort(request) || "",
+      effort: cursorReasoningKey(extractCursorReasoning(request)),
     },
     sandboxEnabled: shouldEnableCursorSandbox(options.sandboxEnabled),
     tools: request.tools,
@@ -622,14 +621,15 @@ async function runCursorOnce(
   const apiKey = resolved.apiKey;
   const sessionKey = resolved.sessionKey;
 
-  const effort = extractEffort(request);
-  // Reused sessions already have a live Agent. Skip Cursor.models.list (and its
-  // auth exchange) unless effort needs a catalog variant lookup.
-  const existingSession = globalSessionManager.get(sessionKey);
-  const model =
-    existingSession && !effort
-      ? { id: modelId }
-      : await resolveModelSelection(apiKey, modelId, effort);
+  // Always attach catalog variant params. A bare `{ id }` is rejected for
+  // parameterized registry models (Grok 4.7: context + reasoning_effort + fast).
+  // No reasoning on the request selects the model's least-reasoning variant.
+  const resolvedModel = await resolveModelSelection(
+    apiKey,
+    modelId,
+    extractCursorReasoning(request)
+  );
+  let model = resolvedModel.selection;
   throwIfCursorProducerAborted(options.abortSignal);
 
   // Host facts are re-read every turn: the project root can change between
@@ -648,6 +648,39 @@ async function runCursorOnce(
 
   throwIfCursorProducerAborted(options.abortSignal);
   let session = await globalSessionManager.getOrCreate(sessionOptions);
+  const boundModel = session.agent.model;
+  if (boundModel && !cursorModelSelectionsEqual(boundModel, model)) {
+    if (
+      isSessionInFlight(session) ||
+      (!resolvedModel.catalogued && boundModel.id === model.id)
+    ) {
+      // Keep the bound selection for this request. Retiring would cancel a
+      // live run (another request's stream, or parked host tools this
+      // request may resolve), and an uncatalogued bare id is no evidence
+      // that the selection changed. A new choice applies to the next agent.
+      logger?.debug?.(
+        {
+          sessionKey: session.key,
+          agentId: session.agentId,
+          boundModel,
+          requestedModel: model,
+          catalogued: resolvedModel.catalogued,
+        },
+        "cursor-sdk keeping bound model selection"
+      );
+      model = boundModel;
+      sessionOptions.model = boundModel;
+    } else {
+      // Sticky resume after a catalog-param change (Grok 4.7 variants)
+      // cannot rewrite the bound registry model on send — Cursor 502s.
+      // Remint.
+      await retireCursorSession(session, {
+        reason: "cursor-sdk model selection changed",
+      });
+      throwIfCursorProducerAborted(options.abortSignal);
+      session = await globalSessionManager.getOrCreate(sessionOptions);
+    }
+  }
   throwIfCursorProducerAborted(options.abortSignal);
   const hostEnvForSession = (targetSession: CursorSdkSession) =>
     !hostEnv.known && targetSession.hostEnv?.known
@@ -867,8 +900,16 @@ async function runCursorOnce(
       mode === "bridge"
         ? toCustomTools(request, targetSession, logger, turnToolMetrics)
         : undefined;
+    // Re-sending catalog params on a follow-up run is rejected for Grok 4.7
+    // after a cancelled parallel turn. The agent already has the bound model.
+    const sendModel = cursorModelSelectionsEqual(
+      targetSession.agent.model,
+      model
+    )
+      ? undefined
+      : model;
     return {
-      model,
+      ...(sendModel ? { model: sendModel } : {}),
       mode: mode === "plan" ? ("plan" as const) : ("agent" as const),
       local: customTools ? { customTools } : undefined,
       onDelta: ({ update }: { update: any }) => {
@@ -894,12 +935,17 @@ async function runCursorOnce(
     });
   };
 
+  // An agent created for this request already got the current selection, so
+  // a fresh one would be rejected the same way. Only an agent with earlier
+  // server-side state (sticky or resumed) can carry a stale registry binding.
   const shouldReplayWithFreshSession = (err: any, targetSession: CursorSdkSession) =>
-    targetSession.hasSentPrompt &&
     !options.abortSignal?.aborted &&
-    (err?.retryFreshCursorSession === true ||
-      isCursorAgentBusyError(err) ||
-      isCursorSendPoisonError(err));
+    ((isCursorInvalidRegistryModelError(err) &&
+      (targetSession.hasSentPrompt || targetSession.resumedAgent)) ||
+      (targetSession.hasSentPrompt &&
+        (err?.retryFreshCursorSession === true ||
+          isCursorAgentBusyError(err) ||
+          isCursorSendPoisonError(err))));
 
   const startNewPrompt = async (
     targetSession: CursorSdkSession,
@@ -987,6 +1033,8 @@ async function runCursorOnce(
             .digest("hex")
             .slice(0, 16),
           promptImages: prompt.images?.length ?? 0,
+          modelId: model.id,
+          modelParams: model.params,
         },
         "cursor-sdk sending prompt to agent"
       );

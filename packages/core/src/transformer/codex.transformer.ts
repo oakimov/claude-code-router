@@ -11,10 +11,33 @@ import {
   toCodexOAuthAuth,
 } from "../utils/codex-auth";
 import { unwrapCustomToolInput } from "../utils/openai.responses.util";
+import { createApiError } from "../api/middleware";
+import { attachScopedErrorClassificationText } from "../utils/request-scoped-errors";
 import {
-  applyGpt6ReasoningEffortCoercion,
+  bufferCodexBootstrapStream,
+  type CodexBootstrapOptions,
+  type CodexOverloadKind,
+} from "../utils/codex-bootstrap";
+import {
+  resolveReasoningAutoSummary,
   stripGpt6UnsupportedSampling,
 } from "../utils/reasoning-effort";
+import {
+  applyCodexReasoningEffort,
+  codexModelSpec,
+  verbosityForReasoningSummary,
+  type CodexTextVerbosity,
+} from "../utils/codex-model-catalog";
+
+/** Fallback-eligible error for each in-stream capacity failure class. */
+const CODEX_CAPACITY_ERRORS: Record<
+  CodexOverloadKind,
+  { status: number; code: string; label: string }
+> = {
+  overload: { status: 503, code: "server_overloaded", label: "overloaded" },
+  rate_limit: { status: 429, code: "rate_limit_exceeded", label: "rate limited" },
+  quota: { status: 429, code: "usage_limit_reached", label: "quota exhausted" },
+};
 
 const PAT_METADATA_TTL_MS = 5 * 60 * 1000;
 const whoamiCache = new Map<
@@ -67,7 +90,13 @@ function foldSystemItemsIntoInstructions(request: Record<string, any>): void {
   }
   const next: any[] = [];
   for (const item of input) {
-    if (item && isCodexSystemRole(item.role)) {
+    // Messages only: Responses Lite's `additional_tools` item is also
+    // role `developer` and must stay in `input`.
+    if (
+      item &&
+      isCodexSystemRole(item.role) &&
+      (item.type === undefined || item.type === "message")
+    ) {
       const text = textFromInputContent(item.content);
       if (text) parts.push(text);
       continue;
@@ -321,11 +350,120 @@ function stripCodexCacheBreakpoints(value: unknown): void {
   }
 }
 
-function applyCodexWireConstraints(
+/** Header Codex sends with every Responses Lite request. */
+const CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite";
+/** Codex `DEFAULT_FUNCTION_NAMESPACE`: top-level function and custom tools. */
+const CODEX_FUNCTION_NAMESPACE = "functions";
+const CODEX_TEXT_VERBOSITIES: ReadonlySet<string> = new Set([
+  "low",
+  "medium",
+  "high",
+]);
+
+function textVerbosity(value: unknown): CodexTextVerbosity | undefined {
+  return typeof value === "string" && CODEX_TEXT_VERBOSITIES.has(value)
+    ? (value as CodexTextVerbosity)
+    : undefined;
+}
+
+/**
+ * Responses `text.verbosity`, as Codex sends it. The client's value wins,
+ * then the provider's `verbosity`, then the one implied by
+ * `REASONING_AUTO_SUMMARY` (only for catalog models that support verbosity).
+ */
+function applyCodexTextVerbosity(
   request: Record<string, any>,
   provider: any,
   context: any
 ): void {
+  if (textVerbosity(request.text?.verbosity)) return;
+  const verbosity =
+    textVerbosity(provider?.verbosity) ??
+    (codexModelSpec(request.model)?.verbosity
+      ? verbosityForReasoningSummary(
+          resolveReasoningAutoSummary(
+            context?.req?.server?.configService?.get?.("REASONING_AUTO_SUMMARY")
+          )
+        )
+      : undefined);
+  if (verbosity) request.text = { ...request.text, verbosity };
+}
+
+/**
+ * Codex `create_tools_json_for_responses_lite`: function and custom tools
+ * move into one `functions` namespace at the position of the first of them;
+ * every other tool type keeps its place.
+ */
+function responsesLiteTools(tools: any[]): any[] {
+  const functions: any[] = [];
+  let description = "";
+  let functionsIndex: number | undefined;
+  const out: any[] = [];
+  for (const tool of tools) {
+    if (tool?.type === "function" || tool?.type === "custom") {
+      functions.push(tool);
+    } else if (
+      tool?.type === "namespace" &&
+      tool.name === CODEX_FUNCTION_NAMESPACE
+    ) {
+      if (typeof tool.description === "string" && tool.description.trim()) {
+        description = tool.description;
+      }
+      if (Array.isArray(tool.tools)) functions.push(...tool.tools);
+    } else {
+      out.push(tool);
+      continue;
+    }
+    functionsIndex ??= out.length;
+  }
+  if (functionsIndex !== undefined && functions.length) {
+    out.splice(functionsIndex, 0, {
+      type: "namespace",
+      name: CODEX_FUNCTION_NAMESPACE,
+      description,
+      tools: functions,
+    });
+  }
+  return out;
+}
+
+/** Drop `detail` from input images; Codex never sends it to Lite models. */
+function stripInputImageDetail(parts: unknown): void {
+  if (!Array.isArray(parts)) return;
+  for (const part of parts) {
+    if (part?.type === "input_image" && "detail" in part) delete part.detail;
+  }
+}
+
+/**
+ * Codex's request shape for `use_responses_lite` models
+ * (`core/src/client.rs::build_responses_request`): tools travel as a leading
+ * `additional_tools` developer item instead of `tools`, calls are serial,
+ * reasoning sees all turns, and images carry no detail.
+ */
+function applyResponsesLite(request: Record<string, any>): void {
+  const tools = Array.isArray(request.tools)
+    ? responsesLiteTools(request.tools)
+    : [];
+  delete request.tools;
+  const input = Array.isArray(request.input) ? request.input : [];
+  for (const item of input) {
+    stripInputImageDetail(item?.content);
+    stripInputImageDetail(item?.output);
+  }
+  request.input = tools.length
+    ? [{ type: "additional_tools", role: "developer", tools }, ...input]
+    : input;
+  request.parallel_tool_calls = false;
+  request.reasoning = { ...request.reasoning, context: "all_turns" };
+}
+
+/** Returns true when the body was shaped for Responses Lite. */
+function applyCodexWireConstraints(
+  request: Record<string, any>,
+  provider: any,
+  context: any
+): boolean {
   delete request.temperature;
   delete request.top_p;
   delete request.top_logprobs;
@@ -334,10 +472,10 @@ function applyCodexWireConstraints(
   delete request.max_completion_tokens;
   delete request.max_output_tokens;
 
-  // Same-protocol Responses→Codex skips the Responses owner rebuild; coerce
-  // GPT-6 unsupported efforts and sampling knobs here so wire-keep still
+  // Same-protocol Responses→Codex skips the Responses owner rebuild; resolve
+  // catalog efforts and GPT-6 sampling knobs here so wire-keep still
   // reaches a legal ChatGPT backend body.
-  applyGpt6ReasoningEffortCoercion(request);
+  applyCodexReasoningEffort(request);
   stripGpt6UnsupportedSampling(request);
 
   foldSystemItemsIntoInstructions(request);
@@ -345,10 +483,7 @@ function applyCodexWireConstraints(
   stripCodexCacheBreakpoints(request.input);
   stripCodexCacheBreakpoints(request.tools);
 
-  const VALID_VERBOSITIES = ["low", "medium", "high"];
-  if (provider?.verbosity && VALID_VERBOSITIES.includes(provider.verbosity)) {
-    request.verbosity = provider.verbosity;
-  }
+  applyCodexTextVerbosity(request, provider, context);
 
   request.store = false;
   request.stream = true;
@@ -358,6 +493,10 @@ function applyCodexWireConstraints(
     const cacheKey = deriveCacheSessionKey(context, request as any);
     if (cacheKey) request.prompt_cache_key = cacheKey;
   }
+
+  if (!codexModelSpec(request.model)?.responsesLite) return false;
+  applyResponsesLite(request);
+  return true;
 }
 
 function responsesJsonToSse(payload: any): ReadableStream<Uint8Array> {
@@ -396,10 +535,36 @@ function responsesJsonToSse(payload: any): ReadableStream<Uint8Array> {
  * this transformer only stamps auth, Codex headers, `store: false`, and
  * `stream: true`.
  */
+export interface CodexTransformerOptions extends CodexBootstrapOptions {
+  streamBootstrapMaxFrames?: number;
+  streamBootstrapMaxBytes?: number;
+  streamBootstrapTimeoutMs?: number;
+  /**
+   * Hold pre-generation SSE frames uncommitted so an in-stream
+   * `server_is_overloaded` / quota rejection throws a fallback-eligible
+   * error *before* downstream headers commit, instead of reaching the
+   * client as a failed stream. Default false (opt-in).
+   */
+  streamBootstrapBuffering?: boolean;
+}
+
 export class CodexTransformer implements Transformer {
+  static TransformerName = "codex";
   name = "codex";
   requestPhase = "headers" as const;
   logger?: any;
+  private readonly bootstrapOptions: CodexTransformerOptions;
+  constructor(options?: CodexTransformerOptions) {
+    this.bootstrapOptions = {
+      ...options,
+      maxFrames: options?.streamBootstrapMaxFrames ?? options?.maxFrames,
+      maxBytes: options?.streamBootstrapMaxBytes ?? options?.maxBytes,
+      timeoutMs: options?.streamBootstrapTimeoutMs ?? options?.timeoutMs,
+    };
+  }
+  private get bootstrapEnabled(): boolean {
+    return this.bootstrapOptions.streamBootstrapBuffering === true;
+  }
   // Per-request streaming intent. The Codex API requires stream:true, so the
   // outgoing call is always streaming — but we need to know whether the
   // caller wants streaming or non-streaming so transformResponseOut can
@@ -422,9 +587,10 @@ export class CodexTransformer implements Transformer {
     }
 
     const resolvedAuth = await this.resolveAuth(provider);
-    applyCodexWireConstraints(body, provider, context);
+    const responsesLite = applyCodexWireConstraints(body, provider, context);
 
     const headers = this.buildAuthHeaders(resolvedAuth);
+    if (responsesLite) headers[CODEX_RESPONSES_LITE_HEADER] = "true";
     applyCodexTurnMetadata(
       body,
       headers,
@@ -579,12 +745,47 @@ export class CodexTransformer implements Transformer {
    */
   async transformResponseOut(
     response: Response,
-    context?: { req?: { id?: string } }
+    context?: { req?: { id?: string }; signal?: AbortSignal }
   ): Promise<Response> {
     const contentType = response.headers.get("Content-Type") || "";
     const reqId = context?.req?.id;
     const prevIntent = reqId ? this.streamIntent.get(reqId) : undefined;
     try {
+      if (
+        this.bootstrapEnabled &&
+        response.ok &&
+        response.body &&
+        (!contentType || contentType.includes("text/event-stream"))
+      ) {
+        const bootstrapped = await bufferCodexBootstrapStream(
+          response,
+          this.bootstrapOptions,
+          context?.signal
+        );
+        if (bootstrapped.overloaded) {
+          try {
+            await bootstrapped.response.body?.cancel();
+          } catch {
+            // Cleanup must not replace the upstream overload error.
+          }
+          const failure = CODEX_CAPACITY_ERRORS[bootstrapped.overloadKind!];
+          const error = createApiError(
+            `Codex upstream ${failure.label} before first output: ${(bootstrapped.overloadText || "").slice(0, 240)}`,
+            failure.status,
+            failure.code,
+            "api_error",
+            bootstrapped.overloadRetryAfter
+              ? { "Retry-After": bootstrapped.overloadRetryAfter }
+              : undefined
+          );
+          attachScopedErrorClassificationText(
+            error,
+            bootstrapped.overloadErrorText ?? bootstrapped.overloadText
+          );
+          throw error;
+        }
+        response = bootstrapped.response;
+      }
       return await this.normalizeCodexTransport(
         response,
         contentType,

@@ -248,6 +248,24 @@ Adapts requests and responses for the Codex (ChatGPT) backend API.
 - Applies ChatGPT backend constraints (`store: false`, `stream: true`)
 - Streaming events are converted back to the **inbound** client protocol (not Anthropic-only)
 
+**Options** (`["codex", { ... }]`):
+
+- `streamBootstrapBuffering` (default `false`) — hold pre-generation SSE
+  frames uncommitted so an in-stream `server_is_overloaded` / quota rejection
+  throws a fallback-eligible error *before* downstream headers commit,
+  instead of reaching the client as a failed stream. Budgets:
+  `streamBootstrapMaxFrames` (default `48`), `streamBootstrapMaxBytes`
+  (default `1048576`), `streamBootstrapTimeoutMs` (default `0` = unlimited;
+  bounds how long the hold lasts, evaluated between reads).
+  The short aliases `maxFrames`, `maxBytes`, and `timeoutMs` are also accepted;
+  the `streamBootstrap*` option wins when both spellings are supplied.
+  Only the error `code` / `type` of `response.failed` / `error` events triggers
+  detection, using Codex CLI's capacity codes (see
+  [Codex → Stream Bootstrap Buffering](/docs/server/guides/codex#stream-bootstrap-buffering));
+  message text, generated text, and tool arguments never do.
+  Rejected streams are cancelled before fallback, and bootstrap transport
+  failures propagate as errors rather than successful truncated streams.
+
 ### claude-auth
 
 Authenticates requests to Anthropic's API using your Claude Pro or Max subscription OAuth token.

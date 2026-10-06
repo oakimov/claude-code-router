@@ -1,3 +1,4 @@
+import "./support/isolate-session-registry";
 import assert from "node:assert/strict";
 import { Cursor } from "@cursor/sdk";
 import { runCursor } from "../cursor-sdk/runner";
@@ -513,7 +514,7 @@ async function main() {
     const pureResponse = await runCursor(
       pureUnified,
       { apiKey: "crsr_test" },
-      { req: { headers: { "x-ccr-cursor-session": "pure" } } },
+      { req: { sessionId: "pure" } },
       { cursorMode: "bridge" }
     );
     const pureBody = await withDeadline(
@@ -533,7 +534,7 @@ async function main() {
     );
 
     const markerContext: any = {
-      req: { headers: { "x-ccr-cursor-session": "marker-only" } },
+      req: { sessionId: "marker-only" },
     };
     const markerUnified = await anthropic.transformRequestOut(
       anthropicRequest([
@@ -569,7 +570,7 @@ async function main() {
 
     const markerDeadContext: any = {
       req: {
-        headers: { "x-ccr-cursor-session": "marker-only-dead-run" },
+        sessionId: "marker-only-dead-run",
       },
     };
     const markerDeadUnified = await anthropic.transformRequestOut(
@@ -614,7 +615,7 @@ async function main() {
     );
 
     const mixedContext: any = {
-      req: { headers: { "x-ccr-cursor-session": "mixed" } },
+      req: { sessionId: "mixed" },
     };
     const mixedUnified = await anthropic.transformRequestOut(
       anthropicRequest([
@@ -686,7 +687,7 @@ async function main() {
         messages: [{ role: "user", content: "stream until cancelled" }],
       } as any,
       { apiKey: "crsr_test" },
-      { req: { headers: { "x-ccr-cursor-session": "cancel-barrier" } } },
+      { req: { sessionId: "cancel-barrier" } },
       { cursorMode: "bridge" }
     );
     assert.ok(cancelResponse.body);
@@ -727,7 +728,7 @@ async function main() {
         messages: [{ role: "user", content: "inspect the project" }],
       } as any,
       { apiKey: "crsr_test" },
-      { req: { headers: { "x-ccr-cursor-session": "progress-cancel" } } },
+      { req: { sessionId: "progress-cancel" } },
       { cursorMode: "bridge" }
     );
     assert.ok(progressResponse.body);

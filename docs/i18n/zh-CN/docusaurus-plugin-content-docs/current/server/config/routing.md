@@ -172,6 +172,54 @@ FIM 端点上的裸模型名经 `Router.fim` 解析，再回退到 `Router.defau
 - **子代理**：`fallback.subagent` 可单独覆盖子代理路由的 fallback；若未设置，则为向后兼容自动继承 `fallback.default`。
 - **可中止**：客户端在请求中途关闭时，会取消 fallback 等待与后续尝试
 
+### 请求级错误规则
+
+默认情况下，CCR 仅根据 HTTP 状态决定是否 fallback（408/409/425/429/5xx +
+网络错误）。`request_scoped_errors` 用正文模式规则细化这一判断——支持按
+提供商配置，也支持顶层全局配置。提供商规则优先求值，首个命中的规则生效。
+
+```json
+{
+  "request_scoped_errors": [
+    { "status": 400, "match": ["maximum_context_length"], "action": "stop" },
+    { "status": 400, "match": ["server_is_overloaded"], "action": "continue" }
+  ],
+  "Providers": [
+    {
+      "name": "codex",
+      "api_base_url": "https://chatgpt.com/backend-api/codex",
+      "api_key": "oauth_dummy_key",
+      "models": ["gpt-5"],
+      "transformer": { "use": ["openai-responses", "codex"] },
+      "request_scoped_errors": [
+        { "status": 429, "match": ["usage_limit_reached"], "action": "continue-and-cooldown" }
+      ]
+    }
+  ]
+}
+```
+
+- **匹配**：`status`（可选）必须等于错误状态；`match` 子串（大小写不敏感）与
+  `match_regex` 模式在原始上游错误文本（前 16,384 个字符）及具体错误码上匹配。
+  有原始文本时，匹配使用它替代 CCR 脱敏后的消息及 `Error from provider(...)`
+  前缀；否则使用错误消息和已捕获的上游正文。CCR 通用的 `api_error` 类型与
+  兜底的 `provider_response_error` 错误码不会被额外加入匹配文本。没有正文
+  模式的规则仅按状态匹配。原始文本仅用于匹配；客户端和日志仍只看到脱敏后的
+  错误详情。
+- **动作**：`stop`（终止——不再 fallback）、`continue`（强制 fallback，即使状态
+  本身不符合条件），以及 `stop-and-cooldown` / `continue-and-cooldown`——后两者
+  还会将 `provider,model` 冷却一段时间（默认 60 秒，可按规则用 `cooldown_seconds`
+  覆盖，最小为 1）。冷却只作用于 fallback 候选项：fallback 循环会跳过处于冷却中
+  的模型，也不会为其等待 Retry-After/退避时间；作为主路由的模型仍会被尝试。
+  末尾的 `[1m]` 标记不影响冷却的标识。
+- **校验**：包含未知键（例如 `matches`）、`action` 无效、`status` 不是整数、
+  模式列表不是非空字符串数组、正则无效或 `cooldown_seconds` 小于 1 的规则会被
+  忽略，CCR 会记录一条警告，注明规则序号与原因。
+- **键名写法**：提供商与顶层均可使用 `request_scoped_errors` /
+  `requestScopedErrors` / `request-scoped-errors`；使用任一写法更新提供商规则
+  都会替换存储的规范列表。`match_regex` / `matchRegex` / `match-regex` 与
+  `cooldown_seconds` / `cooldownSeconds` 等价。
+
 ### 使用场景
 
 #### 场景一：主模型配额不足

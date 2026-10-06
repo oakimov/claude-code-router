@@ -263,11 +263,13 @@ async function testCodexRoundTrip() {
     outbound.body.client_metadata.session_id,
     outbound.body.prompt_cache_key
   );
-  assert.equal(
-    outbound.body.input[0].content[0].prompt_cache_breakpoint,
-    undefined
+  // gpt-5.6-luna is a Responses Lite model: tools lead `input`.
+  assert.equal(outbound.body.input[0].type, "additional_tools");
+  const firstMessage = outbound.body.input.find(
+    (item: any) => item.type !== "additional_tools"
   );
-  assert.equal(outbound.body.input[0].content[0].cache_control, undefined);
+  assert.equal(firstMessage.content[0].prompt_cache_breakpoint, undefined);
+  assert.equal(firstMessage.content[0].cache_control, undefined);
 
   const responsePayload = {
     id: "codex-cache",

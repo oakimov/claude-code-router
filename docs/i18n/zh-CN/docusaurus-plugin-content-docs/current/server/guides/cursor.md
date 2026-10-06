@@ -160,7 +160,15 @@ ccr model get cursor
 
 Cursor 对话在进程内保持状态：
 
-- 会话键来自 `x-ccr-cursor-session` 头、入站捕获的客户端会话 id（`protocolContext.sessionId` / `req.sessionId` / Claude `metadata.user_id`），或匿名 `hash(model + 首条 user 文本)` —— 不使用 system / harness 版本
+- 会话键是 CCR 根据入站协议自带的会话 id 生成的不透明 id，并以哈希键保存在会话注册表里；对话文本从不落盘。客户端不发送也不接收 `x-ccr-cursor-session`。
+  - Anthropic Messages：`metadata.user_id`（`session_id`、`_session_` 后缀，或原始字符串），否则 `x-claude-code-session-id`。
+  - Chat Completions：客户端自己的会话头（`x-opencode-session`、`x-kilocode-taskid`、`x-kilo-session`、`x-grok-session-id`、`x-grok-conv-id`、`x-conversation-id`、`session-id`、`x-session-id`、`x-session-affinity`），否则 `conversation` / `conversation_id`，否则 `prompt_cache_key`。
+  - Responses：同上请求头，否则 `prompt_cache_key`。Responses 的 `conversation` 字段会被拒绝，因此不是身份。
+  - 原生 id 与第一条实质性 user 文本组合成键。以同一会话 id 发出的旁路请求（OpenCode 的标题请求、并行的 Claude Code Task）各自使用独立 agent，不会顶替主轮次。
+  - 继承历史的 worker fork 以最后一个明确的 fork 标记（`<fork-boilerplate>` 或 `You are a worker fork`）为身份边界。agent 由 worker 自身的开头指令和第一个 assistant 回复标识，而非继承的父会话轮次。共享样板文本后附带不同指令的兄弟 worker 使用不同 agent；完整的继承会话记录仍发送给 SDK。嵌套上下文与父上下文使用独立的命名空间。
+  - 没有原生 id：实质性 user 文本列表（以前缀哈希保存）。后续轮次若扩展该列表则复用会话；仅共享更早前缀的兄弟分支不复用。system 文本不参与。
+  - 开头请求（尚无 assistant 轮次或工具结果）若与已知开头相同，只在作为重试时复用其 agent：已获准进入的轮次仍在运行（包括目录查询和 agent 创建阶段），或在其结束后的 60 秒重放窗口内，且该会话尚未进入后续轮次。否则分配新的 agent，无状态客户端不会看到之前运行的历史。
+  - 后续轮次的键还包含该会话的第一个 assistant 轮次（其工具调用 id，否则为其文本）。因此重复的开头永远不会接管进行中的会话。若相同的开头替换了一个尚无后续轮次的开头，两者无法区分，下一个后续轮次会分配新的 agent 并完整重放会话记录。
 - LRU 上限 **32**；空闲 TTL **15 分钟**
 - 进行中的会话（活动流、running run、或已挂起工具）不会被空闲淘汰
 - 流在中途失败时，若 agent 会话已有历史，下一次请求使用精简 follow-up，而不是重发全文
@@ -186,7 +194,11 @@ environment:
 - 通过 `__providerResponse` 返回已就绪的 `Response`（跳过对提供商 URL 的 HTTP `fetch`）
 - 向 AnthropicTransformer 发出 OpenAI chat.completion / chat.completion.chunk SSE
 - 支持 Claude Code 的流式与非流式请求
-- 在 SDK 可用时，将 effort / reasoning 字段映射到 SDK 模型选择
+- 将请求的推理设置映射到 SDK 模型选择。对于带参数的模型，始终发送完整的目录预设变体，使用最小的上下文窗口，且从不选择 fast 模式（`fast=false`）：
+  - **未请求推理**（没有 `thinking` / effort / `reasoning`，effort 为 `none`，或 thinking 被禁用）：每个参数取第一个允许值，这正是 Cursor 在参数省略时的行为，也是该模型推理最少的设置。Claude 模型为 `thinking=false`，GPT 5.4+ 为 `reasoning=none`。Grok 4.7 没有关闭开关，因此为 `256k` / `low` / `fast=false`。
+  - **请求推理且带 effort**：模型有 `thinking` 参数时设为 `thinking=true`，并选择最接近的允许 effort 级别（`xhigh` 对应 GPT 的 `extra-high`；距离相同时取较低级别）。
+  - **请求推理但不带 effort**（例如 Anthropic 自适应 thinking）：使用目录默认变体的 effort（Grok 4.7：`256k` / `high` / `fast=false`）。
+  - 目录刷新失败时继续使用上一次的目录。run 进行中时，活跃 agent 保持其已绑定的模型选择（新的推理设置作用于下一个 agent）；绝不会仅因目录无法读取而重建 agent。
 - 保持 Cursor 缓存在 SDK agent 会话内原生处理，同时从 SDK usage delta 向 Claude Code 暴露有界的 cache-read usage
 - 从 `run.stream()` 的 `thinking` 消息以及 `Agent.send({ onDelta })` 的 `thinking-delta` 更新转发 Cursor thinking，并发出 Claude Code 所期望的 Anthropic 兼容 `signature_delta`
 - 在 Claude Code 2.1.89+ 上，交互式显示需要客户端设置 `"showThinkingSummaries": true`；若未设置，CCR 仍会传输 thinking 块且 Claude Code 会持久化它，但交互 UI 会隐藏摘要

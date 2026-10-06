@@ -1,3 +1,4 @@
+import "./support/isolate-session-registry";
 import assert from "node:assert/strict";
 import { Cursor } from "@cursor/sdk";
 import { runCursor } from "../cursor-sdk/runner";
@@ -145,7 +146,7 @@ async function main() {
         ],
       } as any,
       { apiKey: "crsr_test" },
-      { req: { headers: { "x-ccr-cursor-session": "runner-recovery" } } },
+      { req: { sessionId: "runner-recovery" } },
       { cursorMode: "bridge" }
     );
     const body = await response.text();

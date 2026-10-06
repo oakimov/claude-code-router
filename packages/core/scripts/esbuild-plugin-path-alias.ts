@@ -27,8 +27,8 @@ export const pathAliasPlugin = (options: {
           (args) => {
             // Extract the path after @/
             const importPath = args.path.replace(new RegExp(`^${escapedPattern}/`), "");
-            // Remove file extension if present in import
-            const importPathWithoutExt = importPath.replace(/\.[^.]+$/, "");
+            // Strip only supported source extensions, not dotted file names.
+            const importPathWithoutExt = importPath.replace(/\.(?:tsx?|jsx?|json)$/, "");
             const resolvedPath = path.resolve(baseUrl, target.replace(/\*$/, ""), importPathWithoutExt);
 
             // Try to find the file with different extensions

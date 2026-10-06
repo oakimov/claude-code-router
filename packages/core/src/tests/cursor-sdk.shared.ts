@@ -49,8 +49,15 @@ assert.equal(
   ),
   false
 );
-// Non-transient failures still retire.
-assert.equal(isCursorTransientProviderError(new Error("boom")), false);
+assert.equal(
+  isCursorTransientProviderError(
+    Object.assign(
+      new Error('AI Model Not Found Invalid parameters for registry model: "grok-4.7"'),
+      { statusCode: 502, code: "provider_response_error" }
+    )
+  ),
+  false
+);
 assert.equal(
   isCursorTransientProviderError(
     Object.assign(new Error("bad request"), { statusCode: 400 })

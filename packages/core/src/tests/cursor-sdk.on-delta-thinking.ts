@@ -1,3 +1,4 @@
+import "./support/isolate-session-registry";
 import assert from "node:assert/strict";
 import { Cursor } from "@cursor/sdk";
 import { runCursor } from "../cursor-sdk/runner";
@@ -121,7 +122,7 @@ async function main() {
         messages: [{ role: "user", content: "show thinking" }],
       } as any,
       { apiKey: "crsr_test" },
-      { req: { headers: { "x-ccr-cursor-session": "on-delta-thinking" } } },
+      { req: { sessionId: "on-delta-thinking" } },
       { cursorMode: "bridge" }
     );
     const unifiedBody = await response.text();

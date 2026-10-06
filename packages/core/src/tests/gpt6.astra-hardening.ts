@@ -1,17 +1,20 @@
 /**
- * GPT-6 Astra rejects reasoning.effort none/minimal and sampling knobs
- * (temperature/top_p/logprobs). Harden convert + Codex wire-keep paths.
+ * GPT-6 rejects sampling knobs (temperature/top_p/logprobs), and every
+ * Codex catalog model gets only its supported effort levels (none/minimal
+ * floor to low; `ultra` never ships). Harden convert + Codex wire-keep paths.
  */
 import assert from "node:assert/strict";
 import { CodexTransformer } from "../transformer/codex.transformer";
 import { OpenAIResponsesTransformer } from "../transformer/openai.responses.transformer";
 import {
-  applyGpt6ReasoningEffortCoercion,
-  coerceGpt6ReasoningEffort,
   isGpt6FamilyModel,
-  isGpt6LunaModel,
   stripGpt6UnsupportedSampling,
 } from "../utils/reasoning-effort";
+import {
+  applyCodexReasoningEffort,
+  isGpt6LunaModel,
+  resolveCodexReasoningEffort,
+} from "../utils/codex-model-catalog";
 
 function mockCodexAuth(transformer: CodexTransformer) {
   (transformer as any).resolveAuth = async () => ({
@@ -40,28 +43,33 @@ function testModelDetection() {
 }
 
 function testEffortHelpers() {
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6-astra", "none"), "low");
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6-astra", "minimal"), "low");
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6-astra", "medium"), "medium");
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6.1-sol", "none"), "low");
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6.1-sol", "ultra"), "ultra");
-  assert.equal(coerceGpt6ReasoningEffort("gpt-5.6-sol", "none"), "none");
+  assert.equal(resolveCodexReasoningEffort("gpt-6-astra", "none"), "low");
+  assert.equal(resolveCodexReasoningEffort("gpt-6-astra", "minimal"), "low");
+  assert.equal(resolveCodexReasoningEffort("gpt-6-astra", "medium"), "medium");
+  assert.equal(resolveCodexReasoningEffort("gpt-6.1-sol", "none"), "low");
+  // GPT-5.6 lists no none/minimal either.
+  assert.equal(resolveCodexReasoningEffort("gpt-5.6-sol", "none"), "low");
 
   const req = {
     model: "gpt-6-astra",
     reasoning: { effort: "none" as const, enabled: false },
   };
-  applyGpt6ReasoningEffortCoercion(req);
+  applyCodexReasoningEffort(req);
   assert.equal(req.reasoning.effort, "low");
   assert.equal(req.reasoning.enabled, true);
 
-  const other = {
+  const luna56 = {
     model: "gpt-5.6-luna",
     reasoning: { effort: "none" as const, enabled: false },
   };
-  applyGpt6ReasoningEffortCoercion(other);
-  assert.equal(other.reasoning.effort, "none");
-  assert.equal(other.reasoning.enabled, false);
+  applyCodexReasoningEffort(luna56);
+  assert.equal(luna56.reasoning.effort, "low");
+  assert.equal(luna56.reasoning.enabled, true);
+
+  // Models outside the catalog keep their effort.
+  const unknown = { model: "o9-pro", reasoning: { effort: "none" as const } };
+  applyCodexReasoningEffort(unknown);
+  assert.equal(unknown.reasoning.effort, "none");
 }
 
 function testLunaUltraClamp() {
@@ -77,19 +85,20 @@ function testLunaUltraClamp() {
   assert.equal(isGpt6LunaModel("gpt-5.6-luna"), false);
   assert.equal(isGpt6LunaModel(undefined), false);
 
-  // Luna tops out at max (no ultra); Astra/Sol/6.1 Sol keep ultra.
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6-luna", "ultra"), "max");
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6.1-luna", "ultra"), "max");
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6-astra", "ultra"), "ultra");
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6-sol", "ultra"), "ultra");
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6.1-sol", "ultra"), "ultra");
-  assert.equal(coerceGpt6ReasoningEffort("gpt-6-luna", "high"), "high");
+  // `ultra` never ships (Codex resolve_reasoning_effort): the catalog's
+  // multi-agent effort (Astra / 6.1 Sol: xhigh), else max.
+  assert.equal(resolveCodexReasoningEffort("gpt-6-luna", "ultra"), "max");
+  assert.equal(resolveCodexReasoningEffort("gpt-6.1-luna", "ultra"), "max");
+  assert.equal(resolveCodexReasoningEffort("gpt-6-astra", "ultra"), "xhigh");
+  assert.equal(resolveCodexReasoningEffort("gpt-6.1-sol", "ultra"), "xhigh");
+  assert.equal(resolveCodexReasoningEffort("gpt-6-sol", "ultra"), "max");
+  assert.equal(resolveCodexReasoningEffort("gpt-6-luna", "high"), "high");
 
   const req = {
     model: "codex,gpt-6-luna",
     reasoning: { effort: "ultra" as const },
   };
-  applyGpt6ReasoningEffortCoercion(req);
+  applyCodexReasoningEffort(req);
   assert.equal(req.reasoning.effort, "max");
 }
 
@@ -151,7 +160,7 @@ async function responsesConvertCoercesMinimal() {
   assert.equal((wire as any).reasoning?.effort, "low");
 }
 
-async function responsesLeavesNonGpt6NoneAlone() {
+async function responsesClampsGpt56NoneButKeepsSampling() {
   const responses = new OpenAIResponsesTransformer();
   const wire = await responses.transformRequestIn(
     {
@@ -163,7 +172,7 @@ async function responsesLeavesNonGpt6NoneAlone() {
     {},
     {}
   );
-  assert.equal((wire as any).reasoning?.effort, "none");
+  assert.equal((wire as any).reasoning?.effort, "low");
   // Non-gpt-6 Responses destinations may still carry temperature; Codex strips
   // it separately. stripGpt6 must not touch this model.
   assert.equal((wire as any).temperature, 0.1);
@@ -209,7 +218,7 @@ async function codexAlwaysStripsTopP() {
     { req: { id: "codex-top-p" } }
   );
   const body = result.body as any;
-  assert.equal(body.reasoning?.effort, "none");
+  assert.equal(body.reasoning?.effort, "low");
   assert.equal(body.temperature, undefined);
   assert.equal(body.top_p, undefined);
 }
@@ -221,7 +230,7 @@ async function main() {
   testSamplingStrip();
   await responsesConvertCoercesNoneAndStripsSampling();
   await responsesConvertCoercesMinimal();
-  await responsesLeavesNonGpt6NoneAlone();
+  await responsesClampsGpt56NoneButKeepsSampling();
   await codexWireKeepCoercesAndStripsTopP();
   await codexAlwaysStripsTopP();
   console.log("gpt6.astra-hardening: all tests passed");

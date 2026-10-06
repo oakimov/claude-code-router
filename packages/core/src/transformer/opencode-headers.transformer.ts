@@ -2,6 +2,7 @@ import { randomBytes, createHash } from "crypto";
 import { Transformer } from "@/types/transformer";
 import { sendUnifiedRequest } from "@/utils/request";
 import { createApiError } from "@/api/middleware";
+import { attachScopedErrorClassificationText } from "@/utils/request-scoped-errors";
 import {
   sanitizeErrorForLog,
   sanitizeUpstreamErrorText,
@@ -562,13 +563,15 @@ export class OpencodeHeadersTransformer implements Transformer {
       // so map only that narrow case to 503 for CCR's fallback handling.
       const safeErrorText =
         sanitizeUpstreamErrorText(errorText) || errorText.slice(0, 240);
-      throw createApiError(
+      const error = createApiError(
         `Error from provider(${provider?.name},${model}: ${response.status}): ${safeErrorText}`,
         routingFailure ? 503 : response.status,
         "provider_response_error",
         "api_error",
         this.retryAfterHeaders(response)
       );
+      attachScopedErrorClassificationText(error, errorText);
+      throw error;
     }
 
     // Unreachable: the final attempt either returns ok or throws above.
