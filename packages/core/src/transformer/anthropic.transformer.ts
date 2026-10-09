@@ -905,9 +905,14 @@ export class AnthropicTransformer implements Transformer {
           ? systemBlocks
           : undefined;
 
+    // Prefer the client's max_tokens; else the catalog default for this model
+    // (so Sonnet 5.5 gets 64k, not the legacy 8k floor); else 8192 for
+    // unknown / pre-catalog ids.
+    const catalogDefault = lookupClaudeModelCatalogEntry(request.model)
+      ?.maxOutputTokens.default;
     const body: Record<string, any> = {
       model: request.model,
-      max_tokens: request.max_tokens ?? 8192,
+      max_tokens: request.max_tokens ?? catalogDefault ?? 8192,
       messages,
       stream: request.stream ?? true,
     };

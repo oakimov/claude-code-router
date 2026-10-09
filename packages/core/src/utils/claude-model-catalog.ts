@@ -1,6 +1,7 @@
 /**
  * Claude Code's bundled model capability catalog, revalidated against the
- * installed v2.1.280 CLI decompilation.
+ * installed v2.1.280 CLI decompilation, plus later API models Anthropic shipped
+ * after that snapshot (e.g. claude-sonnet-5-5) taken from Anthropic's model docs.
  *
  * Every model-dependent decision in the claude-auth impersonation path (beta
  * flags, effort support, thinking shape, max_tokens ceiling) is driven by
@@ -51,6 +52,26 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
     maxOutputTokens: { default: 32000, upper: 64000 },
     capabilities: ["context_management"],
   },
+  // Anthropic docs 2026-10-07 (platform.claude.com/docs/en/models/haiku-5-5).
+  "claude-haiku-5-5": {
+    window: 1e6,
+    nativeOneMillion: true,
+    supportsOneMillionBeta: true,
+    supportsOneMillionSuffix: false,
+    maxOutputTokens: { default: 64000, upper: 128000 },
+    defaultEffort: "medium",
+    capabilities: [
+      "effort",
+      "max_effort",
+      "xhigh_effort",
+      "adaptive_thinking",
+      "mid_conv_system",
+      "mid_conv_tool_change",
+      "context_management",
+    ],
+    // Adaptive-by-default (not always-on). Non-default temperature/top_p/top_k → 400.
+    apiConstraints: { noSamplingParams: true },
+  },
   "claude-3-5-sonnet": {
     nativeOneMillion: false,
     supportsOneMillionBeta: false,
@@ -66,6 +87,15 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
     capabilities: [],
   },
   "claude-sonnet-4-0": {
+    window: 200000,
+    nativeOneMillion: false,
+    supportsOneMillionBeta: true,
+    supportsOneMillionSuffix: true,
+    maxOutputTokens: { default: 32000, upper: 64000 },
+    capabilities: ["context_management"],
+  },
+  // Provider / alias spelling of claude-sonnet-4-0 (normalize does not map 4 → 4-0).
+  "claude-sonnet-4": {
     window: 200000,
     nativeOneMillion: false,
     supportsOneMillionBeta: true,
@@ -106,6 +136,32 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
     ],
     apiConstraints: { noSamplingParams: true },
   },
+  // Anthropic docs 2026-09-28 (platform.claude.com/docs/en/models/sonnet-5-5).
+  // Not in the Claude Code v2.1.280 catalog this file was last revalidated against.
+  "claude-sonnet-5-5": {
+    window: 1e6,
+    nativeOneMillion: true,
+    supportsOneMillionBeta: true,
+    supportsOneMillionSuffix: false,
+    maxOutputTokens: { default: 64000, upper: 128000 },
+    defaultEffort: "high",
+    capabilities: [
+      "effort",
+      "max_effort",
+      "xhigh_effort",
+      "adaptive_thinking",
+      "mid_conv_system",
+      "mid_conv_tool_change",
+      "context_management",
+    ],
+    apiConstraints: {
+      // Forced tool_choice any/tool → 400; temperature/top_p/top_k → 400.
+      // Thinking is adaptive-by-default, not always-on — between_tools turns
+      // off up-front thinking at high effort or below.
+      noForcedToolChoice: true,
+      noSamplingParams: true,
+    },
+  },
   "claude-opus-4-0": {
     window: 200000,
     nativeOneMillion: false,
@@ -131,6 +187,15 @@ export const CLAUDE_MODEL_CATALOG: Record<string, ClaudeModelCatalogEntry> = {
     capabilities: ["context_management"],
   },
   "claude-opus-4-6": {
+    window: 200000,
+    nativeOneMillion: false,
+    supportsOneMillionBeta: true,
+    supportsOneMillionSuffix: true,
+    maxOutputTokens: { default: 64000, upper: 128000 },
+    capabilities: ["effort", "max_effort", "adaptive_thinking", "context_management"],
+  },
+  // Antigravity / Cursor listing of the thinking-capable Opus 4.6 surface.
+  "claude-opus-4-6-thinking": {
     window: 200000,
     nativeOneMillion: false,
     supportsOneMillionBeta: true,
