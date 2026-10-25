@@ -22,7 +22,7 @@ sidebar_position: 2
 | `@caeliq/llms`（core） | ≥ 1.4.0 |
 | `@caeliq/ccr-shared` | ≥ 1.4.0 |
 
-CI 与 Docker 全链路使用 Bun（`oven-sh/setup-bun`、`oven/bun:1.4.4-alpine`）。工具链不再依赖 Node。
+CI 与 Docker 全链路使用 Bun（`oven-sh/setup-bun`、`oven/bun:1.4.4-debian`）。工具链不再依赖 Node。Docker 镜像使用 Debian/glibc，因为 `@cursor/sdk` 自带的 tree-sitter 原生插件无法在 Alpine/musl 上加载。
 
 ## 通过 Docker 安装
 

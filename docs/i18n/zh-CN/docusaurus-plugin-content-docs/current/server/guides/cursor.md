@@ -175,7 +175,7 @@ Cursor 对话在进程内保持状态：
 
 ## Docker 运行
 
-`@cursor/sdk` 含平台原生包，会在运行镜像中单独安装（版本取自 `packages/server/package.json`）。
+`@cursor/sdk` 含平台原生包（包括链接到 glibc 的 `tree-sitter` 插件），会在运行镜像中单独安装（版本取自 `packages/server/package.json`）。因此 Compose 镜像使用 `oven/bun:*-debian` 而非 Alpine——musl 无法加载这些插件，`agent.send` 会在 ignore-service 模块初始化失败后级联报出 `y$.init` TypeError。
 
 确保容器能拿到密钥：
 

@@ -481,8 +481,11 @@ ui (standalone frontend application)
 1. **Runtime = Bun ≥ 1.4.0**: Declared in `engines.bun` of every workspace package
    (root, core, cli, shared, server, ui, docs) — keep them identical. OpenCode free-tier
    models require Bun's TLS fingerprint; Node undici is rejected upstream with
-   `FreeUsageLimitError`. Docker production image is `oven/bun:1.4.4-alpine`. The
-   Docker builder and runtime are both `oven/bun:1.4.4-alpine`. CI uses `oven-sh/setup-bun`. esbuild `--target=node22` remains (Bun runs that JS surface).
+   `FreeUsageLimitError`. Docker production image is `oven/bun:1.4.4-debian`
+   (glibc — required by `@cursor/sdk` tree-sitter native addons; Alpine/musl
+   cannot load them). The Docker builder and runtime are both
+   `oven/bun:1.4.4-debian`. CI uses `oven-sh/setup-bun`. esbuild `--target=node22`
+   remains (Bun runs that JS surface).
    `@cursor/sdk` resolves its `"bun"` export automatically; CCR calls
    `Cursor.configure({ local: { useHttp1ForAgent: true } })` (Bun#31499).
 2. **Package manager**: Bun workspaces (`package.json` `workspaces` + `overrides`; lockfile `bun.lock`)

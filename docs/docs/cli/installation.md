@@ -21,7 +21,7 @@ You need **Bun ≥ 1.4.0** locally to install the CLI, run from source, or use t
 | `@caeliq/llms` (core) | ≥ 1.4.0 |
 | `@caeliq/ccr-shared` | ≥ 1.4.0 |
 
-CI and Docker use Bun end-to-end (`oven-sh/setup-bun`, `oven/bun:1.4.4-alpine`). Node is not part of the toolchain.
+CI and Docker use Bun end-to-end (`oven-sh/setup-bun`, `oven/bun:1.4.4-debian`). Node is not part of the toolchain. The Docker image is Debian/glibc because `@cursor/sdk` ships tree-sitter native addons that cannot load on Alpine/musl.
 
 ## Install with Docker
 

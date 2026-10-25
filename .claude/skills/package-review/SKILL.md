@@ -133,7 +133,7 @@ Report:
 
 For workspace manifests:
 
-- Stay within `engines.bun` (`>=1.4.0`). Docker/CI pin is `1.4.4` (`oven/bun:1.4.4-alpine`, `oven-sh/setup-bun`).
+- Stay within `engines.bun` (`>=1.4.0`). Docker/CI pin is `1.4.4` (`oven/bun:1.4.4-debian`, `oven-sh/setup-bun`).
 - Align shared runtime pins across workspaces (`ai` / `@ai-sdk/*` / `zod` exact families; `@cursor/sdk`).
 - Prefer `bun update` / targeted `bun update <pkg>` from the root. After caret-range updates in one workspace, check for a second family instance next to exact pins in another.
 - Do not downgrade. Raise `engines.bun` only when a runtime dependency truly requires it.

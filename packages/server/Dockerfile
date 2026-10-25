@@ -1,7 +1,11 @@
 # ===========================
 # Build Stage — Bun only
 # ===========================
-FROM oven/bun:1.4.4-alpine AS builder
+# glibc base: @cursor/sdk ships tree-sitter .node linked against glibc.
+# Alpine/musl cannot load it (Bun: "glibc-targeted native addons cannot be
+# loaded on Alpine/musl even with gcompat") — agent.send then fails with a
+# cascading `y$.init` TypeError after the ignore-service module fails to load.
+FROM oven/bun:1.4.4-debian AS builder
 
 WORKDIR /app
 
@@ -44,9 +48,11 @@ RUN bun run build
 # ===========================
 # Production Stage — Bun runtime
 # ===========================
-FROM oven/bun:1.4.4-alpine AS production
+FROM oven/bun:1.4.4-debian AS production
 
-RUN apk add --no-cache curl
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

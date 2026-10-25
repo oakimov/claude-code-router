@@ -175,7 +175,7 @@ Cursor conversations are **stateful in-process**:
 
 ## Running with Docker
 
-`@cursor/sdk` ships platform-native packages and is installed into the runtime image separately from the Bun workspace (version taken from `packages/server/package.json`).
+`@cursor/sdk` ships platform-native packages (including a glibc-linked `tree-sitter` addon) and is installed into the runtime image separately from the Bun workspace (version taken from `packages/server/package.json`). The Compose image therefore uses `oven/bun:*-debian`, not Alpine — musl cannot load those addons, and `agent.send` fails with a cascading `y$.init` TypeError after the ignore-service module fails to initialize.
 
 Ensure the container receives the key:
 
