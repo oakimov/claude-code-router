@@ -369,6 +369,7 @@
     "copy_curl": "Copy cURL",
     "copied": "cURL copied",
     "copy_failed": "Failed to copy cURL",
+    "copy_text_failed": "Failed to copy text",
     "fullscreen": "Open editor fullscreen",
     "target": "Target",
     "target_ccr": "CCR",

@@ -106,6 +106,7 @@ import {
   type DebugTool,
 } from "@/lib/debugTools";
 import { getProviderTitle } from "@/lib/providerMeta";
+import { copyText } from "@/lib/clipboard";
 import type { Provider } from "@/types";
 
 type DebugUIMessage = UIMessage<unknown, { "llm-exchange": CapturedExchange; usage: DebugTokenUsage }>;
@@ -740,7 +741,7 @@ export function DebugPage() {
         headers: rowsToHeaders(headerRows),
         body,
       });
-      await navigator.clipboard.writeText(curl);
+      await copyText(curl);
       setNotice({ text: t("debug.copied"), tone: "success" });
     } catch {
       setNotice({ text: t("debug.copy_failed"), tone: "error" });
@@ -955,7 +956,14 @@ export function DebugPage() {
                                       <Action
                                         label={t("debug.copy")}
                                         tooltip={t("debug.copy")}
-                                        onClick={() => void navigator.clipboard.writeText(part.text)}
+                                        onClick={() => {
+                                          void copyText(part.text).catch(() =>
+                                            setNotice({
+                                              text: t("debug.copy_text_failed"),
+                                              tone: "error",
+                                            })
+                                          );
+                                        }}
                                       >
                                         <Copy className="size-3.5" />
                                       </Action>

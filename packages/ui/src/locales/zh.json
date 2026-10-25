@@ -369,6 +369,7 @@
     "copy_curl": "复制 cURL",
     "copied": "已复制 cURL",
     "copy_failed": "复制 cURL 失败",
+    "copy_text_failed": "复制文本失败",
     "fullscreen": "全屏打开编辑器",
     "target": "目标",
     "target_ccr": "CCR",

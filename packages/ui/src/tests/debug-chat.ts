@@ -7,6 +7,7 @@ import {
   isDebugResponseError,
   parseDebugResponseError,
   parseHeadersJson,
+  randomId,
   readDebugExchangeFromSseLine,
   tapDebugExchangeStream,
   type CapturedExchange,
@@ -213,6 +214,26 @@ function testResponsesProtocolOmitsStreamOptions(): void {
   );
 }
 
+function testRandomIdFallsBackWithoutRandomUUID(): void {
+  // Insecure contexts expose getRandomValues but not randomUUID.
+  const insecure = {
+    getRandomValues: (array: Uint8Array) => {
+      for (let i = 0; i < array.length; i += 1) array[i] = i;
+      return array;
+    },
+  } as unknown as Crypto;
+  const id = randomId(insecure);
+  assert(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),
+    `fallback id should be a UUID v4, got ${id}`
+  );
+  const seeded = {
+    getRandomValues: (array: Uint8Array<ArrayBuffer>) => globalThis.crypto.getRandomValues(array),
+  } as unknown as Crypto;
+  assert(randomId(seeded) !== randomId(seeded), "fallback ids should not be constant");
+  assert(randomId() !== "", "secure contexts should keep using crypto.randomUUID");
+}
+
 async function main(): Promise<void> {
   testParseGenericHttpError();
   testParseStringErrorField();
@@ -226,6 +247,7 @@ async function main(): Promise<void> {
   await testTapDebugExchangeStreamSplitsChunks();
   testLineHeaders();
   testCurlUsesPosixSafeQuoting();
+  testRandomIdFallsBackWithoutRandomUUID();
   testResponsesProtocolOmitsStreamOptions();
   console.log("debug-chat ui helpers: PASS");
 }
