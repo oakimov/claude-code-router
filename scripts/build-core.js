@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 const { execSync } = require('child_process');
 const path = require('path');
@@ -11,7 +11,7 @@ try {
 
   // Build using the core package's build script
   console.log('Building core package (CJS and ESM)...');
-  execSync('pnpm build', {
+  execSync('bun run build', {
     stdio: 'inherit',
     cwd: coreDir
   });

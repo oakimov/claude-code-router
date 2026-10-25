@@ -1,6 +1,6 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
- * Minimal Zen TTFT probe. Works under Node and Bun.
+ * Minimal Zen TTFT probe (Bun).
  *
  * Env:
  *   OPENCODE_API_KEY   required

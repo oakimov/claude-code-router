@@ -19,6 +19,7 @@ services:
     restart: always
     environment:
       - NODE_ENV=production
+      - BUN_ENV=production
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - SCW_SECRET_KEY=${SCW_SECRET_KEY}

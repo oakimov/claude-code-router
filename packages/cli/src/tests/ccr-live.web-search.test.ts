@@ -18,7 +18,7 @@
  * completed Responses `web_search_call` with its query plus `url_citation`
  * annotations, and as Chat `url_citation` annotations respectively.
  *
- * Opt-in (never in CI): `pnpm test:live`. Environment:
+ * Opt-in (never in CI): `bun run test:live`. Environment:
  *   CCR_URL         default http://localhost:3456
  *   CCR_API_KEY     required: the CCR server's API key
  *   CCR_LIVE_MODEL  default "claude,claude-haiku-4-5-20251001"

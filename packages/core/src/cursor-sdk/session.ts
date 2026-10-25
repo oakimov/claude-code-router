@@ -19,6 +19,7 @@ import {
 import { ensureDenyHooksWorkspace } from "./hooks-template";
 import { EMPTY_HOST_ENVIRONMENT, type HostEnvironment } from "./host-env";
 import { installCursorAuthExchangeCache } from "./auth-exchange-cache";
+import { ensureCursorSdkRuntimeDefaults } from "./runtime-defaults";
 import { cursorModelFingerprint } from "./model-selection";
 import {
   CURSOR_SDK_WORKSPACES_ROOT,
@@ -698,6 +699,7 @@ export class SessionManager {
     sandboxEnabled?: boolean;
     hostEnv?: HostEnvironment;
   }): Promise<CursorSdkSession> {
+    ensureCursorSdkRuntimeDefaults();
     installCursorAuthExchangeCache();
     // A client can reconnect before ReadableStream cancellation finishes, and
     // several reconnects can wake together. Wait for both retirement and any
@@ -809,6 +811,7 @@ export class SessionManager {
     sandboxEnabled?: boolean;
     hostEnv?: HostEnvironment;
   }): Promise<CursorSdkSession> {
+    ensureCursorSdkRuntimeDefaults();
     installCursorAuthExchangeCache();
     const sandboxEnabled = shouldEnableCursorSandbox(options.sandboxEnabled);
     const hostEnv = options.hostEnv || EMPTY_HOST_ENVIRONMENT;

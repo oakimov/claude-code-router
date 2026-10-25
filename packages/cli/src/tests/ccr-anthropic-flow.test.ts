@@ -8,7 +8,7 @@
  * Flow: Claude Code -> CCR Server (/v1/messages) -> Gemini Nano Bridge -> CCR Server -> Claude Code
  * 
  * Usage:
- *   npx tsx packages/cli/src/tests/ccr-anthropic-flow.test.ts
+ *   bun packages/cli/src/tests/ccr-anthropic-flow.test.ts
  */
 
 import http from "http";

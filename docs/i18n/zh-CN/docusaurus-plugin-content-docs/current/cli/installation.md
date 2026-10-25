@@ -12,17 +12,17 @@ sidebar_position: 2
 - **Docker**
 - 来自您偏好的 LLM 提供商的 API 密钥
 
-**使用 Docker 安装时无需 Node.js** —— 镜像自带运行时（当前为 Node 22 LTS）。
+**使用 Docker 安装时无需本地 Bun** —— 镜像自带 Bun 运行时（钉在 Bun 1.4.x）。OpenCode 免费层模型依赖 Bun 的 TLS 指纹；Node undici 会被上游拒绝。
 
-仅在以下情况需要本地安装 Node.js：从 npm 安装 CLI、从源码运行，或使用 [Chrome 端侧桥接](/docs/server/guides/chrome-on-device)。此时最低要求为 **Node.js ≥ 22.19.0**，并由每个已发布包的 `engines` 字段强制约束：
+从 npm 安装 CLI、从源码运行，或使用 [Chrome 端侧桥接](/docs/server/guides/chrome-on-device) 时，需要本地 **Bun ≥ 1.4.0**，并由每个已发布包的 `engines.bun` 字段强制约束：
 
-| 包 | 最低 Node 版本 |
+| 包 | 最低 Bun 版本 |
 | --- | --- |
-| `@caeliq/claude-code-router`（CLI） | ≥ 22.19.0 |
-| `@caeliq/llms`（core） | ≥ 22.19.0 |
-| `@caeliq/ccr-shared` | ≥ 22.19.0 |
+| `@caeliq/claude-code-router`（CLI） | ≥ 1.4.0 |
+| `@caeliq/llms`（core） | ≥ 1.4.0 |
+| `@caeliq/ccr-shared` | ≥ 1.4.0 |
 
-该下限来自 `undici`（用于向提供商发起请求的 HTTP 客户端）。`22.19.0` 是 Node 22 的 **LTS** 版本；任何更新的 Node 22 或 24 同样可用。在更旧的运行时上安装会出现 `EBADENGINE` 警告，并在运行时报错。
+CI 与 Docker 全链路使用 Bun（`oven-sh/setup-bun`、`oven/bun:1.4.4-alpine`）。工具链不再依赖 Node。
 
 ## 通过 Docker 安装
 

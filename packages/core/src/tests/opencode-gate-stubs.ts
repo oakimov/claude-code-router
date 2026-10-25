@@ -716,6 +716,80 @@ async function createsStubsWhenToolsAbsent() {
   assert.deepEqual(ctx.req._opencodeGateAliases, { read: null, shell: null });
 }
 
+async function injectsFreeTierEnvSystemFingerprint() {
+  const sent = installFetch();
+  const ctx = makeContext();
+  await new OpencodeHeadersTransformer().transformRequestIn(
+    { model: FREE, messages: [{ role: "user", content: "hi" }] },
+    zenChat,
+    ctx
+  );
+  const out = sent[0].body;
+  const system = out.messages.find((m: any) => m.role === "system");
+  assert.ok(system, "free-tier chat body must gain a system message");
+  const text =
+    typeof system.content === "string"
+      ? system.content
+      : JSON.stringify(system.content);
+  assert.ok(text.includes("<env>"), "system must include OpenCode <env> block");
+  assert.ok(
+    text.includes(
+      "over generic system temporary directories such as /tmp; it is pre-created and approved for external access."
+    ),
+    "system must include Prefer-tmp fingerprint"
+  );
+  assert.ok(
+    text.length >= 54_500,
+    `system length floor: got ${text.length}`
+  );
+  assert.equal(out.messages.some((m: any) => m.role === "user"), true);
+
+  // Already-fingerprinted + long enough: leave content alone (no re-pad).
+  const ctx2 = makeContext();
+  const existing =
+    "\n".repeat(54_500) +
+    "Today's date: stub\n\nHere is some useful information about the environment you are running in:\n<env>\n  Prefer /tmp/ccr-test over generic system temporary directories such as /tmp; it is pre-created and approved for external access.\n</env>";
+  await new OpencodeHeadersTransformer().transformRequestIn(
+    {
+      model: FREE,
+      messages: [
+        { role: "system", content: existing },
+        { role: "user", content: "hi" },
+      ],
+      stream: true,
+      tools: [chatClientTool("read"), chatClientTool("shell")],
+    },
+    zenChat,
+    ctx2
+  );
+  const kept = sent[1].body.messages.find((m: any) => m.role === "system");
+  assert.equal(kept.content, existing);
+
+  // Responses wire: fingerprint lands in `instructions`.
+  const ctx3 = makeContext();
+  await new OpencodeHeadersTransformer().transformRequestIn(
+    { model: FREE, input: [], stream: true, tools: [] },
+    zenResponses,
+    ctx3
+  );
+  const instructions = sent[2].body.instructions;
+  assert.equal(typeof instructions, "string");
+  assert.ok(instructions.includes("<env>"));
+  assert.ok(instructions.length >= 54_500);
+
+  // Paid models: no system injection.
+  const ctx4 = makeContext();
+  await new OpencodeHeadersTransformer().transformRequestIn(
+    { model: "claude-opus-4-6", messages: [{ role: "user", content: "hi" }] },
+    zenChat,
+    ctx4
+  );
+  assert.equal(
+    sent[3].body.messages.some((m: any) => m.role === "system"),
+    false
+  );
+}
+
 async function skipsNativeStubsAndPaidModels() {
   const sent = installFetch();
   const ctx = makeContext();
@@ -1551,6 +1625,7 @@ async function main() {
     await aliasesNativeShellVariants();
     await aliasesCodeOnlyHarnesses();
     await createsStubsWhenToolsAbsent();
+    await injectsFreeTierEnvSystemFingerprint();
     await skipsNativeStubsAndPaidModels();
     await rewritesResponsesStubCalls();
     await rewritesChatStubCalls();

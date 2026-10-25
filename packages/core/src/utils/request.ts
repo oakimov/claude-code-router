@@ -1,4 +1,3 @@
-import { ProxyAgent } from "undici";
 import { UnifiedChatRequest } from "../types/llm";
 // import { diffHeadersForLog, sanitizeHeadersForLog } from "./redact";
 import { createApiError } from "../api/middleware";
@@ -10,34 +9,36 @@ import {
 } from "./retry";
 import { markLatency } from "./request-latency";
 
-const proxyDispatchers = new Map<string, ProxyAgent>();
-
-/** One Undici ProxyAgent per normalized proxy URL so connections can be reused. */
-export function getProxyDispatcher(httpsProxy: string): ProxyAgent {
-  const key = new URL(httpsProxy).toString();
-  let agent = proxyDispatchers.get(key);
-  if (!agent) {
-    agent = new ProxyAgent(key);
-    proxyDispatchers.set(key, agent);
-  }
-  return agent;
+/** True when running under the Bun runtime (CCR's sole supported runtime). */
+export function isBunRuntime(): boolean {
+  return typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 }
 
-/** Close every cached ProxyAgent (call on server shutdown). */
+const normalizedProxyUrls = new Set<string>();
+
+/** Normalize a proxy URL string for stable comparison / tests. */
+export function normalizeProxyUrl(httpsProxy: string): string {
+  return new URL(httpsProxy).toString();
+}
+
+/**
+ * Remember a normalized proxy URL (test/inspection helper). Bun's fetch takes
+ * a `proxy` option per request — there is no undici ProxyAgent to cache.
+ */
+export function getProxyDispatcher(httpsProxy: string): string {
+  const key = normalizeProxyUrl(httpsProxy);
+  normalizedProxyUrls.add(key);
+  return key;
+}
+
+/** Clear remembered proxy URLs (call on server shutdown / tests). */
 export function closeProxyDispatchers(): void {
-  for (const agent of proxyDispatchers.values()) {
-    try {
-      void agent.close();
-    } catch {
-      // Best-effort cleanup during shutdown.
-    }
-  }
-  proxyDispatchers.clear();
+  normalizedProxyUrls.clear();
 }
 
-/** Test-only: inspect the module-level dispatcher cache. */
-export function __getProxyDispatcherCacheForTests(): Map<string, ProxyAgent> {
-  return proxyDispatchers;
+/** Test-only: inspect remembered proxy URLs. */
+export function __getProxyDispatcherCacheForTests(): Set<string> {
+  return normalizedProxyUrls;
 }
 
 function normalizeHostname(hostname: string): string {
@@ -156,6 +157,26 @@ function stripNoProxyPort(pattern: string): string {
   return pattern;
 }
 
+/**
+ * Bun-native proxy option for fetch. CCR only proxies when `config.httpsProxy`
+ * is set (parity with the old undici path). When unset or bypassed, force
+ * `proxy: false` so Bun does not silently honor process env HTTPS_PROXY.
+ */
+export function resolveFetchProxyOption(
+  requestUrl: string,
+  httpsProxy: string | undefined | null
+): string | false | undefined {
+  if (!httpsProxy) {
+    // Explicitly disable env-based proxy so outbound provider calls match
+    // CCR's "proxy only when configured" semantics.
+    return isBunRuntime() ? false : undefined;
+  }
+  if (shouldBypassProxy(requestUrl)) {
+    return isBunRuntime() ? false : undefined;
+  }
+  return getProxyDispatcher(httpsProxy);
+}
+
 export async function sendUnifiedRequest(
   url: URL | string,
   request: UnifiedChatRequest,
@@ -179,7 +200,7 @@ export async function sendUnifiedRequest(
     ? AbortSignal.any([config.signal, timeoutSignal])
     : timeoutSignal;
 
-  const fetchOptions: RequestInit = {
+  const fetchOptions: RequestInit & { proxy?: string | false } = {
     method: "POST",
     headers: headers,
     body: JSON.stringify(request),
@@ -187,11 +208,9 @@ export async function sendUnifiedRequest(
   };
 
   const requestUrl = typeof url === "string" ? url : url.toString();
-  const useProxy =
-    Boolean(config.httpsProxy) && !shouldBypassProxy(requestUrl);
-
-  if (useProxy) {
-    (fetchOptions as any).dispatcher = getProxyDispatcher(config.httpsProxy);
+  const proxy = resolveFetchProxyOption(requestUrl, config.httpsProxy);
+  if (proxy !== undefined) {
+    fetchOptions.proxy = proxy;
   }
 
   // const clientHeaders = context?.req?.headers as

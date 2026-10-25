@@ -70,7 +70,7 @@ Rules:
 
 ## Prereqs (verify first)
 1. `pwd` is repo root. `git status` shows the latency tree as dirty (+32 files expected). `git log --oneline -3` contains `2dabf5e` or nearby. `cat tasks/plans/improve-ccr-latency.md | head -20` succeeds.
-2. `pnpm typecheck && pnpm test` on treatment is green before you start live traffic (treatment already passes 93/93, 1 skipped). Fail fast if not.
+2. `bun run typecheck && bun run test` on treatment is green before you start live traffic (treatment already passes 93/93, 1 skipped). Fail fast if not.
 3. `~/.claude-code-router/config.json` exists and has `Providers` + `Router`. Keep it **identical** for both variants. Never resolve `$OPENCODE_API_KEY` / `${...}` placeholders — leave them verbatim. If no providers, you can only run Phase A.
 4. `jq` available. `curl` available.
 5. Model discovery above succeeded (at least one `FREE:` line). Record the chosen `provider,model`.
@@ -81,24 +81,24 @@ Run on **treatment** first, then **control**:
 
 ```bash
 # treatment (current dirty tree)
-pnpm build 2>&1 | tail -5
-npx tsx packages/core/src/tests/latency-cadence.ts
-npx tsx packages/core/src/tests/sse-event-native.ts
-npx tsx packages/core/src/tests/transformer-plan.ts
-npx tsx packages/core/src/tests/proxy-dispatcher-cache.ts
+bun run build 2>&1 | tail -5
+bun packages/core/src/tests/latency-cadence.ts
+bun packages/core/src/tests/sse-event-native.ts
+bun packages/core/src/tests/transformer-plan.ts
+bun packages/core/src/tests/proxy-dispatcher-cache.ts
 ```
 
 Stash to get control, rebuild, rerun same four commands:
 
 ```bash
 git stash push -m "ab-treatment" --keep-index
-pnpm build 2>&1 | tail -5
-npx tsx packages/core/src/tests/latency-cadence.ts
-npx tsx packages/core/src/tests/sse-event-native.ts
-npx tsx packages/core/src/tests/transformer-plan.ts
+bun run build 2>&1 | tail -5
+bun packages/core/src/tests/latency-cadence.ts
+bun packages/core/src/tests/sse-event-native.ts
+bun packages/core/src/tests/transformer-plan.ts
 # restore
 git stash pop
-pnpm build 2>&1 | tail -5
+bun run build 2>&1 | tail -5
 ```
 
 What to record:
@@ -116,9 +116,9 @@ Only if providers are configured. Run two CCR instances on different ports with 
 Terminal 1 — control on 3456:
 ```bash
 git stash push -m "ab-treatment" --keep-index
-pnpm build
+bun run build
 PORT=3456 LOG_LEVEL=info node packages/server/dist/index.js &
-# or: PORT=3456 pnpm dev:server &
+# or: PORT=3456 bun run dev:server &
 echo $! > /tmp/ccr-control.pid
 curl -sf http://127.0.0.1:3456/health | jq .
 ```
@@ -126,7 +126,7 @@ curl -sf http://127.0.0.1:3456/health | jq .
 Terminal 2 — treatment on 3457:
 ```bash
 git stash pop
-pnpm build
+bun run build
 PORT=3457 LOG_LEVEL=info node packages/server/dist/index.js &
 echo $! > /tmp/ccr-treatment.pid
 curl -sf http://127.0.0.1:3457/health | jq .
@@ -225,7 +225,7 @@ Plus:
 - Do not edit `config.json` secrets resolution. Leave env placeholders intact.
 - Kill background servers when done: `kill $(cat /tmp/ccr-control.pid) $(cat /tmp/ccr-treatment.pid) 2>/dev/null; rm /tmp/ccr-*.pid`
 - If providers are missing, report Phase A only and mark Phase B as skipped with reason.
-- Clean `pnpm lint && pnpm build` must stay green on treatment.
+- Clean `bun run lint && bun run build` must stay green on treatment.
 - Never switch to a paid model when free models rate-limit — record the attempted free model and the 429/529, then report with the samples you have.
 
 ## Expected impact ranking (for interpreting results)
@@ -239,5 +239,5 @@ Plus:
 ```bash
 kill $(cat /tmp/ccr-control.pid 2>/dev/null) $(cat /tmp/ccr-treatment.pid 2>/dev/null) 2>/dev/null; true
 git stash pop 2>/dev/null; true
-pnpm build 2>&1 | tail -3
+bun run build 2>&1 | tail -3
 ```

@@ -50,7 +50,7 @@ This fork is based on [claude-code-router](https://github.com/musistudio/claude-
 
 Before you begin, ensure you have the following installed on your system:
 - **Docker** (Recommended): The primary way to run the router via the published image. See [Docker Install Guide](https://docs.docker.com/get-docker/).
-- **Node.js** (Optional): Required to run from source, publish packages, or use the **Chrome On-Device** bridge. This fork requires **Node.js ≥ 22.19.0** (needed by `undici`). See [Node.js Download](https://nodejs.org/).
+- **Bun** (≥ 1.4.0): Required to run from source, publish packages, or use the **Chrome On-Device** bridge. The Docker image ships Bun; OpenCode free-tier models need Bun's TLS fingerprint. See [Bun Install](https://bun.sh/docs/installation).
 - **Claude Code**: See the [official quickstart guide](https://code.claude.com/docs/en/quickstart) for installation instructions.
 
 #### Quick Start with Docker

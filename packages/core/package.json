@@ -14,12 +14,11 @@
     }
   },
   "scripts": {
-    "tsx": "tsx",
-    "build": "tsx scripts/build.ts",
-    "build:watch": "tsx scripts/build.ts --watch",
-    "dev": "nodemon",
-    "start": "node dist/cjs/server.cjs",
-    "start:esm": "node dist/esm/server.mjs",
+    "build": "bun scripts/build.ts",
+    "build:watch": "bun --watch scripts/build.ts",
+    "dev": "bun run build:watch",
+    "start": "bun dist/esm/server.mjs",
+    "start:esm": "bun dist/esm/server.mjs",
     "lint": "eslint src",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
@@ -56,16 +55,14 @@
     "lru-cache": "^11.5.3",
     "openai": "^7.34.0",
     "tiktoken": "^1.0.22",
-    "undici": "^8.12.2",
     "uuid": "^14.0.3"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",
-    "tsx": "^4.23.15",
     "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "bun": ">=1.4.0"
   }
 }

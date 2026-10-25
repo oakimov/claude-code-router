@@ -9,7 +9,7 @@
  * required`) and the manual-thinking budget 400 (`budget_tokens: Field
  * required`).
  *
- * Opt-in (never in CI): `pnpm test:live`. Environment:
+ * Opt-in (never in CI): `bun run test:live`. Environment:
  *   CCR_URL         default http://localhost:3456
  *   CCR_API_KEY     required: the CCR server's API key
  *   CCR_LIVE_MODEL  default "claude,claude-haiku-4-5-20251001". The prompt is a

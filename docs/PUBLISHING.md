@@ -24,8 +24,8 @@ npm publisher: `oakimov`
 
 1. Confirm you can publish under the org:
    ```bash
-   npm whoami
-   npm org ls caeliq
+   bun pm whoami
+   # org membership is still managed on npmjs.com
    ```
 2. Your user (`oakimov`) must have a role that can publish in `caeliq` (typically `developer`+).
 
@@ -35,9 +35,9 @@ Trusted publishing can only be attached to packages that already exist on the re
 
 ```bash
 # from repo root
-npm login
-pnpm install
-pnpm build
+bun pm login
+bun install
+bun run build
 NPM_DRY_RUN=1 bash scripts/release.sh npm
 bash scripts/release.sh npm
 ```
@@ -45,10 +45,10 @@ bash scripts/release.sh npm
 Verify:
 
 ```bash
-npm view @caeliq/ccr-shared version
-npm view @caeliq/llms version
-npm view @caeliq/claude-code-router version
-npm install -g @caeliq/claude-code-router
+bun pm view @caeliq/ccr-shared version
+bun pm view @caeliq/llms version
+bun pm view @caeliq/claude-code-router version
+bun install -g @caeliq/claude-code-router
 ccr -h
 ```
 
@@ -94,10 +94,10 @@ Triggers:
 - Push of a version tag: `v*.*.*` (example: `v2.1.16`)
 - Manual **workflow_dispatch** (optional dry-run)
 
-It builds with pnpm, then runs `scripts/release.sh npm` with:
+It installs and builds with Bun (`bun install --frozen-lockfile`, `bun run build`), then runs `scripts/release.sh npm` with:
 
 - `id-token: write`
-- `npm publish --access public --provenance`
+- `bun publish --access public` (OIDC provenance when `CI=true`)
 - no `NODE_AUTH_TOKEN`
 
 ### Recommended first CI check (dry-run)
@@ -138,5 +138,5 @@ Publish order inside the script is always: shared → llms → CLI.
 | `cannot publish over existing version` | bump `version` in that package |
 | Provenance errors in CI | npm too old in CI (workflow upgrades npm), or trusted publisher missing |
 | Wrong repo in provenance | publisher config must match `oakimov/claude-code-router` |
-| Token auth used instead of OIDC | `actions/setup-node` injects `NODE_AUTH_TOKEN`; workflow clears it before publish |
-| `npm@latest` engine error on CI | use current Node 22.x (workflow uses `node-version: "22"`) |
+| Token auth used instead of OIDC | `NODE_AUTH_TOKEN` set in the environment; the workflow clears it before publish (`NPM_TRUSTED_PUBLISHING` must be `true` with `id-token: write`) |
+| `bun pm whoami` fails in CI | expected: OIDC trusted publishing replaces login (`NPM_TRUSTED_PUBLISHING=true` skips the check) |

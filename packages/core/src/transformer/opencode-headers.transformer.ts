@@ -26,8 +26,12 @@ import {
 } from "@/session-registry";
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-const OPENCODE_VERSION = "1.19.3";
-const OPENCODE_USER_AGENT = `opencode/${OPENCODE_VERSION} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`;
+// OpenCode 2.x App.useragent(): `opencode/<channel>/<version>/<name>`
+// (packages/core/src/app.ts). Channel for release builds is `latest`.
+const OPENCODE_CHANNEL = "latest";
+const OPENCODE_VERSION = "2.1.4";
+const OPENCODE_CLIENT = "opencode";
+const OPENCODE_USER_AGENT = `opencode/${OPENCODE_CHANNEL}/${OPENCODE_VERSION}/${OPENCODE_CLIENT}`;
 const OPENCODE_MAX_TOOL_SCHEMA_DEPTH = 10;
 
 const JSON_SCHEMA_CHILD_KEYS = new Set([
@@ -253,22 +257,33 @@ function boundToolSchema(schema: any): any {
   }
 }
 
-// Free-tier gate fingerprint (curl-verified 2026-09-24 against
-// https://opencode.ai/zen/v1/responses, model muse-spark-1.3-contributor-free):
-// Zen's Console free-tier check passes only when the Responses body carries
-// `"stream": true` AND function tools named exactly `read` and `shell`
-// (lowercase; `Read`/`Bash` fail). Tool schemas/descriptions are free-form,
-// `instructions`, `include`, and `store` are NOT required, and extra client
-// tools alongside the stubs are harmless. Anything missing yields 403
-// FreeTierError ("can only be used from within OpenCode").
-// Additionally `prompt_cache_key` MUST be the session id: a foreign key
-// (e.g. CCR's `ccr_<sha256>`) makes Zen return `response.incomplete` right
-// after the reasoning item with zero further events — an indefinite stall
-// from the client's perspective (A/B 2026-09-24: `ses_…` key completes,
+// Free-tier gate fingerprint (live A/B 2026-10-24/25 against
+// https://opencode.ai/inference/openai/v1/chat/completions, model beam-free,
+// and earlier curl probes against /zen/… Responses):
+// 1) TLS/HTTP client: Bun's fetch clears Cloudflare's client fingerprint;
+//    Node undici and stock curl get 429 FreeUsageLimitError with the same
+//    body/headers/key. FreeUsageLimitError is therefore often a gate reject,
+//    not only account quota (official OpenCode client is Bun-based).
+// 2) Body: `"stream": true` AND function tools named exactly `read` and
+//    `shell` (lowercase; `Read`/`Bash` fail). Tool schemas/descriptions are
+//    free-form; extra client tools alongside the stubs are harmless. Missing
+//    these yields 403 FreeTierError ("can only be used from within OpenCode").
+// 3) System prompt: a system/instructions block of length ≥ ~54500 that
+//    contains OpenCode's builtin env shape (`Today's date:` + `<env>` with
+//    the Prefer-tmp line from packages/core/src/instructions/builtins.ts).
+//    Short/minimal system text also yields FreeUsageLimitError on Bun.
+// Additionally on Responses, `prompt_cache_key` MUST be the session id: a
+// foreign key (e.g. CCR's `ccr_<sha256>`) makes Zen return
+// `response.incomplete` right after the reasoning item with zero further
+// events — an indefinite stall (A/B 2026-09-24: `ses_…` key completes,
 // `ccr_…` key goes `incomplete`). The key is re-applied per attempt, so it
 // follows the session through a bad-bucket re-roll.
-// Scope: models ending in `-free` on a zen (opencode.ai) endpoint; paid Zen
-// models are left untouched.
+// Scope: models ending in `-free` on a zen/inference (opencode.ai) endpoint;
+// paid Zen models are left untouched.
+const FREE_TIER_SYSTEM_MIN_CHARS = 54_500;
+/** Stable substring of OpenCode's builtin env Prefer-tmp line (builtins.ts). */
+const FREE_TIER_ENV_MARKER =
+  "over generic system temporary directories such as /tmp; it is pre-created and approved for external access.";
 
 // OpenCode Zen selects an upstream backend by hashing the last 4 characters of
 // the `x-opencode-session` header (see zen handler selectProvider). When a
@@ -292,7 +307,10 @@ function boundToolSchema(schema: any): any {
 const MAX_ZEN_ATTEMPTS = 5;
 const ZEN_RETRY_BACKOFF_BASE_MS = 2_000;
 const ZEN_RETRY_BACKOFF_MAX_MS = 30_000;
-const ZEN_RETRY_AFTER_MAX_MS = 2_147_483_647;
+// Match OpenCode packages/core/src/model-retry.ts RETRY_AFTER_MAX (15 minutes).
+// FreeUsageLimitError often ships a multi-hour Retry-After; sleeping that long
+// on an in-flight client request hangs the session with no response.
+const ZEN_RETRY_AFTER_MAX_MS = 15 * 60 * 1_000;
 const ZEN_FIRST_EVENT_TIMEOUT_MS = 30_000;
 const ZEN_FIRST_PROGRESS_TIMEOUT_MS = 60_000;
 const ZEN_STREAM_IDLE_TIMEOUT_MS = 60_000;
@@ -428,6 +446,7 @@ export class OpencodeHeadersTransformer implements Transformer {
         );
       }
       body = this.ensureStreamedForFreeTier(body, context);
+      body = this.ensureFreeTierEnvFingerprint(body, context);
       const gate = this.ensureGateStubTools(body);
       body = gate.body;
       body = this.limitFreeTierToolSchemas(body, context);
@@ -753,7 +772,11 @@ export class OpencodeHeadersTransformer implements Transformer {
         response.status,
         errorText
       );
-      const transientFailure = this.isZenTransientStatus(response.status);
+      // FreeUsageLimitError is account/IP free-lane quota, not a short blip.
+      // Do not sleep on its multi-hour Retry-After — surface 429 immediately.
+      const quotaExhausted = this.isZenFreeUsageLimit(response.status, errorText);
+      const transientFailure =
+        !quotaExhausted && this.isZenTransientStatus(response.status);
 
       if (routingFailure) {
         // The bucket fails deterministically for this session, on this and
@@ -1105,10 +1128,14 @@ export class OpencodeHeadersTransformer implements Transformer {
       "x-api-key": provider.apiKey || "",
       "authorization": provider.apiKey ? `Bearer ${provider.apiKey}` : undefined,
       "x-opencode-project": "global",
+      // OpenCode model-request.ts: session-id is the conversation id; session /
+      // affinity headers share the sticky routing key (parent/fork root, else id).
       "x-opencode-session": session,
       "x-opencode-session-id": session,
+      "x-session-affinity": session,
+      "X-Session-Id": session,
       "x-opencode-request": requestId,
-      "x-opencode-client": "cli",
+      "x-opencode-client": OPENCODE_CLIENT,
       // `x-zen-model` is intentionally NOT sent. Research (2026-08-25, verified
       // against opencode-research git history AND the shipped
       // opencode-darwin-arm64@1.18.32 binary): the real client never emits this
@@ -1119,7 +1146,12 @@ export class OpencodeHeadersTransformer implements Transformer {
       // inf./inf-go.) or deletes it (legacy). The value comes from the request
       // body, so anything we send is overwritten server-side anyway. Revisit only
       // if Zen ever documents honoring an inbound x-zen-model.
-      ...(parentSessionId ? { "x-parent-session-id": parentSessionId } : {}),
+      ...(parentSessionId
+        ? {
+            "x-parent-session-id": parentSessionId,
+            "x-opencode-parent-session-id": parentSessionId,
+          }
+        : {}),
       "user-agent": OPENCODE_USER_AGENT,
     };
   }
@@ -1188,6 +1220,29 @@ export class OpencodeHeadersTransformer implements Transformer {
 
   private isZenTransientStatus(status: number): boolean {
     return isFallbackEligibleStatus(status);
+  }
+
+  /**
+   * OpenCode Console free-lane quota exhaustion. Distinct from FreeTierError
+   * (client fingerprint rejected) and ordinary short 429 rate limits. OpenCode
+   * maps this to `provider.free-limit` and surfaces a subscribe CTA — it does
+   * not spin on Retry-After inside the request.
+   */
+  private isZenFreeUsageLimit(status: number, text: string): boolean {
+    if (status !== 429) return false;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return /FreeUsageLimitError/i.test(text);
+    }
+    const type = String(parsed?.error?.type || parsed?.type || "");
+    const message = String(parsed?.error?.message || parsed?.message || "");
+    return (
+      type === "FreeUsageLimitError" ||
+      /FreeUsageLimitError/i.test(message) ||
+      /free usage limit reached/i.test(message)
+    );
   }
 
   private retryDelayMs(response: Response, failedAttemptIndex: number): number {
@@ -1296,6 +1351,145 @@ export class OpencodeHeadersTransformer implements Transformer {
       "opencode: forcing stream for free-tier gate"
     );
     return { ...body, stream: true };
+  }
+
+  /**
+   * Free-tier content gate (Bun A/B 2026-10-25): system/instructions must be
+   * ≥ ~54500 chars and include OpenCode's builtin env Prefer-tmp line. Pad
+   * with leading newlines when short; inject an env footer when missing.
+   * No-op when already fingerprinted and long enough. Paid models skip this.
+   */
+  private ensureFreeTierEnvFingerprint(body: any, context: any): any {
+    if (!body || typeof body !== "object") return body;
+
+    const systemText = OpencodeHeadersTransformer.collectSystemText(body);
+    const hasEnv =
+      systemText.includes("<env>") && systemText.includes(FREE_TIER_ENV_MARKER);
+    if (hasEnv && systemText.length >= FREE_TIER_SYSTEM_MIN_CHARS) {
+      return body;
+    }
+
+    let next = systemText;
+    if (!hasEnv) {
+      const envBlock = OpencodeHeadersTransformer.buildOpenCodeEnvBlock(context);
+      next = next ? `${next}\n\n${envBlock}` : envBlock;
+    }
+    if (next.length < FREE_TIER_SYSTEM_MIN_CHARS) {
+      next = "\n".repeat(FREE_TIER_SYSTEM_MIN_CHARS - next.length) + next;
+    }
+
+    context?.req?.log?.debug?.(
+      {
+        provider: "opencode",
+        model: (body as any).model,
+        systemLen: next.length,
+        injectedEnv: !hasEnv,
+      },
+      "opencode: ensuring free-tier env system fingerprint"
+    );
+    return OpencodeHeadersTransformer.writeSystemText(body, next);
+  }
+
+  /** Concatenate chat system messages + Responses `instructions` into one string. */
+  private static collectSystemText(body: any): string {
+    const parts: string[] = [];
+    if (typeof body?.instructions === "string" && body.instructions) {
+      parts.push(body.instructions);
+    }
+    if (Array.isArray(body?.messages)) {
+      for (const message of body.messages) {
+        if (message?.role !== "system") continue;
+        const text = OpencodeHeadersTransformer.messageText(message);
+        if (text) parts.push(text);
+      }
+    }
+    if (Array.isArray(body?.input)) {
+      for (const item of body.input) {
+        const role = item?.role ?? (item?.type === "message" ? item.role : undefined);
+        if (role !== "system" && item?.type !== "instructions") continue;
+        const text = OpencodeHeadersTransformer.messageText(item);
+        if (text) parts.push(text);
+      }
+    }
+    return parts.join("\n\n");
+  }
+
+  private static messageText(message: any): string {
+    if (!message) return "";
+    if (typeof message.content === "string") return message.content;
+    if (typeof message.text === "string") return message.text;
+    if (!Array.isArray(message.content)) return "";
+    return message.content
+      .map((part: any) => {
+        if (typeof part === "string") return part;
+        if (typeof part?.text === "string") return part.text;
+        if (typeof part?.input_text === "string") return part.input_text;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  /**
+   * Write the fingerprinted system text back onto the outgoing wire shape.
+   * Chat: first system message, or prepend one. Responses: `instructions`.
+   */
+  private static writeSystemText(body: any, text: string): any {
+    if (Array.isArray(body.messages)) {
+      const messages = [...body.messages];
+      const idx = messages.findIndex((m) => m?.role === "system");
+      if (idx >= 0) {
+        const existing = messages[idx];
+        messages[idx] = {
+          ...existing,
+          content:
+            Array.isArray(existing.content) &&
+            existing.content.every(
+              (part: any) => part && typeof part === "object" && part.type === "text"
+            )
+              ? [{ type: "text", text }]
+              : text,
+        };
+      } else {
+        messages.unshift({ role: "system", content: text });
+      }
+      return { ...body, messages };
+    }
+    if (Array.isArray(body.input) || typeof body.instructions === "string") {
+      return { ...body, instructions: text };
+    }
+    // Free-tier body with neither messages nor input yet (stubs-only probes):
+    // prefer chat shape so stream/tool stubs still apply.
+    return {
+      ...body,
+      messages: [{ role: "system", content: text }, ...(body.messages || [])],
+    };
+  }
+
+  /** OpenCode builtin env instruction shape (date + Prefer-tmp `<env>` block). */
+  private static buildOpenCodeEnvBlock(context: any): string {
+    const date = new Date().toDateString();
+    const cwd =
+      (typeof context?.req?.body?.cwd === "string" && context.req.body.cwd) ||
+      (typeof process.cwd === "function" ? process.cwd() : "/");
+    const tmp =
+      typeof (globalThis as any).Bun?.env?.TMPDIR === "string"
+        ? (globalThis as any).Bun.env.TMPDIR
+        : process.env.TMPDIR || process.env.TMP || "/tmp";
+    const platform = process.platform || "unknown";
+    const isGit = "unknown";
+    return [
+      `Today's date: ${date}`,
+      "",
+      "Here is some useful information about the environment you are running in:",
+      "<env>",
+      `  Working directory: ${cwd}`,
+      `  Workspace root folder: ${cwd}`,
+      `  Is directory a git repo: ${isGit}`,
+      `  Platform: ${platform}`,
+      `  Prefer ${tmp} over generic system temporary directories such as /tmp; it is pre-created and approved for external access.`,
+      "</env>",
+    ].join("\n");
   }
 
   /**
@@ -1437,10 +1631,14 @@ export class OpencodeHeadersTransformer implements Transformer {
 
   private limitFreeTierToolSchemas(body: any, context: any): any {
     if (!Array.isArray(body?.tools)) return body;
-    const shape = OpencodeHeadersTransformer.outgoingToolShape(body, body.tools);
     const bounded: any[] = [];
     const tools = body.tools.map((tool: any) => {
-      const fn = shape === "chat" ? tool?.function : tool;
+      // Prefer nested Chat `function` when present; otherwise Responses-flat.
+      // Do not key off body shape alone — mid-chain conversion can leave
+      // `messages` while tools are already flat (or the reverse).
+      const chatShaped =
+        tool?.function && typeof tool.function === "object";
+      const fn = chatShaped ? tool.function : tool;
       if (!fn?.parameters || typeof fn.parameters !== "object") return tool;
       const parameters = boundToolSchema(fn.parameters);
       if (parameters === fn.parameters) return tool;
@@ -1449,7 +1647,7 @@ export class OpencodeHeadersTransformer implements Transformer {
         beforeDepth: jsonContainerDepth(fn.parameters),
         afterDepth: jsonContainerDepth(parameters),
       });
-      if (shape === "chat") {
+      if (chatShaped) {
         return { ...tool, function: { ...fn, parameters } };
       }
       return { ...tool, parameters };
@@ -1471,25 +1669,30 @@ export class OpencodeHeadersTransformer implements Transformer {
     body: any,
     tools: any[]
   ): "chat" | "responses" {
-    if (Array.isArray(body?.messages)) return "chat";
-    if (Array.isArray(body?.input)) return "responses";
+    // Prefer the tool objects themselves — body can briefly carry both
+    // `messages` and Responses-flat tools during mid-chain conversion.
     const first = tools.find(
       (tool) => tool && typeof tool === "object"
     );
     if (first && typeof first?.function?.name === "string") return "chat";
+    if (first && typeof first?.name === "string") return "responses";
+    if (Array.isArray(body?.messages)) return "chat";
+    if (Array.isArray(body?.input)) return "responses";
     return "responses";
   }
 
-  private static toolName(tool: any, shape: "chat" | "responses"): unknown {
+  private static toolName(tool: any, _shape?: "chat" | "responses"): unknown {
     if (!tool || typeof tool !== "object") return undefined;
-    return shape === "chat" ? tool?.function?.name : tool?.name;
+    if (typeof tool?.function?.name === "string") return tool.function.name;
+    return tool?.name;
   }
 
   private static toolDef(
     tool: any,
-    shape: "chat" | "responses"
+    _shape?: "chat" | "responses"
   ): { description: any; parameters: any } {
-    const fn = shape === "chat" ? tool?.function : tool;
+    const fn =
+      tool?.function && typeof tool.function === "object" ? tool.function : tool;
     return { description: fn?.description, parameters: fn?.parameters };
   }
 

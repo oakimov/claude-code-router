@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 const { execSync } = require('child_process');
 
@@ -7,15 +7,15 @@ console.log('Building Claude Code Router (Monorepo)...');
 try {
   // Build core package first (@caeliq/llms)
   console.log('Building core package (@caeliq/llms)...');
-  execSync('node scripts/build-core.js', { stdio: 'inherit' });
+  execSync('bun scripts/build-core.js', { stdio: 'inherit' });
 
   // Build shared package
   console.log('Building shared package...');
-  execSync('node scripts/build-shared.js', { stdio: 'inherit' });
+  execSync('bun scripts/build-shared.js', { stdio: 'inherit' });
 
   // Build CLI package (which will also build server and ui)
   console.log('Building CLI package (includes server and ui)...');
-  execSync('node scripts/build-cli.js', { stdio: 'inherit' });
+  execSync('bun scripts/build-cli.js', { stdio: 'inherit' });
 
   console.log('\n✅ Build completed successfully!');
   console.log('\nArtifacts are available in packages/*/dist:');

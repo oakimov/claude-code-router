@@ -1,9 +1,9 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 /**
  * Workspace test runner.
  *
- * Every test file under `packages/<pkg>/src/tests/` is a standalone tsx entry
+ * Every test file under `packages/<pkg>/src/tests/` is a standalone Bun entry
  * point that exits non-zero on failure. This runner discovers them, executes
  * each in its own process, and reports a summary.
  *
@@ -12,10 +12,10 @@
  * root breaks that resolution.
  *
  * Usage:
- *   node scripts/run-tests.js                  # all hermetic tests (CI default)
- *   node scripts/run-tests.js --chrome-bridge  # also run Chrome bridge tests
- *   node scripts/run-tests.js --live cli       # live CCR → Anthropic tests
- *   node scripts/run-tests.js core cli         # only the named packages
+ *   bun scripts/run-tests.js                  # all hermetic tests (CI default)
+ *   bun scripts/run-tests.js --chrome-bridge  # also run Chrome bridge tests
+ *   bun scripts/run-tests.js --live cli       # live CCR → Anthropic tests
+ *   bun scripts/run-tests.js core cli         # only the named packages
  */
 
 const { spawnSync } = require('child_process');
@@ -67,7 +67,7 @@ const PER_TEST_TIMEOUT_MS = 120_000;
 // a session. Several of these vars (e.g. CLAUDE_CODE_ENTRYPOINT) are read
 // into frozen module-level constants at import time, so an ambient value
 // leaks into every test process and can't be undone by a test's own
-// save/restore. Strip them so `pnpm test` is hermetic regardless of the
+// save/restore. Strip them so `bun run test` is hermetic regardless of the
 // invoking shell's environment.
 const CLAUDE_CODE_PASSTHROUGH_ENV_VARS = [
   'ANTHROPIC_BETAS',
@@ -123,7 +123,7 @@ const started = process.hrtime.bigint();
 
 for (const test of tests) {
   const timeoutMs = OPT_IN_ONLY[test.id]?.timeoutMs ?? PER_TEST_TIMEOUT_MS;
-  const result = spawnSync('npx', ['tsx', path.join('src', 'tests', test.file)], {
+  const result = spawnSync('bun', [path.join('src', 'tests', test.file)], {
     cwd: path.join(repoRoot, 'packages', test.pkg),
     encoding: 'utf8',
     timeout: timeoutMs,

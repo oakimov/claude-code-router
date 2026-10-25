@@ -13,7 +13,7 @@
  *      the same numbers and verdict `cold`/`warm-start` on turn 1, `hit`
  *      afterwards (never `partial` or `unexpected-miss`).
  *
- * Opt-in (never in CI): `pnpm test:live`. Requires CCR with LOG_LEVEL=debug.
+ * Opt-in (never in CI): `bun run test:live`. Requires CCR with LOG_LEVEL=debug.
  * Environment:
  *   CCR_URL         default http://localhost:3456
  *   CCR_API_KEY     required: the CCR server's API key

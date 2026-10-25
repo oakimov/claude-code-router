@@ -8,17 +8,17 @@ This directory contains the documentation website built with [Docusaurus](https:
 
 ```bash
 cd docs
-pnpm install
+bun install
 ```
 
 ### Start Development Server
 
 ```bash
 # From docs directory
-pnpm start
+bun run start
 
 # Or from root directory
-pnpm dev:docs
+bun run dev:docs
 ```
 
 Open [http://localhost:3000](http://localhost:3000) to view the documentation.
@@ -27,10 +27,10 @@ Open [http://localhost:3000](http://localhost:3000) to view the documentation.
 
 ```bash
 # From docs directory
-pnpm build
+bun run build
 
 # Or from root directory
-pnpm build:docs
+bun run build:docs
 ```
 
 The built files will be in the `build/` directory.
@@ -39,10 +39,10 @@ The built files will be in the `build/` directory.
 
 ```bash
 # From docs directory
-pnpm serve
+bun run serve
 
 # Or from root directory
-pnpm serve:docs
+bun run serve:docs
 ```
 
 ## Structure

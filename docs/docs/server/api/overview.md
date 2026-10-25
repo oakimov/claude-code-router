@@ -39,6 +39,7 @@ curl -H "x-api-key: your-api-key" http://localhost:3456/api/config
 | `/v1/messages/count_tokens` | POST | Count tokens in messages |
 | `/v1/chat/completions` | POST | OpenAI Chat Completions (alias: `/chat/completions`) |
 | `/v1/responses` | POST | OpenAI Responses (alias: `/responses`) |
+| `/v1/responses/input_tokens` | POST | Count input tokens for a Responses request (alias: `/responses/input_tokens`) |
 | `/v1/fim/completions` | POST | FIM Completions (alias: `/fim/completions`) |
 | `/v1/models` | GET | List routable models (alias: `/models`) |
 | `/v1/models/{id}` | GET | Single model info |

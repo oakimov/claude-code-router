@@ -73,6 +73,19 @@ function writeIfChanged(
   writeFileSync(path, content, { encoding: "utf-8", mode });
 }
 
+/**
+ * Interpreter for the generated deny hook command. The SDK executes hook
+ * commands via `/bin/sh -c`, so the bare word in the command string is resolved
+ * through PATH on the machine running the Cursor agent. Use the runtime's own
+ * absolute path: under Bun that is Bun's binary, matching the `#!` on the
+ * script itself; falling back to `node` keeps behavior on hosts that only ship
+ * Node. The script is plain Node-compat JS (`process.stdin`, `Buffer`), which
+ * both runtimes execute identically.
+ */
+function denyHookCommand(denyScriptPath: string): string {
+  return `${process.execPath ?? "node"} "${denyScriptPath}"`;
+}
+
 export function ensureDenyHooksWorkspace(
   workspaceDir: string,
   hostEnv: HostEnvironment = EMPTY_HOST_ENVIRONMENT
@@ -90,7 +103,7 @@ export function ensureDenyHooksWorkspace(
   }
 
   const matcher = CURSOR_BUILTIN_DENY_LIST.join("|");
-  const denyCommand = `node "${denyScriptPath}"`;
+  const denyCommand = denyHookCommand(denyScriptPath);
 
   const hooksJson = {
     version: 1,

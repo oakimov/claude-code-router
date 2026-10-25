@@ -5,8 +5,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "node ../../scripts/build-server.js",
-    "dev": "tsx src/index.ts",
+    "build": "bun ../../scripts/build-server.js",
+    "dev": "bun src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src"
   },
@@ -44,10 +44,9 @@
     "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",
     "fastify": "^5.12.7",
-    "tsx": "^4.23.15",
     "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "bun": ">=1.4.0"
   }
 }

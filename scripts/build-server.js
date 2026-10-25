@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 const { execSync } = require('child_process');
 const path = require('path');
@@ -30,7 +30,7 @@ try {
   // Build the server application
   console.log('Building server application...');
   // Use minify and tree-shaking to optimize size.
-  // --target matches the package engines floor (>=22.19.0).
+  // --target matches the Bun runtime (engines.bun >=1.4.0); esbuild target node22.
   execSync('esbuild src/index.ts --bundle --platform=node --target=node22 --minify --tree-shaking=true --external:@cursor/sdk --external:@cursor/sdk/* --external:ai --external:@ai-sdk/* --external:zod --outfile=dist/index.js', {
     stdio: 'inherit',
     cwd: serverDir,

@@ -2,7 +2,7 @@
  * message_start usage must carry Anthropic-shaped input/cache early enough
  * for Claude Code's client meter (and autocompact) to fire.
  *
- * Run from packages/core: npx tsx src/tests/anthropic.message-start-usage.test.ts
+ * Run from packages/core: bun src/tests/anthropic.message-start-usage.test.ts
  */
 import assert from "node:assert/strict";
 import { AnthropicTransformer } from "../transformer/anthropic.transformer";

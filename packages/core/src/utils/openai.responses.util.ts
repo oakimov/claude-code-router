@@ -1,4 +1,5 @@
 import { UnifiedChatRequest, WebSearchCall } from "@/types/llm";
+import type { TokenizeRequest } from "@/types/tokenizer";
 import { createHash } from "crypto";
 import { createApiError } from "@/api/middleware";
 import { sanitizeResponsesCallId } from "@/utils/toolCallId";
@@ -592,6 +593,97 @@ export function responsesRequestToUnified(
   }
 
   return unified;
+}
+
+/** Join the text parts of a Unified message content value, if any. */
+function unifiedContentText(content: unknown): string | undefined {
+  if (typeof content === "string") return content || undefined;
+  if (!Array.isArray(content)) return undefined;
+  const text = content
+    .filter(
+      (part: any) => part?.type === "text" && typeof part.text === "string"
+    )
+    .map((part: any) => part.text)
+    .join("");
+  return text || undefined;
+}
+
+/**
+ * Parse a Chat Completions tool-call arguments string back to the value the
+ * counting helpers expect on a `tool_use` block. Malformed arguments stay as
+ * the raw string; counting them still beats dropping the call.
+ */
+function toolCallArgumentsValue(raw: unknown): any {
+  if (typeof raw !== "string") return raw ?? {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Unified (Chat Completions, the internal format) → the tokenizer counting
+ * shape (`TokenizeRequest`).
+ *
+ * The counting helpers (`calculateTokenCount`, `TiktokenTokenizer`) understand
+ * Anthropic-style blocks: text, `tool_use` (whose input is counted) and
+ * `tool_result`; tools are counted from `{ name, description, input_schema }`.
+ * Unified instead carries assistant calls in `tool_calls` and tools as
+ * `{ type: "function", function: { … } }`, so both are flattened here — without
+ * it a Responses request would under-count tool definitions and tool-call
+ * arguments.
+ */
+function unifiedToTokenizeRequest(
+  unified: UnifiedChatRequest
+): TokenizeRequest {
+  const messages: TokenizeRequest["messages"] = [];
+  let system: string | undefined;
+
+  for (const message of unified.messages ?? []) {
+    if (message.role === "system") {
+      const text = unifiedContentText(message.content);
+      if (text) system = system ? `${system}\n${text}` : text;
+      continue;
+    }
+    const toolCalls = message.tool_calls;
+    if (toolCalls && toolCalls.length > 0) {
+      const content: any[] = [];
+      const text = unifiedContentText(message.content);
+      if (text) content.push({ type: "text", text });
+      for (const call of toolCalls) {
+        content.push({
+          type: "tool_use",
+          input: toolCallArgumentsValue(call?.function?.arguments),
+        });
+      }
+      messages.push({ role: message.role, content });
+      continue;
+    }
+    messages.push({ role: message.role, content: message.content as any });
+  }
+
+  const tools: TokenizeRequest["tools"] = [];
+  for (const tool of unified.tools ?? []) {
+    const fn = tool?.function;
+    if (!fn?.name) continue;
+    tools.push({
+      name: fn.name,
+      description: fn.description,
+      input_schema: fn.parameters ?? { type: "object", properties: {} },
+    });
+  }
+
+  return { messages, system, tools };
+}
+
+/**
+ * Responses wire → tokenizer counting shape. Routes through the same Unified
+ * projection as the served `/v1/responses` path, so a body the local
+ * input-token counter accepts is a body the routed endpoint accepts.
+ */
+export function responsesRequestToTokenizeRequest(body: any): TokenizeRequest {
+  return unifiedToTokenizeRequest(responsesRequestToUnified(body));
 }
 
 /** Responses `include` is a string list; drop non-strings rather than invent values. */

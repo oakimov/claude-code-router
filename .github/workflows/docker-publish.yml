@@ -12,8 +12,8 @@ env:
 
 jobs:
   # Build each arch on a native runner. Emulating arm64 via QEMU on
-  # ubuntu-latest crashes Node/npm with SIGILL (exit 132) during corepack/
-  # npm global installs in this image.
+  # ubuntu-latest previously crashed Node/npm with SIGILL (exit 132) under
+  # QEMU arm64; builds now run on native runners with Bun only.
   build:
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -43,7 +43,7 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/* ]]; then
             VERSION=${GITHUB_REF#refs/tags/}
           else
-            VERSION=$(node -p "require('./package.json').version")
+            VERSION=$(bun -e "console.log(require('./package.json').version)")
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Docker image version: $VERSION"
@@ -107,7 +107,7 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/* ]]; then
             VERSION=${GITHUB_REF#refs/tags/}
           else
-            VERSION=$(node -p "require('./package.json').version")
+            VERSION=$(bun -e "console.log(require('./package.json').version)")
           fi
           # Strip leading v for docker tag patterns that expect X.Y.Z
           VERSION_NO_V=${VERSION#v}

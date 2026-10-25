@@ -23,7 +23,7 @@ The fastest way to start and verify the build is using Docker Compose:
 2. **Setup configuration**: `ccr preset install <source>` or manually edit the configuration file.
 3. **Verify**: Use `ccr code` to execute a command or open the UI via `ccr ui`.
 
-*Alternative (Local Development)*: If you prefer to run locally without Docker, run `pnpm install` first, then use the `pnpm dev:*` commands.
+*Alternative (Local Development)*: If you prefer to run locally without Docker, run `bun install` first, then use the `bun run dev:*` commands.
 
 ## Knowledge Base
 For critical lessons learned regarding LLM provider integrations (e.g., DeepSeek reasoning replay, Mistral thinking formats, Gemini streaming issues, Gemini Nano constraints), refer to `tasks/lessons.md`. This file contains the "hard-won" knowledge required to avoid common provider-specific pitfalls.
@@ -53,26 +53,26 @@ Notes:
 - The proxy listens on `http://localhost:3456`.
 - After editing `packages/server/ccr-config/config.json`, restart the `ccr` service.
 
-### Secondary: Local Build (pnpm)
+### Secondary: Local Build (Bun)
 Use these commands for local development and iterative coding.
 
 #### Build all packages
 ```bash
-pnpm build
+bun run build
 ```
 
 #### Build individual packages
 ```bash
-pnpm build:cli      # Build CLI
-pnpm build:server   # Build Server
-pnpm build:ui       # Build UI
+bun run build:cli      # Build CLI
+bun run build:server   # Build Server
+bun run build:ui       # Build UI
 ```
 
 #### Development mode
 ```bash
-pnpm dev:cli        # Develop CLI (tsx)
-pnpm dev:server     # Develop Server (tsx)
-pnpm dev:ui         # Develop UI (Vite)
+bun run dev:cli        # Develop CLI (bun)
+bun run dev:server     # Develop Server (bun)
+bun run dev:ui         # Develop UI (Vite)
 ```
 
 ### Verification
@@ -82,20 +82,20 @@ checks on the tag, but a failure there means the version is already burned —
 catch it here instead.
 
 ```bash
-pnpm typecheck            # tsc --noEmit across all packages
-pnpm lint                 # eslint across all packages
-pnpm test                 # all hermetic tests
-pnpm test:chrome-bridge   # additionally runs the Chrome bridge test
-pnpm test:live            # live CCR → Anthropic thinking + caching tests (cli)
+bun run typecheck            # tsc --noEmit across all packages
+bun run lint                 # eslint across all packages
+bun run test                 # all hermetic tests
+bun run test:chrome-bridge   # additionally runs the Chrome bridge test
+bun run test:live            # live CCR → Anthropic thinking + caching tests (cli)
 ```
 
-`pnpm test` executes every `packages/*/src/tests/*.ts` file via
-`scripts/run-tests.js`. Each test is a standalone tsx entry point that exits
+`bun run test` executes every `packages/*/src/tests/*.ts` file via
+`scripts/run-tests.js`. Each test is a standalone Bun entry point that exits
 non-zero on failure — there is no test framework. Add a new test by dropping a
 file in that directory; it is picked up automatically.
 
 Tests run from their owning package directory so core's `@/*` path alias
-resolves; invoking `npx tsx packages/core/src/tests/foo.ts` from the repo root
+resolves; invoking `bun packages/core/src/tests/foo.ts` from the repo root
 fails for that reason.
 
 `ccr-anthropic-flow.test.ts` is an end-to-end check of the
@@ -144,7 +144,7 @@ LiteLLM, whose Anthropic provider points at CCR:
 ```bash
 NODE_TLS_REJECT_UNAUTHORIZED=0 CCR_URL=https://<litellm-host>:4000 \
   CCR_API_KEY=<litellm key> CCR_LIVE_MODEL=<litellm model> CCR_LOG_DIR=off \
-  pnpm test:live
+  bun run test:live
 ```
 
 - `CCR_LOG_DIR=off` skips only the caching test's log cross-check, for a CCR
@@ -162,7 +162,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0 CCR_URL=https://<litellm-host>:4000 \
 
 ### Publish
 ```bash
-pnpm release        # Build and publish all packages
+bun run release        # Build and publish all packages
 ```
 
 Full trusted-publishing details: `docs/PUBLISHING.md`.
@@ -478,17 +478,14 @@ ui (standalone frontend application)
 
 ## Development Notes
 
-1. **Node.js version**: Floor is **>= 22.19.0**, declared in `engines.node` of every
-   workspace package (root, core, cli, shared, server, ui, docs) — keep them identical.
-   The floor is set by `undici` (`>=22.19.0`); `@cursor/sdk` needs `>=22.13`. Build-only
-   deps ask for more (`react-router@8` wants `>=22.22.0`, `puppeteer-core` `>=22.12.0`)
-   but never reach an installed user: the UI ships as a prebuilt `index.html` and
-   `puppeteer-core` is a lazily-required devDependency.
-   Runtime pins are separate and track the newest Node 22 LTS patch (`22.23.2` in the
-   Dockerfile, `node-version: "22"` in CI). Bump the pin freely; only raise the floor
-   when a runtime dependency actually demands it. esbuild `--target=node22` in all four
-   build scripts must stay in sync with the floor.
-2. **Package manager**: Uses pnpm (monorepo depends on workspace protocol)
+1. **Runtime = Bun ≥ 1.4.0**: Declared in `engines.bun` of every workspace package
+   (root, core, cli, shared, server, ui, docs) — keep them identical. OpenCode free-tier
+   models require Bun's TLS fingerprint; Node undici is rejected upstream with
+   `FreeUsageLimitError`. Docker production image is `oven/bun:1.4.4-alpine`. The
+   Docker builder and runtime are both `oven/bun:1.4.4-alpine`. CI uses `oven-sh/setup-bun`. esbuild `--target=node22` remains (Bun runs that JS surface).
+   `@cursor/sdk` resolves its `"bun"` export automatically; CCR calls
+   `Cursor.configure({ local: { useHttp1ForAgent: true } })` (Bun#31499).
+2. **Package manager**: Bun workspaces (`package.json` `workspaces` + `overrides`; lockfile `bun.lock`)
 3. **TypeScript**: All packages use TypeScript, but UI package is ESM module
 4. **Build tools**:
    - cli/server/shared: esbuild

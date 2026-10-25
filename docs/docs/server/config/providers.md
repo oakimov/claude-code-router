@@ -267,16 +267,26 @@ and `Authorization: Bearer …`; without a key, both headers are omitted.
 **Session and retries.** Each conversation gets a persisted `x-opencode-session`
 (stable across restarts), keyed by the client's own session id when it sends
 one (Claude Code metadata, or headers such as `x-session-id`) and by a
-first-message fingerprint otherwise. Zen routes by that session. Transient
-failures (408/409/425/429/5xx, network errors) retry on the same session;
-Zen's deterministic bad-bucket errors (`401 No provider available`,
-`400 … Upstream request failed`) re-roll the session. When retries run out,
-bad-bucket errors surface as `503`, so CCR's normal fallback can try another
-model.
+first-message fingerprint otherwise. Zen routes by that session. CCR mirrors
+OpenCode 2.x identity headers (`User-Agent: opencode/<channel>/<version>/<name>`,
+`x-opencode-client`, `x-opencode-session-id`, `x-session-affinity`,
+`X-Session-Id`). Transient failures (408/409/425/429/5xx, network errors)
+retry on the same session with `Retry-After` capped at 15 minutes; Zen's
+deterministic bad-bucket errors (`401 No provider available`,
+`400 … Upstream request failed`) re-roll the session. `429 FreeUsageLimitError`
+(free-lane quota) is terminal — CCR returns it immediately instead of sleeping
+on a multi-hour `Retry-After`. When retries run out, bad-bucket errors surface
+as `503`, so CCR's normal fallback can try another model.
 
 **Free-tier models** (model id ending in `-free` on an `opencode.ai/zen/` or
 `opencode.ai/inference/` endpoint) pass Zen's free-tier check only when
-requests look like the OpenCode client. For those models CCR:
+requests look like the OpenCode client **and** the CCR process runs under
+**Bun** (the official OpenCode client is Bun-based). Node undici / stock curl
+are rejected with `429 FreeUsageLimitError` even with an otherwise correct
+body — that status is often a TLS/HTTP client fingerprint reject, not only
+account quota. The Docker image therefore runs CCR under Bun.
+
+For those models CCR also:
 
 - always streams upstream. A non-streaming client still receives a JSON
   response, collected from the stream.
@@ -285,6 +295,10 @@ requests look like the OpenCode client. For those models CCR:
   `Bash` / `pwsh` / `exec`, or a `run_code`-style tool), and calls to a stub
   are renamed back to that client tool in the response. A stub with no
   counterpart tells the model not to call it.
+- injects OpenCode's builtin env system fingerprint (`Today's date:` +
+  `<env>` Prefer-tmp block) and pads system/instructions text to ≥ ~54500
+  characters when missing. Short system prompts also yield
+  `FreeUsageLimitError` even under Bun.
 - sets `prompt_cache_key` to the Zen session id (Responses wire). Zen stalls
   with `response.incomplete` when given a foreign key.
 - asks for `reasoning.summary: "detailed"` when the client reasons without
@@ -294,21 +308,6 @@ requests look like the OpenCode client. For those models CCR:
   within 30 s or no output within 60 s. A reasoning item that streams nothing
   may stay silent for up to 5 minutes. After output starts, 60 s without data
   (5 minutes inside reasoning) ends the stream with an error.
-
-**Free-tier egress caveat (observed 2026-10-17).** On the tested network,
-an identical request (same host, body, headers and session) returned
-`403 FreeTierError` over IPv4 while succeeding over IPv6, including when
-using the official client's TLS stack. For containers on that network,
-working IPv6 egress and IPv6-first DNS resolution
-(e.g. `NODE_OPTIONS=--dns-result-order=ipv6first`) were a workaround.
-This does not establish IPv6 as a general free-tier requirement or fix:
-upstream reports
-[#56334](https://github.com/anomalyco/opencode/issues/56334)
-and [#56373](https://github.com/anomalyco/opencode/issues/56373) record
-failures over both IPv4 and IPv6. The exact server-side eligibility rule
-has not been established. See also
-[#56324](https://github.com/anomalyco/opencode/issues/56324), and verify
-the workaround on the deployment's own network.
 
 Paid Zen models skip the free-tier adaptations above.
 

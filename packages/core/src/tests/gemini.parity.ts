@@ -6,8 +6,8 @@
  * 100% identical output.
  *
  * Usage:
- *   npx tsx packages/core/src/tests/gemini.parity.ts            # compare vs golden
- *   npx tsx packages/core/src/tests/gemini.parity.ts --update   # regenerate golden
+ *   bun packages/core/src/tests/gemini.parity.ts            # compare vs golden
+ *   bun packages/core/src/tests/gemini.parity.ts --update   # regenerate golden
  */
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "fs";
 import { dirname, join } from "path";

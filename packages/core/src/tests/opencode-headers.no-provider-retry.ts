@@ -72,16 +72,13 @@ function assertIdentityHeaders(calls: Captured[]) {
     assert.equal(call.headers["x-api-key"], "test-key");
     assert.equal(call.headers.authorization, "Bearer test-key");
     assert.equal(call.headers["x-opencode-project"], "global");
-    assert.equal(call.headers["x-opencode-client"], "cli");
-    assert.equal(
-      call.headers["user-agent"],
-      "opencode/1.19.3 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
-    );
+    assert.equal(call.headers["x-opencode-client"], "opencode");
+    assert.equal(call.headers["user-agent"], "opencode/latest/2.1.4/opencode");
     assert.match(call.headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
     assert.equal(call.headers["x-opencode-session-id"], call.headers["x-opencode-session"]);
+    assert.equal(call.headers["x-session-affinity"], call.headers["x-opencode-session"]);
+    assert.equal(call.headers["x-session-id"], call.headers["x-opencode-session"]);
     assert.match(call.headers["x-opencode-request"], /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
-    assert.equal(call.headers["x-session-affinity"], undefined);
-    assert.equal(call.headers["x-session-id"], undefined);
     assert.equal(call.headers["x-parent-session-id"], undefined);
   }
 }
@@ -203,6 +200,19 @@ async function preserveTerminalErrors() {
       body: JSON.stringify({ error: { message: "Workspace is blocked" } }),
     },
     {
+      // FreeUsageLimitError is a 429 but must NOT retry/sleep — surface immediately.
+      status: 429,
+      body: JSON.stringify({
+        type: "error",
+        error: {
+          type: "FreeUsageLimitError",
+          message:
+            "Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go",
+        },
+      }),
+      headers: { "retry-after": "14942" },
+    },
+    {
       status: 400,
       body: JSON.stringify({
         error: {
@@ -225,7 +235,11 @@ async function preserveTerminalErrors() {
     },
   ]) {
     const calls = installFetch([
-      () => new Response(fixture.body, { status: fixture.status }),
+      () =>
+        new Response(fixture.body, {
+          status: fixture.status,
+          headers: (fixture as any).headers,
+        }),
     ]);
     await assert.rejects(
       () =>
@@ -417,6 +431,7 @@ async function forwardsParentSessionIdWhenPresent() {
   const result = await new OpencodeHeadersTransformer().transformRequestIn(body, provider, withParent);
   assert.equal(result.config.__providerResponse.status, 200);
   assert.equal(calls[0].headers["x-parent-session-id"], parentId);
+  assert.equal(calls[0].headers["x-opencode-parent-session-id"], parentId);
 }
 
 async function parentIsPreservedAcrossZenRetries() {

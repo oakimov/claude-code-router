@@ -6,8 +6,8 @@
     "ccr": "dist/cli.js"
   },
   "scripts": {
-    "build": "node ../../scripts/build-cli.js",
-    "dev": "tsx src/cli.ts",
+    "build": "bun ../../scripts/build-cli.js",
+    "dev": "bun src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src"
   },
@@ -39,10 +39,9 @@
     "minimist": "^1.2.8",
     "openurl": "^1.1.1",
     "puppeteer-core": "^25.14.0",
-    "tsx": "^4.23.15",
     "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "bun": ">=1.4.0"
   }
 }

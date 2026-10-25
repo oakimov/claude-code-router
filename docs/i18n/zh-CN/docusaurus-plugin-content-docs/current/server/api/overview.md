@@ -38,6 +38,7 @@ curl -H "x-api-key: your-api-key" http://localhost:3456/api/config
 | `/v1/messages/count_tokens` | POST | 计算消息的 Token 数量 |
 | `/v1/chat/completions` | POST | OpenAI Chat Completions（别名：`/chat/completions`） |
 | `/v1/responses` | POST | OpenAI Responses（别名：`/responses`） |
+| `/v1/responses/input_tokens` | POST | 计算 Responses 请求的输入 Token 数量（别名：`/responses/input_tokens`） |
 | `/v1/fim/completions` | POST | FIM Completions（别名：`/fim/completions`） |
 | `/v1/models` | GET | 列出可路由模型（别名：`/models`） |
 | `/v1/models/{id}` | GET | 单个模型信息 |

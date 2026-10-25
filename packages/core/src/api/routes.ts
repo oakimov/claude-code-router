@@ -42,7 +42,11 @@ import {
   type ScopedErrorRuleIssue,
 } from "@/utils/request-scoped-errors";
 import { applyProviderNativeChatCaching } from "../utils/openai.util";
-import { sanitizeResponsesWireCallIds } from "../utils/openai.responses.util";
+import {
+  responsesRequestToTokenizeRequest,
+  sanitizeResponsesWireCallIds,
+} from "../utils/openai.responses.util";
+import { calculateTokenCount } from "../utils/router";
 import { applyOpenAIChatReasoning } from "../utils/reasoning-effort";
 import { applyRawAnthropicPromptCaching } from "../utils/cacheControl";
 import { resolveCachePrefixConversationId } from "../utils/cache-prefix-debug";
@@ -2050,6 +2054,72 @@ export const registerApiRoutes = async (
 
   // `endPoint` remains provider-transformer metadata, but client route
   // registration is intentionally limited to the explicit protocol registry.
+
+  // Local, provider-free input token count for the OpenAI Responses protocol —
+  // the Responses counterpart of `/v1/messages/count_tokens`. The body is
+  // projected to Unified exactly as the routed path does, so this endpoint
+  // accepts (and rejects) the same bodies. A `provider,model` id selects a
+  // configured tokenizer; otherwise the default tiktoken count is used. The
+  // reply is the OpenAI wire shape:
+  // `{ object: "response.input_tokens", input_tokens }`.
+  const handleResponsesInputTokens = async (req: FastifyRequest) => {
+    // This path is not in the routed-POST protocol table, so the onRequest
+    // hook did not classify it; set it here so validation failures come back
+    // in the Responses error envelope rather than Anthropic's.
+    (req as any).clientProtocol = "openai_responses";
+    const { model } = (req.body ?? {}) as any;
+    const countRequest = responsesRequestToTokenizeRequest(req.body ?? {});
+
+    if (
+      typeof model === "string" &&
+      model.includes(",") &&
+      fastify.tokenizerService
+    ) {
+      const [providerName, ...modelParts] = model.split(",");
+      const modelName = modelParts.join(",");
+      try {
+        const tokenizerConfig =
+          fastify.tokenizerService.getTokenizerConfigForModel(
+            providerName,
+            modelName
+          );
+        if (tokenizerConfig) {
+          req.log?.info(
+            `Responses input token count using configured tokenizer for ${providerName},${modelName}`
+          );
+          const result = await fastify.tokenizerService.countTokens(
+            countRequest,
+            tokenizerConfig
+          );
+          return {
+            object: "response.input_tokens",
+            input_tokens: result.tokenCount,
+          };
+        }
+      } catch (error: any) {
+        req.log?.error(
+          `Error using configured tokenizer: ${error?.message ?? error}`
+        );
+        // Fall through to the default tiktoken count.
+      }
+    }
+
+    return {
+      object: "response.input_tokens",
+      input_tokens: calculateTokenCount(
+        countRequest.messages,
+        countRequest.system,
+        countRequest.tools ?? []
+      ),
+    };
+  };
+
+  for (const inputTokensPath of [
+    "/v1/responses/input_tokens",
+    "/responses/input_tokens",
+  ]) {
+    fastify.post(inputTokensPath, rateLimitOptions, handleResponsesInputTokens);
+  }
 
   fastify.post(
     "/providers",

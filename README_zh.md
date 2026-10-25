@@ -47,7 +47,7 @@ Claude Code Router 是面向 Claude Code 的自适应 LLM 网关。它会将每�
 
 开始之前，请确保系统已安装以下内容：
 - **Docker**（推荐）：通过已发布的镜像运行路由器的首选方式。参见 [Docker 安装指南](https://docs.docker.com/get-docker/)。
-- **Node.js**（可选）：从源码运行、发布包或使用 **Chrome 端侧**桥接时需要。本 fork 要求 **Node.js ≥ 22.19.0**（`undici` 需要）。参见 [Node.js 下载](https://nodejs.org/)。
+- **Bun**（≥ 1.4.0）：从源码运行、发布包或使用 **Chrome 端侧**桥接时需要。Docker 镜像自带 Bun；OpenCode 免费层模型依赖 Bun 的 TLS 指纹。参见 [Bun 安装](https://bun.sh/docs/installation)。
 - **Claude Code**：参见 [官方快速入门指南](https://code.claude.com/docs/en/quickstart) 获取安装说明。
 
 #### 使用 Docker 快速启动

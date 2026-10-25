@@ -18,9 +18,9 @@ set -euo pipefail
 #   (requires id-token: write; no NPM token)
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=$(node -p "require('${ROOT_DIR}/packages/cli/package.json').version")
-SHARED_VERSION=$(node -p "require('${ROOT_DIR}/packages/shared/package.json').version")
-CORE_VERSION=$(node -p "require('${ROOT_DIR}/packages/core/package.json').version")
+VERSION=$(bun -e "console.log(require('${ROOT_DIR}/packages/cli/package.json').version)")
+SHARED_VERSION=$(bun -e "console.log(require('${ROOT_DIR}/packages/shared/package.json').version)")
+CORE_VERSION=$(bun -e "console.log(require('${ROOT_DIR}/packages/core/package.json').version)")
 IMAGE_NAME="${DOCKER_IMAGE_NAME:-caeliq/claude-code-router}"
 IMAGE_TAG="${VERSION}"
 LATEST_TAG="latest"
@@ -56,24 +56,24 @@ esac
 
 require_npm_login() {
   if [[ "${TRUSTED_PUBLISHING}" == "true" || "${TRUSTED_PUBLISHING}" == "1" ]]; then
-    echo "Using npm trusted publishing (OIDC); skipping npm whoami"
+    echo "Using npm trusted publishing (OIDC); skipping bun pm whoami"
     return 0
   fi
-  if ! npm whoami &>/dev/null; then
-    echo "Error: not logged into npm. Run: npm login"
+  if ! bun pm whoami &>/dev/null; then
+    echo "Error: not logged into npm. Run: bun pm login"
     exit 1
   fi
-  echo "npm user: $(npm whoami)"
+  echo "npm user: $(bun pm whoami)"
 }
 
 npm_publish() {
   local pkg_dir="$1"
   (
     cd "$pkg_dir"
-    echo "npm publish ${PUBLISH_ARGS[*]}"
+    echo "bun publish ${PUBLISH_ARGS[*]}"
     set +e
     local output
-    output="$(npm publish "${PUBLISH_ARGS[@]}" 2>&1)"
+    output="$(bun publish "${PUBLISH_ARGS[@]}" 2>&1)"
     local status=$?
     set -e
     printf '%s\n' "$output"
@@ -106,7 +106,7 @@ prepare_publish_package() {
   mkdir -p "$backup_dir"
   cp "${pkg_dir}/package.json" "${backup_dir}/package.json.original"
 
-  node -e "
+  bun -e "
     const fs = require('fs');
     const path = require('path');
     const pkgPath = path.join('${pkg_dir}', 'package.json');
@@ -207,14 +207,14 @@ publish_cli_npm() {
   copy_package_meta "$pkg_dir"
 
   local cursor_sdk
-  cursor_sdk=$(node -p "require('${ROOT_DIR}/packages/cli/package.json').dependencies['@cursor/sdk'] || '^1.0.23'")
+  cursor_sdk=$(bun -e "console.log(require('${ROOT_DIR}/packages/cli/package.json').dependencies['@cursor/sdk'] || '^1.0.23')")
 
   prepare_publish_package "$pkg_dir" "@caeliq/claude-code-router" "packages/cli" "
     pkg.files = ['dist', 'README.md', 'LICENSE'];
     pkg.bin = { ccr: 'dist/cli.js' };
     pkg.dependencies = { ...pkg.dependencies, '@cursor/sdk': '${cursor_sdk}' };
     pkg.devDependencies = {};
-    pkg.engines = { node: '>=22.19.0' };
+    pkg.engines = { bun: '>=1.4.0' };
   "
 
   npm_publish "$pkg_dir"

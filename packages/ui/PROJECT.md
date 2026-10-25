@@ -3,7 +3,7 @@
 > This is a frontend project for configuring settings. The configuration format follows config.example.json.
 
 ## Tech Stack
-1. Uses pnpm as the package manager
+1. Uses Bun as the package manager
 2. Uses Vite.js as the build tool
 3. Uses React.js + Tailwind CSS + shadcn-ui for the frontend interface
 

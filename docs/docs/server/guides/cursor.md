@@ -12,7 +12,7 @@ The default mode is **bridge**: Cursor chooses what to do next, but **Claude Cod
 
 - A Cursor account with an API key starting with `crsr_` (from the Cursor dashboard)
 - Claude Code Router running (Docker Compose or local)
-- **Node.js ≥ 22.19.0** when running from source or publishing packages (`undici` requires this engine; `@cursor/sdk` needs ≥ 22.13)
+- **Bun ≥ 1.4.0** when running from source or publishing packages (`engines.bun`; `@cursor/sdk` resolves its Bun export automatically)
 
 ## Authentication
 
@@ -175,7 +175,7 @@ Cursor conversations are **stateful in-process**:
 
 ## Running with Docker
 
-`@cursor/sdk` ships platform-native packages and is installed into the runtime image separately from the pnpm workspace (version taken from `packages/server/package.json`).
+`@cursor/sdk` ships platform-native packages and is installed into the runtime image separately from the Bun workspace (version taken from `packages/server/package.json`).
 
 Ensure the container receives the key:
 

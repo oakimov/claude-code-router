@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 const { execSync } = require('child_process');
 const path = require('path');
@@ -18,7 +18,7 @@ try {
   const sharedDistDir = path.join(sharedDir, 'dist');
   if (!fs.existsSync(sharedDistDir) || !fs.existsSync(path.join(sharedDistDir, 'index.js'))) {
     console.log('Shared package not found, building it first...');
-    execSync('node scripts/build-shared.js', {
+    execSync('bun scripts/build-shared.js', {
       stdio: 'inherit',
       cwd: rootDir
     });
@@ -26,14 +26,14 @@ try {
 
   // Step 1: Build Server package first
   console.log('Building Server package...');
-  execSync('node scripts/build-server.js', {
+  execSync('bun scripts/build-server.js', {
     stdio: 'inherit',
     cwd: rootDir
   });
 
   // Step 2: Build UI package
   console.log('Building UI package...');
-  execSync('pnpm build', {
+  execSync('bun run build', {
     stdio: 'inherit',
     cwd: uiDir
   });
@@ -51,7 +51,7 @@ try {
 
   // Step 4: Build the CLI application
   console.log('Building CLI application...');
-  // --target matches the package engines floor (>=22.19.0).
+  // --target matches the Bun runtime (engines.bun >=1.4.0); esbuild target node22.
   execSync('esbuild src/cli.ts --bundle --platform=node --target=node22 --minify --tree-shaking=true --external:@cursor/sdk --external:@cursor/sdk/* --external:ai --external:@ai-sdk/* --external:zod --outfile=dist/cli.js', {
     stdio: 'inherit',
     cwd: cliDir,

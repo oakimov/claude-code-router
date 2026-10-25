@@ -12,6 +12,7 @@ import {
   installCursorAuthExchangeCache,
   invalidateCursorAuthExchange,
 } from "./auth-exchange-cache";
+import { ensureCursorSdkRuntimeDefaults } from "./runtime-defaults";
 import { ensureRequestLatency, markLatency } from "@/utils/request-latency";
 import { accumulateChatCompletion, createSseHelpers } from "./events-to-sse";
 import {
@@ -137,6 +138,7 @@ function dropCachedExchangeOnAuthError(apiKey: string, err: unknown): void {
 }
 
 async function getModelCatalog(apiKey: string): Promise<ModelListItem[]> {
+  ensureCursorSdkRuntimeDefaults();
   installCursorAuthExchangeCache();
   const fingerprint = apiKeyFingerprint(apiKey);
   if (

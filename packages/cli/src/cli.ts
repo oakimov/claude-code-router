@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { run, restartService } from "./utils";
 import { showStatus } from "./utils/status";
 import { executeCodeCommand, PresetConfig } from "./utils/codeCommand";
@@ -458,7 +458,7 @@ async function main() {
             );
 
             // Try starting the service again
-            const restartProcess = spawn("node", [cliPath, "start"], {
+            const restartProcess = spawn(process.execPath, [cliPath, "start"], {
               detached: true,
               stdio: "ignore",
             });

@@ -25,13 +25,13 @@ When adding or editing a provider, you can configure model discovery settings. F
 
 ```bash
 # Install dependencies
-pnpm install
+bun install
 
 # Start development server
-pnpm dev
+bun run dev
 
 # Build for production
-pnpm build
+bun run build
 ```
 
 ## Environment Variables

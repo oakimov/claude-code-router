@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Chrome Device Bridge — HTTP↔CDP bridge for Chrome's on-device Gemini Nano.
  * Runs on the host, connects to Chrome via puppeteer-core, and exposes an

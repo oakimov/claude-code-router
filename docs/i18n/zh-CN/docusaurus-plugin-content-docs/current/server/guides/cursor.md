@@ -12,7 +12,7 @@ Claude Code Router 可以通过官方 `@cursor/sdk` 将 Claude Code 请求路由
 
 - Cursor 账户，以及以 `crsr_` 开头的 API 密钥（来自 Cursor 控制台）
 - 正在运行的 Claude Code Router（Docker Compose 或本地）
-- 从源码运行或发布包时需要 **Node.js ≥ 22.19.0**（`undici` 的 engines 要求；`@cursor/sdk` 需要 ≥ 22.13）
+- 从源码运行或发布包时需要 **Bun ≥ 1.4.0**（`engines.bun`；`@cursor/sdk` 在 Bun 下自动解析其 Bun 导出）
 
 ## 认证
 

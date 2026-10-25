@@ -203,9 +203,10 @@ function testSubagentHelpers() {
 }
 
 async function testFromWebCleanupDoesNotCancelLockedBody() {
-  // Regression: after Readable.fromWeb(body), body.cancel() rejects with
-  // ERR_INVALID_STATE ("ReadableStream is locked") as an unhandledRejection.
-  // Cleanup must destroy the Node stream only.
+  // Regression: after Readable.fromWeb(body), calling body.cancel() under
+  // Node rejects with ERR_INVALID_STATE ("ReadableStream is locked") as an
+  // unhandledRejection. Bun's fromWeb does not lock the web stream, so
+  // cancel succeeds — either way, cleanup must destroy the Node stream only.
   const { Readable } = await import("node:stream");
   const body = new ReadableStream({
     start(controller) {
@@ -214,14 +215,18 @@ async function testFromWebCleanupDoesNotCancelLockedBody() {
     },
   });
   const nodeStream = Readable.fromWeb(body as any);
-  assert.equal(body.locked, true);
 
-  await assert.rejects(
-    () => body.cancel(),
-    (err: any) =>
-      err?.code === "ERR_INVALID_STATE" ||
-      /ReadableStream is locked/.test(String(err?.message || err))
-  );
+  if (body.locked) {
+    await assert.rejects(
+      () => body.cancel(),
+      (err: any) =>
+        err?.code === "ERR_INVALID_STATE" ||
+        /ReadableStream is locked/.test(String(err?.message || err))
+    );
+  } else {
+    // Bun: web stream stays unlocked after fromWeb.
+    await body.cancel();
+  }
 
   await new Promise<void>((resolve, reject) => {
     nodeStream.once("error", reject);

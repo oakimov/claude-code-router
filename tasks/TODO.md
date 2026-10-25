@@ -50,21 +50,21 @@ Gemini Nano can enter deterministic loops when emitting highly structured conten
 - **Upstream shapes**: Codex catalog `service_tiers` (`priority`, "Fast"; `gpt-6-sol` / `gpt-6-luna` default to it) sent as `service_tier`; Cursor catalog `fast` parameter on parameterized models (Grok 4.7).
 - **Open questions**: how a client asks for it per protocol (Responses/Chat `service_tier`, an Anthropic equivalent, a model suffix), whether configs may set a per-provider/per-route default, usage/cost reporting for the higher tier, and how the Cursor session remint rule treats a fast toggle.
 
-## 🔒 Temporary security overrides (`pnpm-workspace.yaml`)
+## 🔒 Temporary security overrides (`package.json` `overrides` / `bun.lock`)
 
 These pins either clear product high-severity advisories or consolidate compatible transitive versions that cannot be fixed by upgrading our direct deps alone. Remove each override once upstream ships a clean, deduplicated tree.
 
 Every override is scoped to an exact `parent@version>child` dependency edge, so a
-bare package name is never force-resolved across the whole graph. When an entry
-stops matching after an upstream bump, pnpm reports it as unused — that is the
-signal to delete it, not to widen the selector.
+bare package name is never force-resolved across the whole graph. Retarget or
+delete selectors that no longer match after an upstream bump — do not widen them.
+(Toolchain is Bun workspaces; historical notes below may still say `pnpm`.)
 
 ### 1b. `@ai-sdk/provider-utils@4.0.54>undici` → `^8.9.0`
 - [ ] Drop when `@ai-sdk/provider-utils` raises its `undici` range to `^8` (or removes the declared dep).
-- **Why**: `@ai-sdk/provider-utils@4.0.54` declares `undici: ^6.28.0`, creating a second undici major alongside core's direct `undici@^8.9.0`. It never imports undici at runtime — its fetch path uses `globalThis.fetch` / `safe-node-fetch` (verified: zero `require("undici")` in the compiled bundle; the only `undici` string is a code comment). The declared-major collision is collapsed onto core's maintained 8 line.
+- **Why**: `@ai-sdk/provider-utils@4.0.54` declares `undici: ^6.28.0`. CCR itself no longer depends on undici (Bun `fetch` + `proxy` option), but the AI SDK transitive still pulls it. Collapse that edge onto undici 8 so the graph does not keep a vulnerable/legacy 6 line.
 - **Maintenance note (2026-09-24)**: selector was `4.0.46`, retargeted to `4.0.54` when the AI SDK 3.0.122 / ai 6.0.290 bump moved provider-utils. Exact-version selectors go stale on every provider-utils bump — retarget, never widen.
-- **Compatibility**: undici 8 still exports the `Headers`/`fetch`/`Response` surface; provider-utils does not consume it, so the AI SDK test suite passes with the package resolving to undici 8. `pnpm why undici` now shows a single `undici@8.10.1`.
-- **Scope**: the provider-utils edge only; pnpm deduplicates it with `@caeliq/llms`'s direct `undici@^8.9.0`.
+- **Compatibility**: undici 8 still exports the `Headers`/`fetch`/`Response` surface; provider-utils does not consume it at runtime (fetch path uses `globalThis.fetch`).
+- **Scope**: the provider-utils edge only (`package.json` overrides).
 - **Exit**: provider-utils widens its range to `^8` (or drops the dep); then delete the override and re-audit.
 
 ### 2. Compatible transitive consolidation
@@ -85,12 +85,12 @@ signal to delete it, not to widen the selector.
 - `gaxios@8>node-fetch` → `npm:node-fetch-native@^1.6.7`: gaxios still requests `node-fetch@3`, whose deprecated chain is unnecessary on Node 22+ (native fetch). The selector deliberately stays on the **major**: it was pinned to `gaxios@7.3.0`, and a routine patch bump to 7.3.1 silently unmatched it, letting `node-fetch@3` → `fetch-blob` → `node-domexception` back in. pnpm does not report a stalled selector as unused, so the only symptom was a generic "1 deprecated subdependency" warning. Prefer major-scoped parents for any child that a patch bump can re-admit. (Parent moved 7 → 8 in the 2026-10-17 update wave; the major-scoped selector followed it — see §8.)
 - **Note**: `react-router` was migrated to `8.x` directly in `packages/ui`, so it no longer needs an override.
 - **Maintenance note (2026-08-25 → removed 2026-10-17)**: the `postcss>nanoid` floor override tracked the resolved parent (`postcss@8.5.26>nanoid`; was `8.5.25`). Deleted during the 2026-10-17 review: postcss 8.5.30 declares `nanoid: ^3.3.20` itself, so the lockfile guard became unnecessary (see §8).
-- **Exit**: re-run `pnpm audit` after each upstream bump and delete entries pnpm reports as unused.
+- **Exit**: re-run `bun audit` and `.claude/skills/package-review/scripts/check-overrides.js` after each upstream bump; retarget or delete `STALE` selectors.
 
-### 4. qs / fast-uri security floors (added 2026-09-03, `pnpm audit` clean)
+### 4. qs / fast-uri security floors (added 2026-09-03)
 - [ ] Drop each when its parent ships a range that reaches the patched child.
-- `express@4.22.3>qs` and `body-parser@1.20.8>qs` → `^6.16.0`: both pin `qs ~6.15.1`, unreachable to the patched 6.16.0 (GHSA-4mjr-xmp4-gh2g array-limit bypass, GHSA-x5fp-wj9c-mxmx isBuffer DoS). express 5 / body-parser 2 already admit `^6`, so only the two tilde-pinned edges need floors. **Compatibility**: qs 6.16 preserves the parse/stringify API and keeps the same two deps; smoke-tested `qs.parse` from the real `.pnpm` path. (Parents retargeted `4.22.2` → `4.22.3` / `1.20.6` → `1.20.8` in the 2026-10-17 wave — see §8.)
-- `ajv@8.20.0>fast-uri` → `^3.1.7`, `@fastify/ajv-compiler@4.0.7>fast-uri` and `fast-json-stringify@7.1.0>fast-uri` → `^4.1.4`: clears the fast-uri host-confusion/SSRF advisories on both majors (`<3.1.6`, `<4.1.3`). Parents declare `^3`/`^4` but pnpm retains locked pins across plain installs (even `pnpm update --depth Infinity` reported "up to date"), so the floors force re-resolution. Smoke-tested `parse` on both lines from their real `.pnpm` paths. (Parents retargeted `4.0.6` → `4.0.7` / `7.0.1` → `7.1.0` in the 2026-10-17 wave — see §8.)
+- `express@4.22.3>qs` and `body-parser@1.20.9>qs` → `^6.16.0`: both pin `qs ~6.15.1`, unreachable to the patched 6.16.0 (GHSA-4mjr-xmp4-gh2g array-limit bypass, GHSA-x5fp-wj9c-mxmx isBuffer DoS). express 5 / body-parser 2 already admit `^6`, so only the two tilde-pinned edges need floors. **Compatibility**: qs 6.16 preserves the parse/stringify API. (Parents retargeted `4.22.2` → `4.22.3` / `1.20.6` → `1.20.8` in the 2026-10-17 wave; `body-parser` → `1.20.9` in the 2026-10-25 Bun review — see §9.)
+- `ajv@8.20.0>fast-uri` → `^3.1.8`, `@fastify/ajv-compiler@4.0.7>fast-uri` and `fast-json-stringify@7.2.0>fast-uri` → `^4.1.5`: clears the fast-uri host-confusion/SSRF advisories on both majors (`<3.1.6`, `<4.1.3`). Floors force re-resolution past locked pins. (`fast-json-stringify` retargeted `7.1.0` → `7.2.0` in the 2026-10-25 Bun review — see §9.)
 - **Rejected**: `csso@5.0.5>css-tree ^2.3.1` was added and then reverted the same day — csso forks css-tree with a syntax definition written against the 2.2 node schema, and 2.3 throws `Missed 'structure' field in 'String' node type definition` at load. css-tree stays dual (2.2.1 for csso, 2.3.1 for svgo) until csso supports 2.3; mdn-data stays dual with it. **Re-confirmed 2026-10-17**: re-added during the review, failed identically at `require('csso')`, re-reverted the same day — do not re-attempt until csso ships a 2.3-compatible syntax definition.
 
 ### 5. Same-minor consolidations (added 2026-09-03)
@@ -134,3 +134,16 @@ signal to delete it, not to widen the selector.
 - `minimumReleaseAgeExclude` still names several superseded versions (`@cursor/sdk*@1.0.36`, `body-parser@1.20.6`, `ai@6.0.258`, …). Inert: no base `minimumReleaseAge` is configured; left alone.
 - Verification: `pnpm install --frozen-lockfile` ✓; `pnpm typecheck` ✓; `pnpm lint` ✓; `pnpm test` 122/122 (4 opt-in skipped) ✓; `pnpm build` ✓; `pnpm build:docs` (en + zh-CN) ✓; `git diff --check` ✓; `pnpm dedupe --check` ✓; `pnpm audit` → 1 accepted residual.
 - Toolchain: `pnpm` 12.6.0 → 12.14.0 (`packageManager` field + global install). The lockfile gained pnpm's self-managed `packageManagerDependencies` document (`@pnpm/exe.*`). The 12.14 dedupe normalized a redundant `ajv-formats@3.0.1(ajv@8.20.0)` peer-suffix row onto the suffix-less `3.0.1` (same resolved version). `node_modules` was rebuilt from scratch (`--frozen-lockfile`) afterwards, clearing 624 superseded virtual-store dirs left by the update waves; the fresh-install path (what CI/Docker run) re-passed the full battery above.
+
+### 9. Package review 2026-10-25 (Bun workspaces)
+- Toolchain migrated to Bun (`packageManager: bun@1.4.4`, lockfile `bun.lock`, overrides in root `package.json`). Skill path: `.claude/skills/package-review`.
+- Result: `bun audit` → **0 advisories** (1515 packages). `bun dedupe --check` clean. Override checker: 46 exact-ok, 4 major-scoped, 0 stale (after retargets).
+- Multi-version inventory: 100 packages with >1 version; only **6 same-major** duals — all left alone:
+  - `css-tree` 2.2.1 / 2.3.1 + `mdn-data` 2.0.28 / 2.0.30 (csso rejection, §4)
+  - `source-map` 0.6.1 / 0.7.6, `iconv-lite` 0.4.24 / 0.7.3, `babel-plugin-polyfill-corejs3` 0.13 / 0.14 (prior deferred)
+  - `@napi-rs/wasm-runtime` 1.0.7 / 1.2.5 (rspack optional WASM bindings exact-pin different lines)
+- Retargeted stale selectors after Bun install resolved newer parents:
+  - `body-parser@1.20.8>qs` → `body-parser@1.20.9>qs`
+  - `fast-json-stringify@7.1.0>fast-uri` → `fast-json-stringify@7.2.0>fast-uri`
+- Direct-dep currency (`bun outdated`): only `typescript` 6 → 7 latest; held (major).
+- Verification: `bun install --frozen-lockfile` ✓; `bun run typecheck` ✓; `bun run lint` ✓; `bun run test` 123/123 (4 opt-in skipped) ✓; `bun run build` ✓; `bun run build:docs` (en + zh-CN) ✓; `bun audit` ✓; `bun dedupe --check` ✓; override checker 0 stale ✓.

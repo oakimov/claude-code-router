@@ -19,8 +19,7 @@ const baseConfig: esbuild.BuildOptions = {
   minify: true,
   sourcemap: true,
   platform: "node",
-  // Match the package engines floor (>=22.19.0) so esbuild does not downlevel
-  // syntax for runtimes this package does not support.
+  // Bun is the sole runtime; keep node22 syntax target (Bun runs that surface).
   target: "node22",
   plugins: [
     // Add path alias plugin to resolve @/ imports
@@ -35,7 +34,6 @@ const baseConfig: esbuild.BuildOptions = {
     "fastify",
     "dotenv",
     "@fastify/cors",
-    "undici",
     "tiktoken",
     "@caeliq/ccr-shared",
     "lru-cache",

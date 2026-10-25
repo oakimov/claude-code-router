@@ -11,17 +11,17 @@ Run Claude Code Router with the published Docker image.
 - **Docker**
 - An API key from your preferred LLM provider
 
-**Node.js is not required for the Docker install** — the image ships its own runtime (currently Node 22 LTS).
+**Bun is not required for the Docker install** — the image ships its own Bun runtime (pinned to Bun 1.4.x). OpenCode free-tier models require Bun's TLS fingerprint; Node undici is rejected upstream.
 
-You only need Node.js locally to install the CLI from npm, run from source, or use the [Chrome On-Device bridge](/docs/server/guides/chrome-on-device). In those cases the minimum is **Node.js ≥ 22.19.0**, enforced by the `engines` field of every published package:
+You need **Bun ≥ 1.4.0** locally to install the CLI, run from source, or use the [Chrome On-Device bridge](/docs/server/guides/chrome-on-device). The floor is enforced by the `engines.bun` field of every published package:
 
-| Package | Minimum Node |
+| Package | Minimum Bun |
 | --- | --- |
-| `@caeliq/claude-code-router` (CLI) | ≥ 22.19.0 |
-| `@caeliq/llms` (core) | ≥ 22.19.0 |
-| `@caeliq/ccr-shared` | ≥ 22.19.0 |
+| `@caeliq/claude-code-router` (CLI) | ≥ 1.4.0 |
+| `@caeliq/llms` (core) | ≥ 1.4.0 |
+| `@caeliq/ccr-shared` | ≥ 1.4.0 |
 
-The floor comes from `undici`, the HTTP client used for provider requests. `22.19.0` is a Node 22 **LTS** release; any newer Node 22 or 24 also works. Installing on an older runtime fails with an `EBADENGINE` warning and then errors at runtime.
+CI and Docker use Bun end-to-end (`oven-sh/setup-bun`, `oven/bun:1.4.4-alpine`). Node is not part of the toolchain.
 
 ## Install with Docker
 

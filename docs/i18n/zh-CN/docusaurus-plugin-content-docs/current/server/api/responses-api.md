@@ -35,3 +35,38 @@ JSON 参数，因此 CCR 在与 Chat Completions 提供商通信时用合成的�
 客户端因此看到原始工具协议，而模型调用的是 Unified function 表示。流式成功以
 `response.completed` 结束；失败发出 `response.failed`。Chat Completions 的
 `[DONE]` 标记不属于客户端 Responses 流。
+
+## POST /v1/responses/input_tokens
+
+在不联系提供商的情况下，计算 Responses 请求将发送的输入 Token 数量。别名：
+`POST /responses/input_tokens`。
+
+请求体为 Responses 创建结构，与 `POST /v1/responses` 完全一致地投影为 Unified
+—— `model`、`input`、`instructions`、`tools` 及其他受支持字段。与受路由端点
+相同，`model` 为必填，且 `conversation` / `previous_response_id` 会被拒绝
+（CCR 不持有 OpenAI 对话状态）。
+
+当 `model` 为 `provider,model` 形式且该提供商标注了 `tokenizer` 时，使用该
+tokenizer；否则返回默认 tiktoken（`cl100k_base`）计数。
+
+### 请求格式
+
+```bash
+curl -X POST http://localhost:3456/v1/responses/input_tokens \
+  -H "x-api-key: your-api-key" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "openai,gpt-4o",
+    "instructions": "You are a helpful assistant.",
+    "input": "Hello!"
+  }'
+```
+
+### 响应格式
+
+```json
+{
+  "object": "response.input_tokens",
+  "input_tokens": 11
+}
+```

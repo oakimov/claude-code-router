@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Dry-run npm publish (no upload)"
+        description: "Dry-run registry publish (no upload)"
         type: boolean
         default: false
 
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   publish:
-    name: Build and publish to npm
+    name: Build and publish packages
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -33,65 +33,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # Use current Node 22.x so npm@latest (OIDC/provenance) can install.
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Upgrade npm (OIDC trusted publishing)
-        run: npm install -g npm@latest
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
-
-      - name: Cache pnpm store
-        uses: actions/cache@v6
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
+          bun-version: "1.4.4"
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: bun install --frozen-lockfile
 
-      # Build first: workspace packages resolve their siblings (e.g.
-      # packages/cli -> @caeliq/ccr-shared/@caeliq/ccr-server) via their
-      # dist/index.d.ts, which only exists after a build. On a fresh checkout
-      # dist/ is absent, so typecheck cannot resolve them yet. The esbuild
-      # build does not typecheck, so this step still gates type errors.
+      - name: Trust build tooling postinstalls
+        run: bun pm trust esbuild @swc/core || true
+
+      # Build first: workspace packages resolve siblings via dist/*.d.ts.
       - name: Build packages
-        run: pnpm build
+        run: bun run build
 
-      # Gate the publish on the same checks that must pass locally. Chrome
-      # bridge tests stay opt-in (see OPT_IN_ONLY in scripts/run-tests.js).
       - name: Typecheck
-        run: pnpm typecheck
+        run: bun run typecheck
 
       - name: Lint
-        run: pnpm lint
+        run: bun run lint
 
       - name: Test
-        run: pnpm test
+        run: bun run test
 
       - name: Show publish plan
         run: |
-          SHARED=$(node -p "require('./packages/shared/package.json').version")
-          LLMS=$(node -p "require('./packages/core/package.json').version")
-          CLI=$(node -p "require('./packages/cli/package.json').version")
+          SHARED=$(bun -e "console.log(require('./packages/shared/package.json').version)")
+          LLMS=$(bun -e "console.log(require('./packages/core/package.json').version)")
+          CLI=$(bun -e "console.log(require('./packages/cli/package.json').version)")
           echo "shared: @caeliq/ccr-shared@$SHARED"
           echo "llms:   @caeliq/llms@$LLMS"
           echo "cli:    @caeliq/claude-code-router@$CLI"
           echo "ref:    $GITHUB_REF"
-          echo "npm:    $(npm --version)"
-          echo "node:   $(node --version)"
-          echo "pnpm:   $(pnpm --version)"
+          echo "bun:    $(bun --version)"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG=${GITHUB_REF#refs/tags/v}
             echo "tag:    v$TAG"
@@ -100,14 +75,10 @@ jobs:
             fi
           fi
 
-      - name: Publish to npm (OIDC)
+      - name: Publish to npm registry (OIDC)
         env:
           CI: "true"
           NPM_TRUSTED_PUBLISHING: "true"
           NPM_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
-          # setup-node injects a placeholder NODE_AUTH_TOKEN when registry-url is set.
-          # Clear it so npm uses GitHub OIDC trusted publishing instead of token auth.
           NODE_AUTH_TOKEN: ""
-        run: |
-          npm config delete "//registry.npmjs.org/:_authToken" || true
-          bash scripts/release.sh npm
+        run: bash scripts/release.sh npm
