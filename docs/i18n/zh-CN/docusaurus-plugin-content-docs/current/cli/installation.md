@@ -32,7 +32,7 @@ CI 与 Docker 全链路使用 Bun（`oven-sh/setup-bun`、`oven/bun:1.4.4-debian
 mkdir -p ~/.claude-code-router
 docker run -d --name ccr \
   -p 3456:3456 \
-  -v ~/.claude-code-router:/root/.claude-code-router \
+  -v ~/.claude-code-router:/home/bun/.claude-code-router \
   ghcr.io/oakimov/claude-code-router:latest
 ```
 

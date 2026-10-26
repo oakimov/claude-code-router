@@ -16,7 +16,7 @@ Run the published Docker image:
 mkdir -p ~/.claude-code-router
 docker run -d --name ccr \
   -p 3456:3456 \
-  -v ~/.claude-code-router:/root/.claude-code-router \
+  -v ~/.claude-code-router:/home/bun/.claude-code-router \
   ghcr.io/oakimov/claude-code-router:latest
 ```
 
@@ -62,7 +62,7 @@ Open `http://localhost:3456/ui/` in your browser to manage configuration and mon
 
 ## Configuration File
 
-The configuration file is located at `~/.claude-code-router/config.json` and is mounted into the container at `/root/.claude-code-router/config.json`.
+The configuration file is located at `~/.claude-code-router/config.json` and is mounted into the container at `/home/bun/.claude-code-router/config.json`.
 
 ## Next Steps
 

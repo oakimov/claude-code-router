@@ -13,16 +13,31 @@ services:
     build:
       context: ../..
       dockerfile: packages/server/Dockerfile
+    # 非 root（镜像内的 `bun` 用户）、只读根文件系统、丢弃全部 capabilities。
+    # $HOME 使用 tmpfs，因为内置的 Claude Code 层会写入 $HOME/.claude.json；
+    # 配置卷挂载在其下层。
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/bun:uid=1000,gid=1000,mode=0755
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "3456:3456"
     volumes:
-      - ./ccr-config:/root/.claude-code-router
+      - ./ccr-config:/home/bun/.claude-code-router
     environment:
       - LOG_LEVEL=info
       - HOST=0.0.0.0
       - PORT=3456
     restart: unless-stopped
 ```
+
+镜像以非特权 `bun` 用户（uid/gid 1000）运行。若去掉 `user:` 覆盖，容器仍以该用户启动；
+只有 `tmpfs` 与 `read_only` 需要与该用户保持一致。
 
 启动服务：
 
@@ -60,7 +75,7 @@ services:
     ports:
       - "3456:3456"
     volumes:
-      - ./config:/root/.claude-code-router
+      - ./config:/home/bun/.claude-code-router
     environment:
       - HOST=0.0.0.0
       - PORT=3456
@@ -77,7 +92,7 @@ services:
     ports:
       - "3456:3456"
     volumes:
-      - ./config.json:/root/.claude-code-router/config.json
+      - ./config.json:/home/bun/.claude-code-router/config.json
     environment:
       - HOST=0.0.0.0
       - PORT=3456
@@ -174,7 +189,7 @@ services:
       context: ../..
       dockerfile: packages/server/Dockerfile
     volumes:
-      - ./logs:/root/.claude-code-router/logs
+      - ./logs:/home/bun/.claude-code-router/logs
     environment:
       - LOG_LEVEL=warn
 ```

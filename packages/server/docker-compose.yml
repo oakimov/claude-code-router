@@ -6,6 +6,18 @@ services:
     image: claude-code-router
     pull_policy: build
     container_name: claude-code-router
+    # Hardened runtime: non-root (the image's `bun` user), immutable rootfs,
+    # no capabilities. $HOME is a tmpfs because the bundled Claude Code layer
+    # writes $HOME/.claude.json; the config volume is mounted beneath it.
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/bun:uid=1000,gid=1000,mode=0755
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "3456:3456"
       - "1455:3456"
@@ -13,7 +25,7 @@ services:
       # → CCR Fastify /oauth-callback (same pattern as Codex 1455→3456)
       - "51121:3456"
     volumes:
-      - ./ccr-config:/root/.claude-code-router
+      - ./ccr-config:/home/bun/.claude-code-router
     networks:
       - ccrnet
     restart: always

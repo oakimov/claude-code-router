@@ -134,7 +134,7 @@
 ## Infrastructure & Deployment
 - **Docker Compose Builds**: Always include the `build` block with `context` and `dockerfile` when using local images to prevent Docker from attempting to pull the image from a remote registry.
 - **Port Consistency**: Cross-verify `docker-compose` port mappings with the application's `config.json` (e.g., port `3456`) to ensure connectivity.
-- **Persistence**: Use volume mounts for the entire configuration root (e.g., `/root/.claude-code-router`) to preserve both settings and logs across container restarts.
+- **Persistence**: Use volume mounts for the entire configuration root (e.g., `/home/bun/.claude-code-router`) to preserve both settings and logs across container restarts.
 
 ## LLM Provider Integration (Codex / ChatGPT Backend)
 - **Bootstrap fallback must inspect error fields and preserve stream failures**: Scan only structured `response.failed` / `error` fields for overload/quota markers; scanning raw SSE misclassifies healthy generated text such as "try again". Before throwing an overload, cancel the discarded upstream body. Bootstrap read failures must propagate before headers commit, and cancellation promises must be handled even when the reader is already errored; otherwise a socket reset becomes HTTP 200 with only handshake frames plus an unhandled rejection. Exercise public budget option names through the transformer as well as the utility, including byte-exact replay, split/trailing frames, EOF, and cancellation. Guarded by `codex.bootstrap-buffer.ts`.

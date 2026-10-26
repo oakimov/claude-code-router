@@ -58,11 +58,11 @@ Claude Code Router 是面向 Claude Code 的自适应 LLM 网关。它会将每�
 mkdir -p ~/.claude-code-router
 docker run -d --name ccr \
   -p 3456:3456 \
-  -v ~/.claude-code-router:/root/.claude-code-router \
+  -v ~/.claude-code-router:/home/bun/.claude-code-router \
   ghcr.io/oakimov/claude-code-router:latest
 ```
 
-镜像自带服务器和 UI，在 `http://localhost:3456` 暴露代理，并将 `~/.claude-code-router` 挂载为配置目录（容器内的 `/root/.claude-code-router`）。请在 `config.json` 中设置 `"HOST": "0.0.0.0"`，以便端口映射能够访问服务器。修改配置后使用 `docker restart ccr` 重启；使用 `docker logs -f ccr` 查看日志。
+镜像自带服务器和 UI，在 `http://localhost:3456` 暴露代理，并将 `~/.claude-code-router` 挂载为配置目录（容器内的 `/home/bun/.claude-code-router`）。镜像以非特权 `bun` 用户（uid 1000）运行，请确保该用户可以写入挂载目录。请在 `config.json` 中设置 `"HOST": "0.0.0.0"`，以便端口映射能够访问服务器。修改配置后使用 `docker restart ccr` 重启；使用 `docker logs -f ccr` 查看日志。
 
 ### 2. 配置
 

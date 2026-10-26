@@ -61,11 +61,11 @@ The fastest way to launch Claude Code Router is the published Docker image:
 mkdir -p ~/.claude-code-router
 docker run -d --name ccr \
   -p 3456:3456 \
-  -v ~/.claude-code-router:/root/.claude-code-router \
+  -v ~/.claude-code-router:/home/bun/.claude-code-router \
   ghcr.io/oakimov/claude-code-router:latest
 ```
 
-The image ships the server and UI, exposes the proxy on `http://localhost:3456`, and mounts `~/.claude-code-router` as the config directory (`/root/.claude-code-router` inside the container). Set `"HOST": "0.0.0.0"` in your `config.json` so the port mapping can reach the server. After changing the config, restart with `docker restart ccr`; view logs with `docker logs -f ccr`.
+The image ships the server and UI, exposes the proxy on `http://localhost:3456`, and mounts `~/.claude-code-router` as the config directory (`/home/bun/.claude-code-router` inside the container). It runs as the unprivileged `bun` user (uid 1000), so make sure that user can write the mounted directory. Set `"HOST": "0.0.0.0"` in your `config.json` so the port mapping can reach the server. After changing the config, restart with `docker restart ccr`; view logs with `docker logs -f ccr`.
 
 ### 2. Configuration
 

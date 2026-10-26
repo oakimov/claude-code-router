@@ -31,7 +31,7 @@ Run the published image, mounting a config directory:
 mkdir -p ~/.claude-code-router
 docker run -d --name ccr \
   -p 3456:3456 \
-  -v ~/.claude-code-router:/root/.claude-code-router \
+  -v ~/.claude-code-router:/home/bun/.claude-code-router \
   ghcr.io/oakimov/claude-code-router:latest
 ```
 

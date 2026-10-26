@@ -55,7 +55,7 @@ cd packages/server
 docker compose up --build -d
 ```
 
-The Compose setup builds the server and UI into the `ccr` container, exposes the proxy on `http://localhost:3456`, and mounts configuration from `packages/server/ccr-config` to `/root/.claude-code-router` inside the container.
+The Compose setup builds the server and UI into the `ccr` container, exposes the proxy on `http://localhost:3456`, and mounts configuration from `packages/server/ccr-config` to `/home/bun/.claude-code-router` inside the container.
 
 ### 2. Configuration
 

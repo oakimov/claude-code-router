@@ -17,16 +17,32 @@ services:
     build:
       context: ../..
       dockerfile: packages/server/Dockerfile
+    # Non-root (the image's `bun` user), immutable rootfs, no capabilities.
+    # $HOME is a tmpfs because the bundled Claude Code layer writes
+    # $HOME/.claude.json; the config volume is mounted beneath it.
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/bun:uid=1000,gid=1000,mode=0755
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "3456:3456"
     volumes:
-      - ./ccr-config:/root/.claude-code-router
+      - ./ccr-config:/home/bun/.claude-code-router
     environment:
       - LOG_LEVEL=info
       - HOST=0.0.0.0
       - PORT=3456
     restart: unless-stopped
 ```
+
+The image runs as the unprivileged `bun` user (uid/gid 1000). If you drop the
+`user:` override, the container still starts as that user; only the `tmpfs`
+and `read_only` settings need to stay in sync with it.
 
 Start the service:
 
@@ -54,7 +70,7 @@ services:
     ports:
       - "3456:3456"
     volumes:
-      - ./config:/root/.claude-code-router
+      - ./config:/home/bun/.claude-code-router
     environment:
       - HOST=0.0.0.0
       - PORT=3456
@@ -71,7 +87,7 @@ services:
     ports:
       - "3456:3456"
     volumes:
-      - ./config.json:/root/.claude-code-router/config.json
+      - ./config.json:/home/bun/.claude-code-router/config.json
     environment:
       - HOST=0.0.0.0
       - PORT=3456
@@ -168,7 +184,7 @@ services:
       context: ../..
       dockerfile: packages/server/Dockerfile
     volumes:
-      - ./logs:/root/.claude-code-router/logs
+      - ./logs:/home/bun/.claude-code-router/logs
     environment:
       - LOG_LEVEL=warn
 ```

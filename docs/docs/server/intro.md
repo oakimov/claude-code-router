@@ -200,7 +200,7 @@ services:
     ports:
       - "3456:3456"
     volumes:
-      - ~/.claude-code-router:/root/.claude-code-router
+      - ~/.claude-code-router:/home/bun/.claude-code-router
     environment:
       - HOST=0.0.0.0
       - PORT=3456

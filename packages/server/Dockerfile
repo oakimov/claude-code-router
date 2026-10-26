@@ -97,7 +97,15 @@ RUN mkdir -p /app/packages/cli/node_modules /app/node_modules && \
 COPY packages/server/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-RUN mkdir -p /root/.claude-code-router/logs
+# Non-root runtime: the base image ships a `bun` user (uid/gid 1000, home
+# /home/bun). Creating the config root here keeps a *named* volume seeded with
+# the right owner; bind mounts inherit the host side instead.
+RUN mkdir -p /home/bun/.claude-code-router/logs && \
+    chown -R bun:bun /home/bun
+
+ENV HOME="/home/bun"
+
+USER bun
 
 EXPOSE 3456
 
