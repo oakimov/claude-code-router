@@ -24,7 +24,7 @@ npm publisher: `oakimov`
 
 1. Confirm you can publish under the org:
    ```bash
-   bun pm whoami
+   npm whoami
    # org membership is still managed on npmjs.com
    ```
 2. Your user (`oakimov`) must have a role that can publish in `caeliq` (typically `developer`+).
@@ -35,7 +35,7 @@ Trusted publishing can only be attached to packages that already exist on the re
 
 ```bash
 # from repo root
-bun pm login
+npm login
 bun install
 bun run build
 NPM_DRY_RUN=1 bash scripts/release.sh npm
@@ -45,9 +45,9 @@ bash scripts/release.sh npm
 Verify:
 
 ```bash
-bun pm view @caeliq/ccr-shared version
-bun pm view @caeliq/llms version
-bun pm view @caeliq/claude-code-router version
+npm view @caeliq/ccr-shared version
+npm view @caeliq/llms version
+npm view @caeliq/claude-code-router version
 bun install -g @caeliq/claude-code-router
 ccr -h
 ```
@@ -97,7 +97,7 @@ Triggers:
 It installs and builds with Bun (`bun install --frozen-lockfile`, `bun run build`), then runs `scripts/release.sh npm` with:
 
 - `id-token: write`
-- `bun publish --access public` (OIDC provenance when `CI=true`)
+- `npm publish --access public --provenance` (OIDC provenance when `CI=true`)
 - no `NODE_AUTH_TOKEN`
 
 ### Recommended first CI check (dry-run)
@@ -139,4 +139,4 @@ Publish order inside the script is always: shared → llms → CLI.
 | Provenance errors in CI | npm too old in CI (workflow upgrades npm), or trusted publisher missing |
 | Wrong repo in provenance | publisher config must match `oakimov/claude-code-router` |
 | Token auth used instead of OIDC | `NODE_AUTH_TOKEN` set in the environment; the workflow clears it before publish (`NPM_TRUSTED_PUBLISHING` must be `true` with `id-token: write`) |
-| `bun pm whoami` fails in CI | expected: OIDC trusted publishing replaces login (`NPM_TRUSTED_PUBLISHING=true` skips the check) |
+| `npm whoami` fails in CI | expected: OIDC trusted publishing replaces login (`NPM_TRUSTED_PUBLISHING=true` skips the check) |

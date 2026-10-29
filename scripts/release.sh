@@ -56,24 +56,27 @@ esac
 
 require_npm_login() {
   if [[ "${TRUSTED_PUBLISHING}" == "true" || "${TRUSTED_PUBLISHING}" == "1" ]]; then
-    echo "Using npm trusted publishing (OIDC); skipping bun pm whoami"
+    echo "Using npm trusted publishing (OIDC); skipping npm whoami"
     return 0
   fi
-  if ! bun pm whoami &>/dev/null; then
-    echo "Error: not logged into npm. Run: bun pm login"
+  if ! npm whoami &>/dev/null; then
+    echo "Error: not logged into npm. Run: npm login"
     exit 1
   fi
-  echo "npm user: $(bun pm whoami)"
+  echo "npm user: $(npm whoami)"
 }
 
 npm_publish() {
   local pkg_dir="$1"
   (
     cd "$pkg_dir"
-    echo "bun publish ${PUBLISH_ARGS[*]}"
+    # Publish with npm, not `bun publish`: Bun cannot generate provenance
+    # statements and has no npm trusted-publishing (OIDC) support, so
+    # --provenance is a hard error there (docs/pm/cli/publish.mdx).
+    echo "npm publish ${PUBLISH_ARGS[*]}"
     set +e
     local output
-    output="$(bun publish "${PUBLISH_ARGS[@]}" 2>&1)"
+    output="$(npm publish "${PUBLISH_ARGS[@]}" 2>&1)"
     local status=$?
     set -e
     printf '%s\n' "$output"

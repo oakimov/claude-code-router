@@ -33,6 +33,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # npm performs the publish: `bun publish` cannot generate provenance
+      # statements and does not implement npm trusted publishing (OIDC).
+      # The runner's bundled npm is too old for OIDC, hence the upgrade.
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm (OIDC trusted publishing)
+        run: npm install -g npm@latest
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -67,6 +79,8 @@ jobs:
           echo "cli:    @caeliq/claude-code-router@$CLI"
           echo "ref:    $GITHUB_REF"
           echo "bun:    $(bun --version)"
+          echo "npm:    $(npm --version)"
+          echo "node:   $(node --version)"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG=${GITHUB_REF#refs/tags/v}
             echo "tag:    v$TAG"
@@ -81,4 +95,8 @@ jobs:
           NPM_TRUSTED_PUBLISHING: "true"
           NPM_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           NODE_AUTH_TOKEN: ""
-        run: bash scripts/release.sh npm
+        run: |
+          # setup-node injects a placeholder token when registry-url is set.
+          # Clear it so npm uses GitHub OIDC trusted publishing instead.
+          npm config delete "//registry.npmjs.org/:_authToken" || true
+          bash scripts/release.sh npm
